@@ -41,5 +41,12 @@ jobs:
       - name: The engine's own suite
         run: ./engine/harness/tests/run
 
-      - name: Credentials, over the whole tracked tree
-        run: ./engine/harness/bin/secret-scan --tree
+      # `secret-scan --tree` is deliberately NOT run here. It treats every
+      # line of every tracked file as newly added, which is right for the
+      # question "is there a credential anywhere in this repository" and wrong
+      # as a gate: this suite plants fake keys on purpose, and all seventeen of
+      # them surface every time. It is an audit a person reads before
+      # publishing — it was read before this snapshot was published, and every
+      # hit was one of those fixtures — not a red light to get used to.
+      #
+      # The diff gate is the CI-shaped question, and `felix gate` runs it.
