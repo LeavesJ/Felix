@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# One project's admitted obligations, each on its three axes, and whether any
+# of them stops this checkout.
+#
+#   obligations-check <project-dir> [release]
+#
+#   exit 0  nothing blocks
+#   exit 1  a blocking obligation is active or unknowable and not discharged,
+#           the table is absent or empty, a row is malformed, or a row grounds
+#           on a probe the project does not declare
+#
+# With `release` only RELEASE_BLOCKING and AUTHORITY_BLOCKING stop; without
+# it TASK_BLOCKING stops too. The evidence's own report is printed under every
+# row that is not discharged, because a verdict with no members named is the
+# thing the seventh control refuses.
+#
+# Takes the project as a path rather than resolving a binding, so it runs in a
+# detached worktree — which is where qualification runs it, and why `felix
+# obligations` is not enough on its own.
+set -u
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+PROJ="${1:-}"; MODE="${2:-}"
+[ -n "$PROJ" ] || { printf 'usage: obligations-check <project-dir> [release]\n' >&2; exit 1; }
+[ -d "$PROJ" ] || { printf 'obligations-check: no project at %s\n' "$PROJ"; exit 1; }
+
+# shellcheck source=../lib/resolve.sh
+. "$HERE/lib/resolve.sh"
+# shellcheck source=../lib/probes.sh
+. "$HERE/lib/probes.sh"
+# shellcheck source=../lib/obligations.sh
+. "$HERE/lib/obligations.sh"
+
+rc=0
+printf 'obligations for %s\n\n' "$(basename "$PROJ")"
+
+if [ ! -f "$PROJ/obligations.tsv" ]; then
+  printf 'This project admits no obligation: there is no %s/obligations.tsv.\n' "$PROJ"
+  exit 1
+fi
+rows="$(felix_obligation_rows "$PROJ")"
+bad="$(felix_obligation_malformed "$PROJ")"
+if [ -n "$bad" ]; then
+  printf 'rows refused\n\n'; printf '%s\n' "$bad" | sed 's/^/  /'; printf '\n'; rc=1
+fi
+if [ -z "$rows" ]; then
+  printf '%s/obligations.tsv admits no obligation, which is a ledger with nothing owed.\n' "$PROJ"
+  exit 1
+fi
+orphans="$(felix_obligations_orphans "$PROJ")"
+if [ -n "$orphans" ]; then
+  printf 'grounded on a probe %s/probes.tsv does not declare\n\n' "$PROJ"
+  printf '%s\n' "$orphans" | sed 's/^/  /'; printf '\n'; rc=1
+fi
+
+out="$(felix_obligations_run "$PROJ" .)"
+printf '  %-22s %-18s %-9s %-12s %s\n' OBLIGATION CLASS APPLIES DISCHARGE ''
+printf '%s\n' "$out" | while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="$(printf '%s\n' "$line" | cut -f1)"; cls="$(printf '%s\n' "$line" | cut -f2)"
+  app="$(printf '%s\n' "$line" | cut -f4)"; dis="$(printf '%s\n' "$line" | cut -f5)"
+  det="$(printf '%s\n' "$line" | cut -f6)"
+  printf '  %-22s %-18s %-9s %-12s %s\n' "$name" "$cls" "$app" "$dis" "$det"
+  # The evidence's own report, for every active row it did not discharge.
+  if [ "$app" = "ACTIVE" ] && [ "$dis" != "SATISFIED" ]; then
+    ev="$(felix_obligation_rows "$PROJ" | awk -F'\t' -v n="$name" '$1 == n { print $5; exit }')"
+    bash -c "$ev" felix-obligation </dev/null 2>&1 | sed 's/^/      /'
+  fi
+done
+
+blocking="$(printf '%s\n' "$out" | felix_obligations_blocking "$MODE" | grep -c .)"
+printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking' \
+  "$(printf '%s\n' "$out" | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "ACTIVE"'  | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "DORMANT"' | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "UNKNOWN"' | grep -c .)" \
+  "$blocking"
+ung="$(felix_obligations_ungrounded "$PROJ" | grep -c .)"
+[ "$ung" -gt 0 ] && printf '; %s ground on no probe' "$ung"
+printf '\n'
+[ "$blocking" -eq 0 ] || rc=1
+exit "$rc"

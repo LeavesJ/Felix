@@ -1,0 +1,10 @@
+# What a change to Felix has to prove.
+#
+# Felix demands evidence from the projects it governs and demanded none of
+# itself. The suite is the only thing standing between a harness bug and every
+# session on this machine.
+#
+# name	when	requires	reason
+harness	^engine/harness/(lib|hooks)/	^engine/harness/tests/run$	anything running in every session needs an assertion that would have caught it breaking
+cli	^engine/harness/felix$	^engine/harness/tests/run$	a command surface with no test is a command nobody proved runs
+deploy	^engine/harness/	^engine/\.claude-plugin/plugin\.json$	a changed engine at an unchanged version deploys nothing and reports success

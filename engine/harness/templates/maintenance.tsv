@@ -1,0 +1,68 @@
+# Scheduled maintenance, from the guidebook's table on p10.
+#
+# Cadence is in days. 0 means event-driven: it fires on a trigger, never on a
+# clock, so it is never reported as overdue.
+#
+# Aggregate. One bounded maintenance branch beats a flood of autonomous pull
+# requests nobody reviews. Security-critical fixes stay separate, because
+# isolation is what makes them reviewable and shippable on their own.
+#
+# A fifth column, optional: a CHECK. For a cadence-0 row it is a command run in
+# the checkout, exit 0 meaning not due and anything else meaning due — so an
+# event-driven row can come due from reality instead of never. Rows with four
+# columns keep working unchanged.
+#
+# The seeded graphify check compares file time to commit time at whole seconds,
+# because that is how BSD find reads -newermt. A graph written in the same
+# second as the last commit reads stale; nothing real does that.
+#
+# It excludes the cadence record, and that is not a loophole. Recording a run
+# writes maintenance.log, and that write has to be committed for the cadence to
+# survive the machine — so the act of recording the refresh invalidated the
+# refresh, and the row was due again the moment it was satisfied. Measured on
+# one project: due, refreshed, recorded, due, inside a single pull request.
+#
+# The exclusion is sound rather than convenient because the log is not in the
+# graph's corpus at all — 103 entries, no .log and no .tsv among them — so a
+# commit touching only it changes nothing the graph models. A check that says
+# "the graph is behind the tree" must compare against the part of the tree the
+# graph is a model OF.
+#
+# Any other commit still makes it due, which is the whole point: the row is a
+# staleness detector and it is meant to fire when real content moves.
+#
+# The graph is looked for beside the repository's .git — `git rev-parse
+# --git-common-dir` is `.git` in the checkout that holds it and the absolute
+# path of that checkout's .git from any worktree — because a worktree has no
+# graphify-out/ of its own, and a check keyed on the current directory read
+# due in every worktree session whatever the graph's age. A due that is on
+# almost always carries no information. The commit compared against is still
+# the one the current checkout stands on, so a worktree that has moved past
+# the graph is due, and the checkout the graph was built from is not.
+#
+# name	cadence	capability	description	check
+dead-code	7	always	one aggregated cleanup PR
+dependencies	7	always	grouped safe updates; majors isolated
+workflow-audit	7	ci	CI can read every secret; audit what changed
+docs-drift	14	always	docs correction PR
+constitution	30	always	CLAUDE.md health; targeted, not accumulation
+architecture	30	always	drift report; update the architecture doc if warranted
+test-flake	0	ci	on repeated CI failure, with evidence
+# Keyed on the checkout that holds the graph, and not on the tree the caller
+# happens to be standing in. Those are the same thing in a plain checkout and
+# different in a worktree, and the difference made this row a permanent DUE:
+# any commit in a worktree is a commit the graph has not seen, sessions commit
+# constantly, and sixteen of the seventeen session roots recorded for this
+# project are worktrees. Measured at the top of one session: `due` from the
+# worktree and `ok` from the checkout beside it, same graph, same second.
+#
+# This reverses the reading written here before it — that the commit compared
+# against is the one the worktree stands on — and the argument is that the
+# refresh that reading asks for cannot do what the DUE says is missing.
+# graphify builds the graph from the checkout that holds it, so a refresh run
+# while standing in a worktree models the HOLDING checkout's tree and not the
+# worktree's unmerged work. It clears the row by moving a file's mtime, which
+# is a change of status and not of what the graph models. A row that is on in
+# almost every session, and whose remedy does not address the thing it names,
+# is the status table this repository already keeps a lesson about.
+graphify	0	always	refresh the knowledge graph after a merge; it went fifteen days stale on one project while its row read event	G="$(dirname "$(git rev-parse --git-common-dir)")"; test -n "$(find "$G/graphify-out/graph.json" -newermt "$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$(git -C "$G" rev-parse HEAD)" -- . ":(exclude)projects/*/maintenance.log")" 2>/dev/null)"

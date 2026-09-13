@@ -1,0 +1,20 @@
+# The ten steps of the v3.2 §8 commissioning pipeline, and what answers each.
+#
+# answered-by: `rows` means commissioning.tsv rows carry this step number and
+# the report names the step when no row does; `engine` means a mechanism that
+# is not a row answers it (and which); `none` means nothing built answers it,
+# and the report says so on every run. This file enumerates the moment from
+# the architecture, not from what happened to be built, so a step nobody
+# wrote a row for is a printed gap rather than a silence.
+#
+# step	description	answered-by
+1	determine maturity and the minimum declared risk envelope	rows
+2	raw repository reconnaissance with read-only instruments (felix_detect at felix new)	engine
+3	build a provenance-carrying project projection (facts.log, felix probes)	engine
+4	compile baseline engineering coverage from content providers	rows
+5	inventory existing skills, plugins, MCP servers, hooks, CI and toolchain	rows
+6	resolve and safely acquire missing capabilities	rows
+7	install or derive grounded probes and deterministic relations	rows
+8	initialize obligation and evidence state	rows
+9	run commissioning verification	rows
+10	emit the project_commissioned receipt bound to topology and toolchain (state/commission)	engine

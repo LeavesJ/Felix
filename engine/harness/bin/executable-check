@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Can every script this harness runs actually be run?
+#
+#   executable-check   exit 0 when every script carries its mode bit, 1 when
+#                      any has lost it, 2 when it could not look; prints what
+#                      it found
+#
+# A hook or a scanner that loses its executable bit does not fail loudly. The
+# thing that invoked it gets a permission error in somebody else's session, or
+# silently does nothing, and the harness keeps reporting that it is fine. That
+# is why this is a gate check and not a convention.
+#
+# ENUMERATED, NEVER LISTED. The inline form this replaces once named three
+# hooks by hand when there were seven; the four newest were never checked and
+# would have failed silently. A list of things to check is a list that stops
+# matching what exists.
+#
+# BUT A DIRECTORY IS NOT A PROPERTY. The enumeration answers "what is in here",
+# and the property is about scripts, so everything else that lands in bin/ or
+# hooks/ was being told to be executable too — a README explaining what the
+# directory holds turned the gate red. Found by a qualification control written
+# blind, whose decoupled_satisfaction case adds exactly that README and expects
+# the check to pass.
+#
+# So ask the file what it is. A shebang is what makes a file something the
+# kernel will run; prose and data are neither. This repository already records
+# the general form of that move: ask the artefact what it is, never ask the
+# source what words it contains.
+#
+# The residual, stated rather than hidden: a script that loses BOTH its mode
+# bit and its shebang is invisible here, where the old form would have caught
+# it. That is a deliberate trade — without a shebang there is nothing for the
+# kernel to run either, so what goes uncaught is a file already broken twice.
+
+set -uo pipefail
+
+# Run from the repository root, whichever way this was invoked. The gate calls
+# it as a relative path from the root it is gating; a person may call it from
+# anywhere. Both must examine the same tree.
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  printf 'executable-check: not a git repository, so there is no tree to examine\n' >&2
+  exit 2
+}
+cd "$root" 2>/dev/null || { printf 'executable-check: cannot enter %s\n' "$root" >&2; exit 2; }
+
+# The engine may sit at the repository root or one level down. Neither present
+# is "could not look", not "nothing wrong": a checkout where the engine is
+# missing is not a checkout this check can say anything about.
+harness=""
+for d in engine/harness harness; do
+  [ -d "$d" ] && { harness="$d"; break; }
+done
+[ -n "$harness" ] || {
+  printf 'executable-check: no engine/harness here, so nothing could be examined\n' >&2
+  exit 2
+}
+
+looked=0
+NOX=""
+for f in "$harness/felix" "$harness/tests/run" "$harness/bin"/* "$harness/hooks"/*; do
+  [ -f "$f" ] || continue
+  # Two bytes, not a line read: a file with no trailing newline reads
+  # differently on each platform, and one of these directories could hold
+  # something binary.
+  [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] || continue
+  looked=$((looked + 1))
+  [ -x "$f" ] || NOX="$NOX $f"
+done
+
+# Nothing examined is not a pass. If the glob matched no script at all, the
+# harness is not where this thinks it is, and saying ok would be the emptiness
+# this project keeps finding reported as an all-clear.
+[ "$looked" -gt 0 ] || {
+  printf 'executable-check: found no script to examine under %s\n' "$harness" >&2
+  exit 2
+}
+
+if [ -z "$NOX" ]; then
+  printf 'executable-check: %s script(s), every one executable\n' "$looked"
+  exit 0
+fi
+
+printf 'executable-check: %s script(s) examined, these cannot be run:\n' "$looked" >&2
+for f in $NOX; do printf '  %s\n' "$f" >&2; done
+printf 'Restore the bit with chmod +x and commit it; the mode is part of what git stores.\n' >&2
+exit 1

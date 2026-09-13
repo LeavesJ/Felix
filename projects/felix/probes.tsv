@@ -1,0 +1,45 @@
+# What Felix asks reality about itself.
+#
+# Felix may declare which question to ask. Felix may never author the answer.
+# The members of every predicate below come back from the command; nothing in
+# the engine can add one, and a row that returns nothing is never quietly read
+# as a row with nothing to worry about.
+#
+# predicate	grounds	when	probe	witness
+#
+# A row with no witness can never report `empty` and always blocks as
+# `unknown`, because a probe with nothing to check it against cannot tell an
+# absent surface from a broken command — and every system that guesses there
+# guesses "absent", which is the permissive direction. Every row here carries
+# one, and each witness asks a different question from its probe: git's index
+# versus the filesystem, the file's contents versus the file's existence. A
+# witness that re-runs the probe agrees with it by construction and buys
+# nothing.
+#
+# Two of these were written because of what this checkout could not answer on
+# 2026-09-03. `hook_binding` reads the events the SHIPPED hooks.json binds,
+# which is the fact deciding whether the floor runs at all — the night the
+# marker bypass was found, nothing enumerated it. It reads them through
+# bin/hooks-events, the same key scanner the first admitted obligation is
+# judged by, and not through a grep for `"Event": [`: a blind-authored control
+# moved a whole event entry one level down into another event's matcher group,
+# every token intact and the hook never firing, and the grep counted it. A
+# probe that shares a checker's shadow records the fact the checker misjudges.
+# `test_assertion` grounds the
+# `tests` capability, which this project declares and its own detector cannot
+# see: felix_detect looks for tests/ at the repo root and this suite lives at
+# engine/harness/tests, so the capability was declared, undetected, and
+# unexamined by anything. A probe settles it; a filename match never could.
+#
+# Shrinking this file escapes to a person. It is in FELIX_ESCAPE_TABLES beside
+# risk.tsv and deny.tsv, and it has its own row in risk.tsv with a verifier
+# channel, because a probe removed is a fact nobody reads any more.
+tracked_file	-	-	git ls-files	git ls-tree -r HEAD --name-only 2>/dev/null | grep -q .
+shell_entrypoint	-	-	git ls-files engine/harness/felix engine/harness/hooks engine/harness/bin	test -d engine/harness/hooks
+hook_binding	-	-	engine/harness/bin/hooks-events engine/hooks/hooks.json	test -s engine/hooks/hooks.json
+governed_project	-	-	ls -1 projects/*/project.json	test -d projects
+enforcing_table	-	-	git ls-files 'projects/*/risk.tsv' 'projects/*/deny.tsv' 'projects/*/evidence.tsv' 'projects/*/probes.tsv'	test -d projects
+test_assertion	tests	-	cut -f2 engine/harness/tests/assertions.tsv	test -s engine/harness/tests/assertions.tsv
+ci_workflow	ci	-	git ls-files '.github/workflows/*'	test -d .github/workflows
+deployed_engine	-	test -d "$HOME/.claude/plugins/cache/felix/felix"	ls -1d "$HOME"/.claude/plugins/cache/felix/felix/*/	test -d "$HOME/.claude/plugins/cache/felix"
+marketplace_root	-	test -r "$HOME/.claude/plugins/known_marketplaces.json"	sed -n '/"felix"[[:space:]]*:[[:space:]]*{/,/^  }/p' "$HOME/.claude/plugins/known_marketplaces.json" | sed -n 's/.*"installLocation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'	test -s "$HOME/.claude/plugins/known_marketplaces.json"

@@ -1,0 +1,14 @@
+{
+  "name": "felix",
+  "description": "Governance layer: binds a session to its project's constitution, gate, and memory",
+  "version": "0.49.111",
+  "author": {
+    "name": "Jarron Deng"
+  },
+  "keywords": [
+    "governance",
+    "doctrine",
+    "gate",
+    "verification"
+  ]
+}

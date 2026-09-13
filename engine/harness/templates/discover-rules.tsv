@@ -1,0 +1,34 @@
+# What words in a plugin's description suggest it serves a capability.
+#
+# Deliberately crude, and deliberately narrow. The first version used words like
+# "build", "deploy", "server" and "http", which every plugin description on
+# earth contains: it offered a mobile app framework and an endpoint-security
+# product as continuous-integration tooling. A keyword that matches everything
+# identifies nothing.
+#
+# A hit in the plugin's NAME counts three; a hit in its prose counts one. A
+# thing called rust-analyzer is about rust in a way that a thing merely
+# mentioning rust once is not.
+#
+# Rows are only consulted for capabilities the project has actually declared, so
+# a project with no database never sees database tooling however loudly a plugin
+# advertises itself.
+#
+# capability	keywords
+rust	rust cargo clippy crate rustfmt
+llm	llm prompt eval evaluation anthropic openai inference rag hallucination
+database	postgres sql migration schema supabase mongo redis sqlite
+e2e	playwright cypress selenium end-to-end browser-automation
+observability	observability tracing telemetry sentry datadog opentelemetry incident
+frontend	figma design-system accessibility css tailwind storybook
+api	openapi graphql rest-api endpoint swagger
+ci	github-actions pipeline continuous-integration workflow-automation
+secrets	secret credential vault leak-detection sast
+deploy	kubernetes terraform helm docker-compose infrastructure-as-code
+# Detection adopts `iac` the day a project grows a .tf file, and for a while
+# there was no row here for it — three characters, so it cannot fall back on
+# its own name either, which made it the one capability that could be
+# adopted automatically and then never match anything.
+iac	terraform pulumi opentofu cloudformation infrastructure-as-code
+tests	coverage mutation-testing pytest jest test-generation
+billing	billing invoice subscription stripe payments

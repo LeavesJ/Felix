@@ -1,0 +1,38 @@
+# Default risk rules, from the guidebook's merge policy (p8).
+#
+# Anything matching no rule is yellow. Green must be earned by an explicit
+# pattern, so an unfamiliar file can never auto-merge by being unrecognised.
+# The highest tier any file reaches wins: risk does not average.
+#
+# tier	kind	pattern	reason
+red	path	(^|/)(auth|authz|authorization|rbac|session|login|credential|permission)s?(/|\.|$)	authorization model
+red	path	(^|/)(migrations|alembic)(/|$)	schema migration
+red	path	prisma/migrations/	schema migration
+red	path	^\.github/workflows/	CI can read every secret in the repository
+red	path	(^|/)\.claude/settings(\.local)?\.json$	agent permission policy
+red	path	\.(tf|tfvars)$	infrastructure as code
+red	path	(^|/)(billing|payments?|checkout|cart|invoice|subscription|pricing|stripe|refund|payout|tax)(/|\.|_|$)	money movement
+red	path	(^|/)(secrets?|vault)(/|\.|$)	secret material
+# Coarse backstop only. A real secret scanner belongs in the gate, where it
+# blocks outright: a leaked credential is not a change someone should be
+# able to approve. This exists so a project with no scanner is not at zero.
+red	content	^\+.*(sk-[A-Za-z0-9_-]{16,}|sk_live_[A-Za-z0-9]|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY)	a credential appears in the added lines
+red	content	^\+.*(DROP TABLE|TRUNCATE |DELETE FROM [^W]*$)	destructive SQL
+yellow	path	^(package|package-lock)\.json$	dependency change
+yellow	path	^(pyproject\.toml|requirements.*\.txt|Cargo\.toml|go\.mod)$	dependency change
+yellow	path	\.(sql|graphql|proto)$	interface or schema
+yellow	path	^\.gitignore$	changes what the repository tracks
+# Was green until 2026-09-03, which is the tier that can auto-merge. Green
+# on the one file that decides whether Felix is checking anything at all:
+# `echo nonexistent > .felix` disables the floor for a whole checkout and
+# would have merged itself. Every project seeded from this template gets
+# the row that stops it instead.
+red	path	(^|/)\.felix$	names which project governs this checkout, and every hook resolves through it	verifier
+green	path	\.(md|markdown|rst|txt)$	documentation
+# A directory name says where a file sits, never what it is. Unqualified, this
+# row made a committed docs/tool.sh green — and green is the tier that can
+# auto-merge. The extension set is the row above's, so what this adds is only
+# the location, which is what it was always meant to add.
+green	path	^(docs|documentation)/.*\.(md|markdown|rst|txt)$	documentation
+green	path	^tests?/	test-only change
+green	path	(^|/)(LICENSE|CHANGELOG|CODEOWNERS)$	repository metadata

@@ -1,0 +1,10 @@
+# Default task profiles. Which capabilities a kind of work mounts.
+# Installed is not active.
+#
+# name	capabilities
+core	always
+backend	api,database
+frontend	frontend,e2e
+incident	observability,e2e
+release	ci,deploy,e2e
+billing	billing,database

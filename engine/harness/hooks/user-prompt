@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# UserPromptSubmit hook: work out what kind of work this is, and mount what
+# applies to it.
+#
+# This event is the last moment before the agent plans, which makes it the real
+# "before implementation" boundary. PostToolUse is too late to prevent anything
+# and PreToolUse is not a confirmed carrier of additionalContext in this version,
+# so this is both the earliest and the most reliable mount available.
+#
+# Two things are gathered and emitted as ONE block. Two injections competing for
+# the same attention is how both get skimmed, and the route is the frame the
+# lessons should be read inside.
+#
+# The prompt arrives as JSON on stdin. It is tokenised whole rather than parsed,
+# because a hand-rolled JSON reader would break on the first prompt containing a
+# quote, which is the sort of failure that silently stops mounting anything.
+#
+# The extra field names are not free, though, whatever an earlier version of this
+# comment claimed. The envelope carries words like `prompt` and `system`, and a
+# route keyed on either of those scored on every turn regardless of what was
+# typed. The tokeniser drops the envelope's own vocabulary for that reason.
+#
+# Silent and exit 0 whenever there is nothing to say. A hook that speaks every
+# turn is a hook people learn to skim. The route in particular is announced only
+# when it changes: twenty turns of frontend work should cost one block, not
+# twenty.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh"
+. "${SCRIPT_DIR}/../lib/lessons.sh"
+. "${SCRIPT_DIR}/../lib/classify.sh"
+. "${SCRIPT_DIR}/../lib/incident.sh"
+. "${SCRIPT_DIR}/../lib/route.sh"
+. "${SCRIPT_DIR}/../lib/shape.sh"
+. "${SCRIPT_DIR}/../lib/say.sh"
+. "${SCRIPT_DIR}/../lib/ledger.sh"
+. "${SCRIPT_DIR}/../lib/verify.sh"
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+raw="$(cat 2>/dev/null || true)"
+root="$(felix_repo_root "$PWD")"
+
+# What this session has already done. Present on every event that shares the
+# base payload; absent means the whole play gets named, which is the old
+# behaviour and a safe place to fall back to.
+transcript="$(printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+# Hoisted, because more than one block needs to remember what it already said.
+# It used to be computed inside the route branch, so anything else wanting a
+# session key got an unbound variable or silently shared one.
+sid_raw="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+sid="$sid_raw"
+[ -n "$sid" ] || sid="repo-$(printf '%s' "$root" | tr -c 'a-zA-Z0-9' '-')"
+
+# The HEAD this session began at, recorded on the first prompt because
+# SessionStart never reads its payload and so has no session id to key on. The
+# first mark wins, so later prompts do not move it and a compact cannot reset
+# it. Stop needs this to tell work that was committed from a tree that merely
+# happens to be clean — before it existed, committing your work skipped the
+# completion check entirely, and committing is what you do at the end.
+#
+# Never checked. A session that cannot record this loses one completion check;
+# a session that cannot start loses everything.
+[ -n "$sid_raw" ] && felix_session_mark "$FELIX_HOME_DIR" "$sid_raw" "$root" 2>/dev/null || true
+
+# ------------------------------------------------------------------ route ----
+# The runtime uses this channel for its own messages — task completions, system
+# reminders, the Stop hook's own feedback — and routing those announced a play
+# at text nobody wrote, logged a miss that skews `--promote`, and then had Stop
+# ask why the named play went unused. Nothing to route and nothing to record,
+# so both are skipped.
+route_block=""
+if felix_route_is_machine "$(felix_route_prompt "$raw" 2>/dev/null)" 2>/dev/null; then
+  :
+elif [ -f "$PROJ/routes.tsv" ]; then
+  ctx="$(felix_route_context "$root")"
+  if best="$(felix_route_best "$PROJ" "$raw" "$ctx")"; then
+    r_score="$(printf '%s' "$best" | cut -f1)"
+    r_pscore="$(printf '%s' "$best" | cut -f2)"
+    r_name="$(printf '%s' "$best" | cut -f5)"
+    r_play="$(printf '%s' "$best" | cut -f7)"
+    felix_route_log "$PROJ" "$r_name" "$r_score" "$raw"
+
+    # The policy's decision, recorded beside the outcome the ledger already
+    # keeps. Without this a zero in the ledger cannot distinguish "Felix pointed
+    # at it and the session ignored it" from "Felix never pointed at it", and
+    # only the first is evidence about the capability. Recorded on every prompt
+    # that routes, whether or not the block is rendered: naming is what the
+    # policy did, and going quiet to avoid repeating itself is a display choice.
+    #
+    # Keyed on the payload's session id and never on $sid. $sid falls back to a
+    # repo-derived key so announce-on-change still dedups when the id cannot be
+    # read, and for that a shared key costs one missed suggestion. Ledger data
+    # is the opposite: post-tool and session-end both exit rather than invent a
+    # key, so a fallback here would send the named half somewhere nothing ever
+    # rolls up while the calls half went to a real session — and with several
+    # terminals open on one checkout those orphans accumulate under a single
+    # repo-shaped name, reading as "pointed at and ignored" on the way to being
+    # retired. No id, no row.
+    [ -n "$sid_raw" ] && \
+      felix_ledger_note_named "$FELIX_HOME_DIR" "$sid_raw" "$r_play" 2>/dev/null || true
+
+    # Announce only on change. The session key comes from the payload; when it
+    # cannot be read the repository stands in for it, which degrades the right
+    # way — two concurrent sessions in one checkout would share a key and one
+    # would occasionally stay quiet, a missed suggestion rather than a wrong one.
+    state_dir="$FELIX_HOME_DIR/state/route"
+    state="$state_dir/$sid"
+    # Keyed on the route AND the step that is due, so finishing one step is
+    # itself a reason to speak: the next one is now the thing to do. Keyed on
+    # the route alone, Felix named a tool once and went quiet for the rest of
+    # the session, which is how a sequence becomes a single suggestion.
+    r_due="$(felix_route_due "$transcript" "$r_play" 2>/dev/null | cut -f1)"
+
+    # Where the route came from, kept as a word rather than the score it was
+    # derived from. `Stop` reads this to decide whether an unused play is worth
+    # mentioning, and a guess off the working tree is not an instruction anybody
+    # gave — reporting it as one fired five complaints in a single session, at
+    # least three of them about routes nothing typed had asked for.
+    #
+    # A word and not `r_pscore`, because the score is an implementation detail
+    # of today's ranking function. What the Stop contract needs to survive a
+    # re-weighting is whether the obligation was grounded in intent at all.
+    r_cscore="$(printf '%s' "$best" | cut -f3)"
+    if   [ "${r_pscore:-0}" -gt 0 ] && [ "${r_cscore:-0}" -gt 0 ]; then r_prov=mixed
+    elif [ "${r_pscore:-0}" -gt 0 ]; then                               r_prov=prompt
+    else                                                                r_prov=tree
+    fi
+
+    # Dedup on the route and the due step only. The state value is also the
+    # announce key, so folding provenance into the comparison would make a route
+    # re-announce itself when nothing about the advice had changed — the same
+    # noise this exists to remove, one field along.
+    # Tab, not another colon. A due step is a play entry and play entries
+    # contain colons — `superpowers:brainstorming` — so `harness:done:prompt`
+    # was the only shape that ever worked and it is the shape no real session
+    # produces. The real value is `harness:superpowers:brainstorming:mixed`,
+    # where the third colon field is "brainstorming". Every fixture written for
+    # this used a due step of `done`, so the unit tests passed against a shape
+    # production never emits.
+    last=""
+    [ -f "$state" ] && last="$(cut -f1 < "$state" 2>/dev/null)"
+    # Decision A-prime, approved 2026-08-30: the voice renders at the two
+    # moments this hook can defend, and never on a mid-session keyword
+    # re-route. The first routed turn of a session is the declaration moment —
+    # the founder's own words naming the work, the one place the blind study
+    # found the table right. A later turn renders only when the ROUTE IS
+    # UNCHANGED and the due step advanced, which the transcript proves.
+    #
+    # A route-name change mid-session is logged, recorded in state, and not
+    # rendered. Every live misroute on #29 was exactly this case — "merge" as
+    # the object of a question, "broken" describing the system, "document"
+    # naming a file — five recorded causes, ~2% measured precision, 2-of-11
+    # follow-through. The route still changes in state, so the Stop hook
+    # judges the finish against the work the session actually pivoted to, and
+    # a proven step-use under the new route restores the voice on evidence.
+    # The cost — a silent genuine pivot — is named in the redesign memo and
+    # stays observable in routes.log for the day the data says otherwise.
+    #
+    # ${last%%:*} is the route name: the state value is name:due and only the
+    # due half may contain colons (play entries like superpowers:brainstorming).
+    if [ ! -f "$state" ]; then
+      route_block="$(felix_route_render "$PROJ" "$r_name" "$r_play" "$root" "$r_pscore" "$transcript")"
+    elif [ "${last%%:*}" = "$r_name" ] && [ "$last" != "$r_name:${r_due:-done}" ]; then
+      route_block="$(felix_route_render "$PROJ" "$r_name" "$r_play" "$root" "$r_pscore" "$transcript")"
+    fi
+    # Written every turn, not only when announcing, so provenance tracks the
+    # latest turn. A route that was a guess and then became something you asked
+    # for must stop being exempt the moment that happens.
+    #
+    # Failing to remember costs a repeated block. Failing to exit 0 costs the
+    # session, so the write is best-effort and never checked.
+    mkdir -p "$state_dir" 2>/dev/null && \
+      printf '%s\t%s' "$r_name:${r_due:-done}" "$r_prov" > "$state" 2>/dev/null
+  else
+    felix_route_log "$PROJ" "" 0 "$raw"
+  fi
+fi
+
+# ---------------------------------------------------------------- lessons ----
+lesson_block=""
+LESSONS="$(felix_mem_dir "$PROJ")/lessons.md"
+if [ -s "$LESSONS" ]; then
+  matched="$(felix_lessons_for "$LESSONS" "$(felix_lessons_context "$root" "$raw")")"
+  if [ -n "$matched" ]; then
+    lesson_block="Lessons this project already paid for, matched to what you are about to do.
+Not advice: these were written down because they were learned the hard way.
+
+$(printf '%s\n' "$matched" | sed 's/^/  /')
+
+The rest are in ${LESSONS}."
+  fi
+fi
+
+# ------------------------------------------------------------------ shape ----
+# Said before the work is split, not after. Whether tasks can run apart was
+# decided by taste every time, which meant it held for one person on one
+# machine; the half that is mechanical is a refusal, and a refusal is worth
+# stating at the moment somebody points at a plan rather than when they think to
+# ask. Silent unless the prompt names a real plan in this checkout.
+shape_block=""
+_plan="$(felix_shape_named "$raw" "$root" 2>/dev/null)"
+if [ -n "$_plan" ]; then
+  # Once per plan per session. This file's own header says a hook that speaks
+  # every turn is one people learn to skim, and shape does not change between
+  # two prompts about the same plan.
+  _sstate_dir="$FELIX_HOME_DIR/state/shape"
+  _sstate="$_sstate_dir/$sid"
+  _slast=""; [ -f "$_sstate" ] && _slast="$(cat "$_sstate" 2>/dev/null)"
+  _brief=""
+  [ "$_slast" != "$_plan" ] && _brief="$(felix_shape_brief "$root/$_plan" 2>/dev/null)"
+  if [ -n "$_brief" ]; then
+    mkdir -p "$_sstate_dir" 2>/dev/null && printf '%s' "$_plan" > "$_sstate" 2>/dev/null
+    shape_block="Shape of ${_plan}, computed from the files each task declares.
+
+$(printf '%s\n' "$_brief" | sed 's/^/  /')
+
+Tasks sharing a file cannot be worked in parallel: one overwrites the other, or
+they invent conflicting assumptions about a file neither owns. That half binds.
+Sharing nothing is necessary to fan out and not sufficient, because a caller and
+the signature it consumes share no file at all. Read the interfaces first."
+  fi
+fi
+
+[ -n "$route_block" ] || [ -n "$lesson_block" ] || [ -n "$shape_block" ] || exit 0
+
+body=""
+for _part in "$route_block" "$shape_block" "$lesson_block"; do
+  [ -n "$_part" ] || continue
+  body="${body}${body:+
+
+}${_part}"
+done
+
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+# `\(.*\)"` is greedy and matches to the LAST quote on the line, so the value
+# came back with every field that followed it still attached — a three-word
+# prompt arrived carrying the session title and everything after it. Stopping
+# at the first quote truncates a prompt that contains one, which is a smaller
+# and far more visible wrong than silently gluing on the rest of the payload.
+_felix_asked="$(printf '%s' "$raw" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+[ -n "$_felix_asked" ] || _felix_asked="$raw"
+felix_say "$PROJ" "brief" "$body" "$_felix_asked" "${sid:-}"
+printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "UserPromptSubmit",\n    "additionalContext": "%s"\n  }\n}\n' \
+  "$(escape_for_json "$body")"
+exit 0

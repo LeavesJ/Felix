@@ -1,0 +1,13 @@
+# What a change must prove, from the guidebook's table on p7.
+#
+# A rule fires when the diff touches `when` and does not touch `requires`.
+# That is a coverage heuristic, not proof: an edited test file says nothing
+# about whether the test is good. It catches the case the table exists for,
+# changing behaviour and shipping no test at all.
+#
+# name	when	requires	reason
+unit	^(src|lib|app|internal)/	^(tests?|spec|__tests__)/	code changes need a test
+database	(^|/)(migrations|alembic)/|\.sql$|prisma/schema	^(tests?|spec)/.*(db|database|migration|rls|schema)	schema changes need a database test
+e2e	^(src|app)/.*(web|ui|pages|components|views)/	(e2e|browser|playwright|cypress)	user-facing changes need browser coverage
+api	(^|/)(routes?|api|handlers?|controllers?)/	^(tests?|spec)/.*(api|route|handler|contract)	served surfaces need a contract test
+config	^(Dockerfile|docker-compose|.*\.tf|Procfile)	(^(tests?|spec)/|smoke)	build and deploy config needs verification

@@ -1,0 +1,47 @@
+# What Felix refuses on itself.
+#
+# Deliberately short. Felix governs projects in languages it must not require
+# and should be equally slow to invent rules for them; these are two its own
+# constitution already states and nothing enforced.
+#
+# tool	extended-regex	reason
+Bash	git push ([^;&|]* )?(--force|-f)( |$)	force push drops commits, and Felix's history is the audit trail
+Bash	git commit ([^;&|]* )?--no-verify	--no-verify is how a gate stops being a gate. Fix the tree instead
+#
+# The binding, which is the one surface a refusal has to protect from the
+# inside. `.felix` names which project governs a checkout and
+# `$HOME/.felix-home` names which home that project is resolved against;
+# break either and every hook in every session resolves nothing. The Stop
+# hook now refuses a binding that is present and does not resolve, but that
+# fires after the damage, and the pointer is worse than the marker because
+# it sits outside every repository — no diff, no classification, nothing at
+# a merge boundary to see. This is the only enforcing row it can have.
+#
+# Reading either is still allowed. What is refused is writing one by hand,
+# because `felix new` and `felix install` write them and say what they did.
+Write	(^|/)\.felix(-home)?$	this file decides whether Felix is enforcing anything here; felix new and felix install write it and record that they did
+Edit	(^|/)\.felix(-home)?$	this file decides whether Felix is enforcing anything here; felix new and felix install write it and record that they did
+#
+# The path may be quoted, and the command may go on after it with `;`, `&&`,
+# `|` or a closing paren. The first spelling required a space or the end of
+# the line after the name, so a quoted marker and a marker followed by `;`
+# both walked past it. A row that ordinary redirect spellings step around is
+# a row that refuses only the person who wrote it.
+Bash	(>|tee|cp |mv |rm |ln |truncate|sed -i|install |dd of=)[^;&|]*["']?\.felix(-home)?["']?([[:space:];&|)]|$)	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home
+#
+# The third row is not about damage to the tree. It is about a command shape
+# that hangs the session that ran it, which this project learned on 2026-09-12
+# after 22 of them in one session left spinning shells and 34 stray helper
+# processes behind, some alive for more than a day.
+#
+# Measured in both shells, from a probe rather than from a manual:
+# `read -t 5 -r _ < <(tail -f /dev/null)` returns after 5.0s under bash and
+# NEVER returns under zsh — still blocked when a twelve-second cap killed it —
+# and both leave the helper process running. Sessions here run zsh. A wait
+# written this way does not time out, never advances its own counter, and is
+# moved to the background by the tool's own timeout, where it spins until
+# something kills it.
+#
+# There is no good use of it. Work that must be waited on runs as a background
+# job, whose completion notifies the session, or under a monitor.
+Bash	read -t [0-9]+ [^;&|]*< <\(	a timed read from a process substitution never returns under zsh and leaks its helper; run the work as a background job and wait for its completion instead

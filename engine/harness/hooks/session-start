@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# SessionStart hook for Felix.
+#
+# Binds the session to whichever project it woke up in, then tells it where the
+# gate actually is. That second part is the whole point: a project's gate script
+# can be untracked or absent from the worktree doctrine tells you to work in, so
+# a relative path like ./scripts/gate.sh is a command that may not exist. What is
+# emitted here resolves from any checkout, any worktree, and CI.
+#
+# Emits nothing and exits 0 when no project governs this directory. A hook that
+# failed loudly in unrelated repos would be worse than no hook.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../lib/resolve.sh
+. "${SCRIPT_DIR}/../lib/resolve.sh"
+. "${SCRIPT_DIR}/../lib/detect.sh"
+. "${SCRIPT_DIR}/../lib/discover.sh"
+# shellcheck source=../lib/detect.sh
+. "${SCRIPT_DIR}/../lib/detect.sh"
+# shellcheck source=../lib/adopt.sh
+. "${SCRIPT_DIR}/../lib/adopt.sh"
+# stack.sh defines the capability test maintenance needs. Sourcing only
+# defines functions; no tool is invoked unless something calls it.
+# shellcheck source=../lib/stack.sh
+. "${SCRIPT_DIR}/../lib/stack.sh"
+# shellcheck source=../lib/maintenance.sh
+. "${SCRIPT_DIR}/../lib/maintenance.sh"
+# shellcheck source=../lib/graph.sh
+. "${SCRIPT_DIR}/../lib/graph.sh"
+# shellcheck source=../lib/autonomy.sh
+. "${SCRIPT_DIR}/../lib/autonomy.sh"
+# shellcheck source=../lib/overnight.sh
+. "${SCRIPT_DIR}/../lib/overnight.sh"
+# shellcheck source=../lib/ledger.sh
+. "${SCRIPT_DIR}/../lib/ledger.sh"
+# shellcheck source=../lib/pulse.sh
+. "${SCRIPT_DIR}/../lib/pulse.sh"
+# shellcheck source=../lib/commission.sh
+. "${SCRIPT_DIR}/../lib/commission.sh"
+# shellcheck source=../lib/commission-provider.sh
+. "${SCRIPT_DIR}/../lib/commission-provider.sh"
+
+# JSON-escape via parameter substitution, one C-level pass each.
+#
+# Defined here rather than beside the emit it used to sit next to, because the
+# broken-binding report below runs long before that point and a bash function
+# is only callable after its definition has executed.
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+# The one emit, used by both exits.
+#
+# Claude Code is the default shape. Felix runs both as a plugin and as a plain
+# user-level hook in settings.json, and only the plugin path sets
+# CLAUDE_PLUGIN_ROOT; keying off it would emit the wrong shape for half the
+# installs, which fails silently by injecting nothing.
+#
+# The other two harnesses have no terminal slot in this hook's contract, so
+# $1 is dropped there and the text survives in the context alone. Factored so
+# the broken-binding path cannot drift from the governed one: two copies of a
+# three-way shape test is how one of them quietly stops matching the platform.
+_felix_emit() {
+  local line="$1" body="$2" escaped
+  escaped="$(escape_for_json "$body")"
+  if [ -n "${COPILOT_CLI:-}" ]; then
+    printf '{\n  "additionalContext": "%s"\n}\n' "$escaped"
+  elif [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+    printf '{\n  "additional_context": "%s"\n}\n' "$escaped"
+  else
+    printf '{\n  "systemMessage": "%s",\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' \
+      "$(escape_for_json "$line")" "$escaped"
+  fi
+}
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
+
+# A binding that is present and does not resolve, reported at the one moment
+# that is early enough to be worth knowing.
+#
+# hooks/stop already refuses this, and refusing there alone means a session
+# with a broken binding runs completely unprotected and is told at the very
+# end — after the work. Every hook but that one still reads a non-zero resolve
+# as "ungoverned" and exits 0, and the start of a session is the other moment
+# this project's doctrine allows Felix to speak at all.
+#
+# It reports and does not refuse, and the asymmetry with stop is the point.
+# This hook has no block decision in its contract and cannot strand anybody,
+# so speaking here is free. PreToolUse is the tempting third place and is
+# deliberately not wired: the remedy for a broken binding is editing the marker
+# or running felix install, so a refusal there would refuse its own repair,
+# with no stop_hook_active cap and no FELIX_ALLOW_RED to escape through. See
+# lib/deny.sh on why that hook fails open on everything.
+#
+# Ordered before the bail below, and that ordering is the whole fix: a broken
+# binding presents here as an empty $PROJ, which is exactly what the next line
+# reads as "not governed, say nothing".
+#
+# An ABSENT binding still means ungoverned and still exits silently. That is
+# the half that must not regress — Felix has to stay usable in a repository it
+# does not govern — and it is what "nothing due" and "nothing is being checked"
+# must not render identically means here.
+broken="$(felix_binding_broken "$PWD" "$FELIX_HOME_DIR")"
+if [ -n "$broken" ]; then
+  felix_unresolved_log "$broken" "$PWD"
+  _felix_emit "Felix: binding broken, nothing is being checked" "$broken"
+  exit 0
+fi
+
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+project="$(basename "$PROJ")"
+gate="$(felix_json_str "${PROJ}/project.json" gate)"
+
+if [ -n "$gate" ]; then
+  gate_line="Gate: ${ENGINE_DIR}/felix gate"
+else
+  gate_line="Gate: none declared (set \"gate\" in ${PROJ}/project.json)"
+fi
+
+# Surface capability drift at session start rather than waiting to be asked. The
+# day a project grows a deploy target or error reporting, the gates the guidebook
+# expects become real, and nobody is watching for that moment.
+# Adopt what the checkout has grown, rather than reporting it and waiting.
+# A surface that is detected and left undeclared stays unhandled for exactly as
+# long as nobody reads the message, which on a busy week is indefinitely.
+#
+# Nothing is installed here. The capability is recorded and the rows it implies
+# are appended, so `stack plan` and `setup` begin telling the truth. Installing
+# remains a separate, deliberate act, and high-risk rows are refused by every
+# flag regardless. The plan changes; the machine does not.
+adopted=""
+_repo_root="$(felix_repo_root "$PWD")"
+_slug="$(felix_repo_slug "$_repo_root" 2>/dev/null || true)"
+while IFS= read -r _cap; do
+  [ -n "$_cap" ] || continue
+  if _counts="$(felix_adopt_capability "$PROJ" "$_cap" "${ENGINE_DIR}/templates" "$_slug" 2>/dev/null)"; then
+    adopted="$adopted $_cap(${_counts// /+})"
+  fi
+done <<EOF
+$(felix_undeclared "$_repo_root" "$PROJ" 2>/dev/null)
+EOF
+
+if [ -n "$adopted" ]; then
+  drift_line="
+Adopted automatically, because the checkout grew them:${adopted}
+Each is capability(tooling-rows+human-steps) added to this project's manifests.
+Nothing was installed. Review with 'felix stack plan' and 'felix setup', and
+commit the project directory in Felix to make it durable."
+else
+  drift_line=""
+fi
+
+# Upkeep has no deadline, so it never happens, and then happens as a crisis.
+# One line, only when something is actually due.
+maint_line=""
+if [ -f "$PROJ/maintenance.tsv" ]; then
+  # Counted before the newlines are flattened. The badge below wants HOW MANY
+  # are due, and by the time this is one space-separated line `grep -c .` can
+  # only ever answer 1 — which is the same defect as the one being fixed,
+  # wearing a number instead of a zero.
+  _due_list="$(felix_maint_status "$PROJ" "$_repo_root" 2>/dev/null | grep '^due' | cut -f2)"
+  _due_n="$(printf '%s' "$_due_list" | grep -c . 2>/dev/null)"
+  case "$_due_n" in ''|*[!0-9]*) _due_n=0 ;; esac
+  _due="$(printf '%s' "$_due_list" | tr '\n' ' ')"
+  _due="${_due% }"
+  [ -n "$_due" ] && maint_line="
+Maintenance due: ${_due}
+Do them on one branch. See 'felix maintenance'."
+fi
+
+# The graph, every session, whether or not the prompt happened to say
+# "architecture".
+#
+# The `orient` route already names graphify, and a route fires on the words a
+# prompt uses. Measured before that route existed: built three times, queried
+# once in 72 sessions. The route fixes the case where somebody already knows to
+# ask about structure; it cannot fix the case where a session reads nine files
+# to learn what one query would have said, because nothing in that session ever
+# said the word.
+#
+# So it is stated, not routed. Three facts and no advice: it exists, whether it
+# still describes this tree, and the command. Silent when the project has no
+# graph, which is every project but this one today.
+graph_line=""
+_gl="$(felix_graph_line "$_repo_root" 2>/dev/null)"
+[ -n "$_gl" ] && graph_line="
+${_gl}"
+
+# And the other half of the founder's requirement: that it not rot. `graphify
+# update` re-extracts code files and says of itself that no LLM is needed,
+# which is the only reason it may be called from here — a hook may not call a
+# model. The documents are a different job and stay the maintenance routine's.
+#
+# Only when it is behind, so an ordinary session on a current graph spawns
+# nothing. Locked, backgrounded and best-effort: a refresh that fails leaves
+# the previous graph in place, and graphify replaces graph.json by atomic
+# rename, so a session querying it mid-refresh reads the old file or the new
+# one and never half of either. Checked in the source rather than assumed.
+case "${_gl}" in
+  *"behind this checkout"*) felix_graph_refresh_bg "$_repo_root" 2>/dev/null || true ;;
+esac
+
+# Done, not reported. A duplicate script is not a decision somebody should be
+# handed at the start of their day; it is tidying, and Felix holds the copy that
+# matters. Every check lives in felix_tidy_safe and the project must have opted
+# in, so silence here is the normal case rather than a failure.
+tidy_line=""
+_removed="$(felix_tidy_safe "$PROJ" "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null | tr '\n' ' ')"
+_removed="${_removed% }"
+[ -n "$_removed" ] && tidy_line="
+Removed, as copies Felix already holds: ${_removed}
+Each was backed up to ${FELIX_HOME_DIR}/state/rivals first."
+
+# The one ledger signal worth acting on, surfaced when it crosses the threshold
+# rather than when somebody remembers to ask. Cheap: an awk pass over one file.
+retire_line=""
+_mem="$(felix_mem_dir "$PROJ")"
+if [ -f "$_mem/ledger.tsv" ] || [ -d "$_mem/ledger.d" ]; then
+  # The counts travel with the names. An earlier draft piped this through
+  # `cut -f1`, dropping the session count the filter had just checked, and the
+  # banner supplied "Mounted every session" in its place — a denominator
+  # nothing had tested. The filter admits a row at FELIX_LEDGER_MIN sessions,
+  # five by default, so a row seen in five of eighty-two was being read as a
+  # row seen in all eighty-two.
+  #
+  # "Mounted" is gone for a second reason, and it is the worse one. Nothing
+  # here reads mount state. A row reaches this list when a route named the
+  # capability and nobody reached for it, whether or not stack.tsv ever
+  # declared it — so the sentence asserted a mount the data does not carry.
+  # `felix ledger` has said "pointed at and never reached for" all along; this
+  # is the same claim in the same words, which is the point.
+  _retire="$(felix_ledger_retire "$PROJ" 2>/dev/null)"
+  if [ -n "$_retire" ]; then
+    _total="$(felix_ledger_sessions "$PROJ" 2>/dev/null)"
+    _rl=""
+    while IFS=$'\t' read -r _rn _rs _rnamed; do
+      [ -n "${_rn:-}" ] || continue
+      _rl="${_rl}
+  ${_rn} — pointed at in ${_rs} of ${_total:-?} sessions, named ${_rnamed} times, never reached"
+    done <<EOF
+$_retire
+EOF
+    retire_line="
+Pointed at and never once reached for:${_rl}
+That is the only unconfounded signal here. See 'felix ledger'."
+    # The qualifier hangs off the claim rather than off the session because an
+    # empty list needs no caveat.
+    #
+    # An earlier draft of this comment claimed more: that folding more sessions
+    # "can only ADD reaches, and a reach can only take a capability OFF this
+    # list — so stranded data can never manufacture a row here". That is wrong,
+    # and an audit falsified it the same night it was written. A retire row
+    # needs three things (lib/ledger.sh): calls at zero, named above zero, and
+    # sessions at or above the threshold. Folding raises the last two as well as
+    # the first, so a capability a route named and nobody reached can be carried
+    # ACROSS the threshold by the fold and appear here for the first time. The
+    # claim is hedged, not guaranteed.
+    _stranded="$(felix_ledger_stranded "$PROJ" "$FELIX_HOME_DIR" "$_repo_root" 2>/dev/null)"
+    if [ "${_stranded:-0}" -gt 0 ] 2>/dev/null; then
+      retire_line="$retire_line
+Partial: ${_stranded} session(s) have calls on disk that no fold accounts for,
+so they are not in this count yet. 'felix ledger' folds them and may clear
+rows above."
+    fi
+  fi
+  # A plugin whose zero is a hook nobody can count is not in this line, on
+  # purpose. The line exists to name the one thing worth acting on; an
+  # unmeasurable row proposes nothing, and a report nobody asked for is the
+  # same defect as a decision nobody needed to make. `felix ledger` says it.
+fi
+
+# What the record proposes changing about what is mounted (Decision C step 3,
+# 2026-08-30). A session boundary is the only place a mount decision can land —
+# mounting binds at session start — so it is the one place this may speak, and
+# one line is the whole rendering. The command holds the evidence. Reads only
+# the ledger files and stack.tsv; nothing here waits on a health check.
+#
+# Unseen only, then marked, the way discovery findings are. A proposal shown
+# and left unacted is an answer — a host-provided server nobody should declare
+# would otherwise be proposed at every session start forever, and a signal that
+# repeats becomes wallpaper. The full set stays in 'felix stack reconcile'.
+# A backup that has silently stopped looks exactly like one that ran: every
+# pulse refusal is honest and prints into a log nobody opens. This is the one
+# number that makes the stop observable, on the surface a person reads.
+backup_line=""
+_bage="$(felix_pulse_backup_age "$FELIX_HOME_DIR" 2>/dev/null)"
+if [ "${_bage:-}" = "never" ]; then
+  backup_line="
+The pulse has run and never once got memory off this disk. Whatever it is
+refusing, it is in 'felix pulse' — and until it resolves, every lesson this
+project has paid for exists in one place."
+elif [ -n "${_bage:-}" ] && [ "$_bage" -ge "${FELIX_BACKUP_STALE_DAYS:-3}" ] 2>/dev/null; then
+  backup_line="
+Memory last reached the remote ${_bage} days ago. Every lesson since then lives
+on this disk only. See 'felix pulse' — it says what it refused and why."
+fi
+
+reconcile_line=""
+if [ -f "$_mem/ledger.tsv" ] || [ -d "$_mem/ledger.d" ]; then
+  _recrows="$(felix_stack_reconcile_unseen "$PROJ" "$FELIX_HOME_DIR" 2>/dev/null)"
+  if [ -n "$_recrows" ]; then
+    # This hook cannot fold — the catch-up is several greps per distinct
+    # signal per stranded session, which is why `felix ledger` and
+    # `felix stack reconcile` do it and nothing here does. So the proposals
+    # below may have been computed over part of the record, and the two kinds
+    # are not equally exposed to that.
+    #
+    # A mount and a declare come from a reach: calls above zero, which further
+    # folding can only confirm. An unmount comes from calls at zero, which is
+    # exactly what an unfolded session's reaches would falsify. And this line
+    # marks what it shows as seen, so an unmount shown over a partial ledger
+    # was suppressed permanently — the retire line eleven lines above got a
+    # hedge for this and the reconcile line never did.
+    #
+    # So the zero-backed half is held, not hedged. A held proposal returns on
+    # its own once the ledger is complete; a hedged one shown and marked is
+    # gone whether it was right or not.
+    _recstranded="$(felix_ledger_stranded "$PROJ" "$FELIX_HOME_DIR" "$_repo_root" 2>/dev/null)"
+    _held=0
+    if [ "${_recstranded:-0}" -gt 0 ] 2>/dev/null; then
+      _held="$(printf '%s\n' "$_recrows" | LC_ALL=C awk -F'\t' '$1 == "unmount" { n++ } END { print n+0 }')"
+      _recrows="$(printf '%s\n' "$_recrows" | LC_ALL=C awk -F'\t' '$1 != "unmount"')"
+    fi
+    _rec="$(printf '%s\n' "$_recrows" | LC_ALL=C awk -F'\t' 'NF { print $1 ":" $2 }' | tr '\n' ' ')"
+    _rec="${_rec% }"
+    if [ -n "$_rec" ]; then
+      reconcile_line="
+The record proposes changing what is mounted: ${_rec}
+Evidence in 'felix stack reconcile'. Nothing moves without a person."
+      if [ "${_recstranded:-0}" -gt 0 ] 2>/dev/null; then
+        felix_stack_reconcile_mark_seen "$PROJ" "$FELIX_HOME_DIR" '^(mount|declare)$' 2>/dev/null
+      else
+        felix_stack_reconcile_mark_seen "$PROJ" "$FELIX_HOME_DIR" 2>/dev/null
+      fi
+    fi
+    if [ "${_held:-0}" -gt 0 ] 2>/dev/null; then
+      reconcile_line="$reconcile_line
+Held: ${_held} unmount proposal(s). ${_recstranded} session(s) have calls on disk
+that no fold accounts for, and an unmount is proposed from a zero.
+'felix ledger' folds them, and 'felix stack reconcile' folds and reports."
+    fi
+  fi
+fi
+
+# Named, not merely stored. A governed project's constitution lives in Felix's
+# home rather than the repository, so nothing auto-loads it: inside Felix itself
+# that is masked, because the file happens to sit in the tree being edited, and
+# for every other project it is not masked at all. The same is true of the
+# handoff. Pointing at them is the whole delivery mechanism, so say plainly that
+# they are required rather than leaving a path and hoping.
+read_lines="Read before planning: ${PROJ}/CLAUDE.md"
+[ -f "${_repo_root}/HANDOFF.md" ] && read_lines="${read_lines}
+                   ${_repo_root}/HANDOFF.md"
+[ -f "$_mem/SESSION_HANDOFF.md" ] && read_lines="${read_lines}
+                   ${_mem}/SESSION_HANDOFF.md"
+
+# A night the founder granted is the first thing a session should know, because
+# it changes what this session does with every boundary it meets. Printed in
+# full rather than as a badge: the point of the mode is that the direction
+# arrives without anybody typing it, and a one-line reminder that something is
+# "on" would send the reader looking for what it means.
+#
+# Silence when no night is running, which is the ordinary case.
+overnight_line=""
+if felix_overnight_active "$PROJ"; then
+  _on_left="$(felix_overnight_field "$PROJ" 3)"
+  _on_wait="$(felix_overnight_deferred_count "$PROJ")"
+  overnight_line="
+$(felix_overnight_direction)
+Granted: ${_on_left} continuation(s) left, ${_on_wait} decision(s) already
+deferred for the morning. felix overnight --report reads them back.
+"
+elif [ -f "$(felix_overnight_dir "$PROJ")/active" ]; then
+  overnight_line="
+Overnight is over: $(felix_overnight_expired "$PROJ"). This is an ordinary
+session again. felix overnight --report, then --end to close it out.
+"
+fi
+
+context="Felix governs this session.
+
+Project: ${project}
+Constitution: ${PROJ}/CLAUDE.md
+${gate_line}
+Memory: ${_mem}/
+${overnight_line}${drift_line}${maint_line}${graph_line}${tidy_line}${retire_line}${reconcile_line}${backup_line}
+
+${read_lines}
+
+None of those are loaded for you. They carry standing direction that has
+already been decided, so reading them is how you avoid being told twice.
+
+Run the gate through the command above rather than a repo-relative path, which
+may not exist in the tree you are standing in. Declare your tier before you
+start, and run that tier's gate."
+
+# ------------------------------------------------------------- discovery ----
+# Runs before the emit below, because the emit is followed by `exit 0` and an
+# appended block after that never runs. This one did not, for a whole version.
+_felix_found=""
+if [ -f "$PROJ/routes.tsv" ] && command -v claude >/dev/null 2>&1; then
+  if felix_discover_stale "$PROJ" "$FELIX_HOME_DIR"; then
+    felix_discover_refresh_bg "$PROJ" "$FELIX_HOME_DIR" "${SCRIPT_DIR}/../felix"
+  fi
+  _new="$(felix_discover_unseen "$PROJ" "$FELIX_HOME_DIR" | head -4 | tr '\n' ' ')"
+  if [ -n "$_new" ]; then
+    _felix_found="$_new"
+    context="$context
+
+Worth a look, found since last time and not installed: ${_new}
+felix discover --inspect shows what each one actually ships."
+    felix_discover_mark_seen "$PROJ" "$FELIX_HOME_DIR"
+  fi
+fi
+
+# ------------------------------------------------------- commissioning ----
+# Offline, every time: the record phase over any provider answer file (file
+# reads, no cli, no network), receipt validity from the two hashes, and one
+# paragraph naming what a session still owes — spoken ONCE per topology, so
+# it fires once per addressee and an answer consumes it. Nothing here runs a
+# check, an instrument or an installer; that is felix commission's, and a
+# person's to invoke.
+#
+# Unless a person has said otherwise, in writing, over this exact table. The
+# `commission` grant is the one thing that moves the line quoted above, and it
+# is absent by default: felix_commission_resume_bg returns without doing
+# anything unless projects/<p>/autonomy names it AND the stamp taken when it
+# was granted still matches commissioning.tsv. Two of that table's columns are
+# eval'd, so a grant that outlived the table it was read against would be
+# consent to something nobody read.
+if [ -f "$PROJ/commissioning.tsv" ] && command -v felix_commission_rows >/dev/null 2>&1; then
+  # Detached, and silent when ungranted — which is every project until a person
+  # types the command.
+  command -v felix_commission_resume_bg >/dev/null 2>&1 \
+    && felix_commission_resume_bg "$PROJ" "$FELIX_HOME_DIR" "${SCRIPT_DIR}/../felix" 2>/dev/null
+  _cm_topo="$(felix_commission_topology "$PROJ" "$_repo_root" 2>/dev/null)"
+  _cm_seen="$FELIX_HOME_DIR/state/commission/$(basename "$PROJ").seen"
+  _cm_await=""; _cm_ans=0
+  while IFS=$'\t' read -r _cn _cg _ci _cw _ca _cc _cs; do
+    [ -n "$_cn" ] || continue
+    case "$_ca" in provider:*) ;; *) continue ;; esac
+    _cst="$(felix_commission_provider_state "$PROJ" "$_repo_root" "$_cn" 2>/dev/null | cut -f1)"
+    if [ "$_cst" = "answered" ]; then
+      _k="$(felix_commission_record_provider "$PROJ" "$_repo_root" "$_cn" "$_ca" "$(felix_tree_id "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null)" "$(felix_commission_policy_version "$PROJ" 2>/dev/null)" 2>/dev/null)"
+      _cm_ans=$((_cm_ans + ${_k:-0}))
+    else
+      _cm_await="$_cm_await
+  $_cn ($_cst): $(felix_commission_request_path "$PROJ" "$_cn")"
+    fi
+  done <<EOF
+$(felix_commission_rows "$PROJ" 2>/dev/null)
+EOF
+  _cm_valid="$(felix_commission_receipt_valid "$FELIX_HOME_DIR" "$PROJ" "$_repo_root" 2>/dev/null)" || true
+  # An outstanding request REPEATS; an all-clear is said once per topology.
+  #
+  # Both were deduplicated at first, and the first turn of a fresh session
+  # then heard nothing about six unanswered requests: one session had been
+  # told, that session ended without acting, the topology had not moved, and
+  # the reminder was spent. The addressee of this paragraph is a session, and
+  # sessions are ephemeral — a hold keyed to the topology outlives every
+  # session that could discharge it. So the asymmetry is deliberate: the
+  # obligation is repeated until an answer file exists, which is the one thing
+  # that stops it and is entirely in a session's hands; the informational
+  # line, which nobody has to act on, is still said once. Measured on this
+  # machine, not reasoned: state/commission/felix.seen already held the
+  # current topology while all six requests sat unanswered.
+  if [ -n "$_cm_await" ]; then
+    context="$context
+
+Commissioning: receipt ${_cm_valid:-unknown}. A session still owes these — run the
+skill each request names, write the answer file it names, then felix commission:${_cm_await}"
+  elif [ -n "$_cm_topo" ] && [ -n "$_cm_valid" ] && ! grep -qxF "$_cm_topo" "$_cm_seen" 2>/dev/null; then
+    context="$context
+
+Commissioning: receipt ${_cm_valid}."
+    mkdir -p "$(dirname "$_cm_seen")" 2>/dev/null && printf '%s\n' "$_cm_topo" >> "$_cm_seen" 2>/dev/null
+  fi
+  [ "$_cm_ans" -gt 0 ] && context="$context
+
+Commissioning: ${_cm_ans} provider row(s) recorded from answer files since last time; felix commission --status reads them."
+fi
+
+# One line on the founder's screen. additionalContext reaches the model and
+# never the terminal, which is right for an instruction and useless for knowing
+# the thing is on: Felix ships no skills and no commands, so a session showed
+# nothing anywhere and "I cannot find the plugin" was the correct conclusion.
+# grep -c prints its count and still exits 1 when it matched nothing, so an
+# `|| printf 0` fallback appends a second zero and the test below is handed
+# "0\n0" rather than a number.
+# $_due_n, not ${MAINT:-}. MAINT is assigned nowhere in this engine — one read,
+# no write — so this counted an empty string and the badge never appeared. A
+# founder with overdue maintenance saw the status line of one with none, on the
+# only surface Felix has to tell them (#57, confirmed item 4). The value has
+# been sitting ~95 lines above under a different name since the badge was
+# written.
+_felix_due="${_due_n:-0}"
+case "$_felix_due" in ''|*[!0-9]*) _felix_due=0 ;; esac
+_felix_line="Felix: $(basename "$PROJ")"
+[ "${_felix_due:-0}" -gt 0 ] && _felix_line="$_felix_line · ${_felix_due} due"
+[ -n "$_felix_found" ] && _felix_line="$_felix_line · new tooling found"
+
+_felix_emit "$_felix_line" "$context"
+
+exit 0

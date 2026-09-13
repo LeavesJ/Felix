@@ -1,0 +1,30 @@
+name: gate
+
+# Felix gates itself with its own gate, through its own CLI. If this file ever
+# has to special-case something to make the harness pass, the harness has grown
+# an assumption it does not admit to.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the secret scan diffs against a base, and a shallow clone
+      # has no base to diff against.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run the gate
+        run: ./engine/harness/felix gate

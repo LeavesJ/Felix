@@ -1,0 +1,33 @@
+# What Felix has admitted it owes. The template at
+# engine/harness/templates/obligations.tsv explains the columns.
+#
+# The first admitted obligation, and the founder's sentence made mechanical: an
+# engineering requirement nobody explicitly remembers — every lifecycle moment
+# the stance table says is wired must be bound in the hooks this engine ships —
+# blocks a merge while it fails, and goes dormant, not waived, in a checkout
+# that ships no hooks. The night the marker bypass was found, nothing
+# enumerated this; `felix coverage` reported it and nothing refused on it.
+#
+# The second, and the first with a dormancy that is real rather than a
+# template's: written is not installed. The project gate's `installed` check
+# has compared this tree against the deployed cache since #55 and recorded
+# eleven structural failures in worktrees before anyone subtracted them; the
+# ledger admits the requirement so it cannot leave the gate the way a check
+# can, and says where it does not apply — a CI runner with no plugin cache, a
+# worktree no directory marketplace serves — instead of failing there.
+# TASK_BLOCKING, not RELEASE_BLOCKING: at the merge boundary the tree judged
+# is a branch main has not taken, which never matches the deployment and
+# never could. What is owed is that a session does not end with the tree and
+# the deployment apart, and that is the task moment. Its evidence is not in
+# qualification.tsv: every control runs in a detached worktree, where this
+# row is dormant by construction, so no mutation there can move it — the
+# suite shows it failing on a fixture deployment instead.
+#
+# It grounds on BOTH facts its applicability rests on. `--applies` asks two
+# questions — is anything deployed here, and does the marketplace serve this
+# tree — and the row first named only the first, so the row could flip
+# ACTIVE to DORMANT with nothing in the probe record saying which fact moved.
+#
+# obligation	class	pathway	applies	evidence	grounds	reason
+lifecycle_wired	RELEASE_BLOCKING	deterministic	test -s engine/hooks/hooks.json	engine/harness/bin/lifecycle-check engine/harness/templates engine/hooks/hooks.json	hook_binding	a moment with nothing at it is a completion nobody checks, and a floor that does not run reports nothing
+engine_deployed	TASK_BLOCKING	deterministic	engine/harness/bin/deploy-check --applies	engine/harness/bin/deploy-check	deployed_engine,marketplace_root	written is not installed: an engine change that is not deployed governs nothing, and only the tree the marketplace serves can put that right

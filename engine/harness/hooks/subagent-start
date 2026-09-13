@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# SubagentStart: a subagent begins with nothing, unless something gives it
+# something.
+#
+# The parent session is bound at both ends — doctrine mounted at SessionStart,
+# completion refused at Stop, claims questioned before it finishes. A subagent
+# got none of that. It started blank, did work, and handed back a report.
+#
+# The evidence is how this file came to exist. A subagent was dispatched to
+# design Felix's self-diagnosis, and every invariant it had to respect — bash
+# and git only, a model may narrow and never widen, hooks bind at session
+# start — was typed into its prompt by hand, because Felix had no way to tell
+# it. Whoever forgets to type them gets a design that violates them, and the
+# parent has no way to see that it did.
+#
+# So this mounts the same three things a session gets: which project governs,
+# where the constitution is, and the gate that will judge the work. Not the
+# whole banner. A subagent has one task and a small budget, and everything a
+# session needs at startup is not what a subagent needs to not go wrong.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+body="Felix governs this work. You are a subagent: your report will be believed by
+whoever dispatched you, and they cannot see the tree you leave behind.
+
+Project: $(basename "$PROJ")
+Constitution: ${PROJ}/CLAUDE.md
+Gate: ${ENGINE_DIR}/felix gate
+
+Read the constitution before proposing anything structural. It carries
+invariants that are not negotiable, and a proposal that breaks one is worse
+than no proposal, because it looks like work. If you change files and do not
+run the gate, say so plainly in your report rather than describing the work as
+done."
+
+printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SubagentStart",\n    "additionalContext": "%s"\n  }\n}\n' \
+  "$(printf '%s' "$body" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')"
+exit 0

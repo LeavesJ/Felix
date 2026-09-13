@@ -1,0 +1,29 @@
+# Task routes. What kind of work a prompt is, and what to reach for.
+#
+# Read top-down. Highest score wins and file order breaks ties, so specific
+# routes belong above general ones and the catch-all belongs last.
+#
+# Write keywords in their SHORTEST form. A keyword matches when it appears
+# inside a word you typed, so `hook` matches both "hook" and "hooks" while
+# `hooks` matches neither "hook" nor "hooking". Felix's own table had `hooks`
+# and stayed silent the first time somebody asked about a hook.
+#
+# Scoring: a keyword matches when it appears inside a context token, so `page`
+# matches `pages`. Words you typed count double; words taken from the branch
+# name and the working tree count single. The prompt is what you just said, the
+# tree is only where you happen to be standing.
+#
+# `profile` must name a row in profiles.tsv. `play` is the ordered sequence to
+# reach for, or `-` for none. The order is the point: build with one tool, then
+# critique with the next.
+#
+# Nothing language-specific belongs here. A route that only makes sense for one
+# ecosystem belongs in that project's own routes.tsv, not in everyone's default.
+#
+# name	keywords	profile	play
+incident	production outage pager sev1 alerting rollback hotfix	incident	superpowers:systematic-debugging
+debug	broken failing crash regression traceback stacktrace exception reproduce	core	superpowers:systematic-debugging
+frontend	page component layout styling render view button modal form screen	frontend	frontend-design impeccable playwright
+backend	endpoint handler schema query migration worker queue index	backend	-
+release	release shipping deploy version changelog publish	release	superpowers:verification-before-completion
+build	build implement feature create	core	superpowers:brainstorming superpowers:writing-plans

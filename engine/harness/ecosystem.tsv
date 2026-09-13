@@ -1,0 +1,83 @@
+# Which engine files may name an ecosystem, and why.
+#
+# Constitution invariant 1 is "The engine names no project." The gate enforced
+# that against project NAMES, enumerated from projects/*/project.json, and the
+# other half of the same sentence went unchecked: a detector under
+# engine/harness hard-coded to FastAPI route decorators and an Anthropic client
+# construction site names no project, passes that check, and encodes exactly
+# one project's shape into an engine whose entire claim is that it holds none.
+# That design was drafted for Felix and would have shipped.
+#
+# The words are NOT listed here. They are read off lib/detect.sh - every
+# alternation token inside its own _felix_dep_grep calls - because that is the
+# set of ecosystems the engine actually reasons about, and reading it means
+# teaching the probe a new framework arms the check for it in the same commit.
+# The same reason the project names are enumerated from projects/ rather than
+# grepped as one literal (#85): a hand-kept list of things to check is a list
+# that stops matching what exists.
+#
+# What this therefore does NOT read, said plainly rather than left to be found:
+# lib/detect.sh's OTHER probe shape. _felix_any takes filenames, and its lists
+# hold `terraform`, `helm`, `vercel.json` and `Dockerfile` beside `tests`,
+# `spec`, `migrations` and `app.yaml`. Taking those wholesale would put four
+# words in the vocabulary that appear in ordinary engine prose, so the deploy
+# and iac ecosystems are outside this check today. A helper hard-coded to
+# Terraform passes. That is a known hole and not a solved one; closing it means
+# either splitting _felix_any's lists by shape or adding `word` rows below with
+# the argument for each.
+#
+# What reality cannot supply is a stance, and stances are what this file holds.
+#
+#   allow  <file>  <word|a|b|c|*>  this file may say this, because ...
+#   word   -       <a|b|c>         an ecosystem word the probe never spells
+#   mute   -       <a|b|c>         a probe word that cannot be enforced at all
+#
+# `file` is relative to harness/. `*` means every ecosystem word, and is for the
+# probe itself, where listing them would just be a second copy of the probe.
+#
+# The boundary a row has to argue, and the reason a bare allowlist would be
+# worthless: a capability PROBE may name ecosystems, because naming many of them
+# symmetrically is how it stays neutral - it asks "which of these is this
+# project" and the answer is the project's, not the engine's. A DETECTOR that
+# encodes one stack's syntax may not, because it has already decided which
+# project it is for. Every row below is one or the other, and the ones that are
+# neither are prose, which is allowed only per-word and stays honest because a
+# row that stops matching is reported stale.
+#
+# Matching is word-boundaried. Measured, not chosen for neatness: a substring
+# search flags `cohere` inside "coherent", `vite` inside "invite" and `express`
+# inside "expressed" in the engine's own prose today. It also leaves
+# ANTHROPIC_API_KEY alone, which is right - bin/secret-scan and lib/unattended.sh
+# both name it as a credential, which is what those two files are for.
+#
+# This decides what stops, so it is in FELIX_ESCAPE_TABLES. Deleting one `word`
+# row silently narrows invariant 1 and nothing else would notice.
+#
+# kind	file	token	reason
+
+# ---- the probes. These may name ecosystems; it is what they are for. --------
+allow	lib/detect.sh	*	the capability probe itself. It greps dependency manifests for tokens and reports what it finds, symmetrically across every ecosystem it knows; the answer belongs to the checkout, not to the engine. This is the file the words are read from, so a row per word would only be a second copy of it.
+allow	lib/bootstrap.sh	python|node|rust|npm|pip|cargo	the CI scaffold, which is a stack probe and a per-stack emitter. It must say `setup-node` to a package.json project and `setup-python` to a pyproject.toml one; naming one stack and not the others is what would be wrong here.
+
+# ---- probes of a different shape: paths and capability names ----------------
+allow	lib/escape.sh	alembic|prisma	the durable-path regex. Which directories hold migrations that a revert cannot undo is a fact about ecosystems, and it names several rather than one.
+allow	lib/escape.sh	rust	prose. The comment explaining why the `disclose` channel is named for a state of the world rather than for a language reaches for a Rust project as its example.
+allow	lib/maintenance.sh	rust	the capability list, which mirrors what lib/detect.sh emits. `rust` is the one ecosystem the probe reports as a capability of its own, so it travels one file further than the rest.
+allow	felix	npm|cargo|dotnet|rust	two places. The gate-guess comment lists commands Felix has heard of, deliberately across ecosystems, and the capability blurb answers for `rust` the same way it answers for every other capability name.
+
+# ---- prose. Allowed per word, never per file. -------------------------------
+allow	lib/incident.sh	sentry	a comment naming Sentry as one possible source of the error text this reads on stdin. It parses nothing Sentry-shaped.
+allow	lib/setup.sh	sentry	a comment listing things Felix cannot do for somebody: creating a Sentry project is the example.
+allow	lib/route.sh	playwright	comments about resolving a bare skill name to a qualified one, using an installed plugin as the worked example.
+allow	lib/discover.sh	rust	a comment on what a recommendation pass is least likely to name, with rust-analyzer as the example.
+allow	lib/resolve.sh	python	the opposite of a dependency. This is the comment recording that Felix deliberately requires no python and no jq, which is invariant 2 written down where it binds.
+
+# ---- words the probe reaches through a filename and never spells ------------
+word	-	python|pip|poetry|pipenv|pytest	the Python toolchain. _felix_dep_grep opens pyproject.toml, requirements.txt and Pipfile, and felix_guess_gate emits `python -m pytest -q`, so the engine reasons about it constantly and never once writes the word in a probe alternation. A helper hard-coded to pytest is the case this whole file exists for.
+word	-	node|npm|yarn|pnpm	the Node toolchain, reached the same way through package.json.
+word	-	rust|cargo	Rust. `Cargo.toml` is a probe input and `cargo test` a guessed gate; neither spells either word as a token.
+word	-	dotnet|gradle|maven|composer|bundler|rubygems	the remaining manifests _felix_dep_grep opens - build.gradle, pom.xml, composer.json, Gemfile, *.csproj - whose toolchains it never names.
+
+# ---- probe words that cannot be enforced ------------------------------------
+mute	-	next	a probe token for the Next.js framework and also an ordinary English word, and `felix next` is a command. Enforcing it flags twenty engine files on the first run, so it is dropped here on the record rather than left out of the vocabulary where nobody would see the hole.
+allow	lib/probes.sh	cargo|fastapi|python	prose. The comment on the exit-127 rule reaches for `cargo metadata` witnessed by `cargo --version` as the worked example of two failures with one cause, and the comment on the instrument heuristic uses `python -c "import fastapi"` to show that the outermost command is not always the authority consulted. The code resolves whatever first word a row carries and spells none of these.

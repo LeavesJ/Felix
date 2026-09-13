@@ -1,0 +1,10 @@
+# Human steps, keyed by capability. felix new keeps the ones that apply.
+# {{REPO}} is replaced with the project's GitHub owner/name.
+#
+# id	title	capability	check
+risk-labels	Create the escalation labels the repair loop uses	ci	gh label list --repo {{REPO}} 2>/dev/null | grep -q needs-founder
+github-mcp	Authenticate the GitHub MCP server	ci	claude mcp list 2>/dev/null | grep -E "^plugin:github:github:" | grep -q Connected
+ci-anthropic-key	Add ANTHROPIC_API_KEY so CI can run Claude unattended	ci	gh secret list --repo {{REPO}} 2>/dev/null | grep -q ANTHROPIC_API_KEY
+supabase-auth	Authenticate the Supabase MCP	database	claude mcp list 2>/dev/null | grep -i supabase | grep -q Connected
+sentry	Create a Sentry project and mount its MCP	observability	claude mcp list 2>/dev/null | grep -E "^sentry:" | grep -q Connected
+stripe	Restricted keys behind a billing broker	billing	false

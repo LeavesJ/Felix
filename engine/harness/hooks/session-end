@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# SessionEnd: fold what PostToolUse recorded into the committed ledger.
+#
+# The transcript is never read. That was the mechanism the original design
+# named, and it was wrong twice over: parsing 1.7MB of JSONL in bash is not
+# practical and the invariant forbids reaching for a parser that is, and every
+# fact it wanted already existed at a moment when a hook was running.
+#
+# The rollup writes a zero row for every declared capability this session never
+# reached for. Those rows are the point. "Loaded and used" is confounded because
+# loading is what causes use; "loaded and never once invoked" is not, and it
+# leaves no trace of itself unless something writes it down.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/ledger.sh"  2>/dev/null || exit 0
+
+raw="$(cat 2>/dev/null || true)"
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+session="$(printf '%s' "$raw" \
+  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+[ -n "$session" ] || exit 0
+
+felix_ledger_rollup "$PROJ" "$FELIX_HOME_DIR" "$session" "$(date -u +%Y-%m-%d)"
+exit 0

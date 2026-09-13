@@ -1,0 +1,34 @@
+# What this project has admitted it owes.
+#
+# One row per obligation. Presence here is admission; removing a row escapes
+# to a person, because admitted obligations may not quietly decrease within an
+# epoch. Whether a row APPLIES is recomputed on every run from its `applies`
+# command and never stored, so an obligation goes dormant when the grounded
+# state stops making it applicable, and comes back when it does — nothing here
+# can waive it. Whether it is DISCHARGED is the evidence command's verdict:
+# exit 0 holds, 1 fails, 2 cannot examine. Its output is the coverage report.
+#
+# obligation	class	pathway	applies	evidence	grounds	reason
+#
+# class:    INFO ADVISORY TASK_BLOCKING RELEASE_BLOCKING AUTHORITY_BLOCKING
+# pathway:  deterministic witness corroborated probabilistic unknown
+#           (probabilistic is advisory only and may not carry a blocking class)
+# grounds:  probe predicate(s) from probes.tsv the applicability rests on, or -
+#
+# The first obligation every plugin owes: each lifecycle moment it has taken a
+# stance on is wired the way the stance says, and no moment is wired without a
+# stance. Dormant while the project is not a plugin that ships hooks.
+#
+# `applies` asks for BOTH a plugin manifest and a hooks file at a plugin's
+# conventional path, and it is written that narrowly because the first
+# version asked only for a tracked path ending in `hooks.json`. A web
+# application with `src/config/hooks.json` matched it, so seeding this row at
+# `felix new` handed a stranger an ACTIVE obligation whose evidence is the
+# hold below — exit 2, UNKNOWN, blocking — on the day their project was
+# created. Seeding a ledger is only safe while the seeded row is dormant for
+# everyone it was not written about. The evidence below is
+# a HOLD, not a check: it exits 2, so the day this project ships hooks the row
+# reads UNKNOWN and blocks with what to write, and can never pass by having
+# nothing to examine. Replace it with a checker over this project's own stance
+# table when there is one.
+lifecycle_wired	RELEASE_BLOCKING	deterministic	git ls-files | grep -qE '(^|/)\.claude-plugin/plugin\.json$' && git ls-files | grep -qE '(^|/)hooks/hooks\.json$'	printf 'this project ships hooks and has no stance table; write lifecycle.tsv and name a checker over it here\n'; exit 2	-	a moment with nothing at it is a completion nobody checks, and a floor that does not run reports nothing

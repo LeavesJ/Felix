@@ -1,0 +1,454 @@
+#!/usr/bin/env bash
+# Stop hook: refuse to let a session end on work nothing has verified.
+#
+# This is the guidebook's central rule, and until now Felix stated it without
+# enforcing it. Two events were wired, SessionStart and UserPromptSubmit, and
+# both only inject text. Between an agent writing code and an agent saying it is
+# done, there was nothing.
+#
+# The decision is made on the state of the tree, never on what the agent said.
+# The payload carries last_assistant_message, and matching "done" or "tests pass"
+# against it was considered and rejected: it fails in the worst direction. "that
+# should do it" would slip through while an honest "complete, though I have not
+# run anything" would be blocked. Tree state has no such failure mode.
+#
+# Honest about its reach. The platform documents that a Stop hook must return
+# success while stop_hook_active is set, and caps consecutive blocks itself, so
+# this interrupts once per chain. It is a speed bump with a permanent record,
+# not an inescapable barrier. The inescapable barrier is CI at the merge
+# boundary, which Felix already sets up and which is not affected by this.
+#
+# Everything unexpected allows and records. A completion gate that can strand a
+# session gets removed, and a removed gate enforces nothing.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh"
+. "${SCRIPT_DIR}/../lib/verify.sh"
+. "${SCRIPT_DIR}/../lib/route.sh"
+. "${SCRIPT_DIR}/../lib/ready.sh"
+. "${SCRIPT_DIR}/../lib/guard.sh"
+. "${SCRIPT_DIR}/../lib/say.sh"
+. "${SCRIPT_DIR}/../lib/detect.sh"
+. "${SCRIPT_DIR}/../lib/maintenance.sh"
+. "${SCRIPT_DIR}/../lib/overnight.sh"
+
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+# The payload is read before any decision now, because the refusal below is a
+# block like every other one here. The platform documents that a Stop hook must
+# return success while stop_hook_active is set, and deciding to block before
+# consulting that flag is how a hook loops.
+#
+# Tokenised whole rather than parsed, for the same reason the prompt hook does
+# it: a hand-rolled JSON reader breaks on the first payload containing a quote,
+# and the failure mode is a hook that silently stops enforcing anything.
+raw="$(cat 2>/dev/null || true)"
+SID="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+# The flag is read as a FIELD, not as two substrings in order. The payload
+# carries the model's last message, and a glob for `"stop_hook_active"` then
+# `true` anywhere after it was satisfied by a message containing the word —
+# a session whose final sentence was "that is true" was exempt from its own
+# gate. Anchored on the structural comma or brace before the key, which an
+# occurrence inside a JSON string cannot have: a quote inside a string is
+# spelt \" there, and the character before it is a backslash.
+_active="$(printf '%s' "$raw" \
+  | sed -n 's/.*[{,][[:space:]]*"stop_hook_active"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' \
+  | head -1)"
+[ "${_active:-}" = "true" ] && exit 0
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
+
+# The one place this file does not fail open, and it is deliberate.
+#
+# Everything else here allows and records, because a completion gate that can
+# strand a session gets removed and a removed gate enforces nothing. That rule
+# is about the unexpected. This is not unexpected: a marker naming a project
+# that does not exist, or a home pointer naming something that is not a home,
+# is somebody's edit, and until now it ended the session here with exit 0 —
+# `echo nonexistent > .felix` bought no gate, no hold and no record, in one
+# line, from inside the repository.
+#
+# An ABSENT binding still means ungoverned and still exits 0 below. What
+# separates the two is the whole fix: "nothing due" and "nothing is being
+# checked" must not render identically.
+broken="$(felix_binding_broken "$PWD" "$FELIX_HOME_DIR")"
+if [ -n "$broken" ]; then
+  felix_unresolved_log "$broken" "$PWD"
+  printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$broken")"
+  exit 0
+fi
+
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+# A project that declares no gate has nothing to enforce. Inventing an
+# obligation for it would make Felix unusable on a repo part-way through
+# onboarding, which is exactly when it is most wanted.
+GATE="$(felix_json_str "$PROJ/project.json" gate 2>/dev/null)"
+[ -n "$GATE" ] || exit 0
+
+ROOT="$(felix_repo_root "$PWD")"
+git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+# A clean tree used to end the hook here, which meant committing your work
+# skipped the completion check entirely — and committing is what you do at the
+# end. "Dirty" was standing in for "this session changed something", and the two
+# come apart the moment anybody commits.
+#
+# So a clean tree is only silence when this session also committed nothing.
+# Unknown counts as unchanged: no session id, no mark, no git — the hook keeps
+# its old behaviour rather than starting to block trees it knows nothing about.
+if ! felix_tree_dirty "$ROOT" "$FELIX_HOME_DIR"; then
+  felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT" || exit 0
+fi
+
+TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR")" || TID=""
+if [ -z "$TID" ]; then
+  felix_verify_log "$PROJ" "allowed" "" "tree identity unavailable"
+  exit 0
+fi
+
+# The override is the founder's, not the model's. It is read from the
+# environment the session was launched with, and an export inside a Bash tool
+# call reaches that subprocess, not the already-running parent this hook
+# inherits from. An override the model can reach for is not an override.
+if [ "${FELIX_ALLOW_RED:-}" = "1" ]; then
+  felix_verify_log "$PROJ" "override" "$TID" "FELIX_ALLOW_RED"
+  exit 0
+fi
+
+# What the active route asked for and this session never used. Needs the route
+# recorded by the prompt hook and the transcript this payload names; without
+# either it says nothing rather than guessing.
+_felix_stop_skipped() {
+  local sid state routename play tp
+  [ -f "$PROJ/routes.tsv" ] || return 0
+  sid="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$sid" ] || return 0
+  state="$FELIX_HOME_DIR/state/route/$sid"
+  [ -f "$state" ] || return 0
+  routename="$(cut -d: -f1 < "$state" 2>/dev/null)"
+  [ -n "$routename" ] || return 0
+  # A route read off the working tree is Felix's guess, not anybody's
+  # instruction, so a play it named going unused is evidence of nothing. This
+  # complaint used to fire either way and cost a paragraph of explanation each
+  # time, which is how a signal teaches people to skim it — and the case worth
+  # reading is the other one, where a session was told to reach for something on
+  # the strength of what it actually typed and did not.
+  #
+  # An empty third field is a state file written before provenance existed, and
+  # it complains, which is what it did before. Hooks bind at session start, so
+  # the writer and the reader are always the same version and that case is only
+  # ever a stale file from a dead session.
+  felix_route_state_guessed "$state" && return 0
+  play="$(_felix_route_rows "$PROJ" | awk -F'\t' -v r="$routename" '$1==r{print $4}')"
+  [ -n "$play" ] && [ "$play" != "-" ] || return 0
+  tp="$(printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$tp" ] && [ -f "$tp" ] || return 0
+  felix_route_skipped "$tp" "$play"
+}
+
+# A hook belonging to another plugin that refused tool calls this session.
+_felix_stop_blocks() {
+  local tp rows n hook msg who
+  tp="$(printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$tp" ] && [ -f "$tp" ] || return 0
+  rows="$(felix_guard_blocks "$tp")"
+  [ -n "$rows" ] || return 0
+  # Felix's own refusals are skipped rather than taken as the top row, because a
+  # session that hit both would otherwise report Felix and hide the plugin that
+  # is actually broken. The rows arrive sorted by count, so the first survivor
+  # is still the loudest one that is somebody else's.
+  n=""; hook=""; msg=""
+  while IFS=$'\t' read -r c h m; do
+    [ -n "${m:-}" ] || continue
+    felix_guard_is_own "$m" && continue
+    n="$c"; hook="$h"; msg="$m"; break
+  done <<EOF
+$rows
+EOF
+  [ -n "$msg" ] || return 0
+  who="$(felix_guard_culprit "$msg")"
+  printf 'Something blocked %s tool call(s) this session, and it was not Felix.\n\n' "$n"
+  printf '  hook     %s\n  says     %s\n' "$hook" "$msg"
+  [ -n "$who" ] && printf '  from     the %s plugin\n' "$who"
+  printf '\nA plugin that ships hooks is a dependency on that plugin working, and\n'
+  printf 'when one fails the error lands on the tool rather than on the plugin, so\n'
+  printf 'it reads as the editor being broken. Tell the founder plainly.\n'
+  # Never Felix, whatever the resolver said. The remedy for a report is not
+  # switching off the thing that reports.
+  [ -n "$who" ] && [ "$who" != "felix" ] && \
+    printf '\nThe way out, which takes effect in the NEXT session and not this one:\n\n  felix quarantine %s\n' "$who"
+}
+
+receipt="$(felix_verify_receipt "$ROOT" "$FELIX_HOME_DIR")"
+r_tid="$(printf '%s' "$receipt" | cut -f1)"
+r_res="$(printf '%s' "$receipt" | cut -f2)"
+r_when="$(printf '%s' "$receipt" | cut -f3)"
+
+if [ -n "$receipt" ] && [ "$r_tid" = "$TID" ] && [ "$r_res" = "green" ]; then
+  felix_verify_log "$PROJ" "allowed" "$TID" "green"
+
+  # A night that was granted is a reason not to close on a green gate.
+  #
+  # This is the only branch in this file that holds a session whose work IS
+  # verified, and it is deliberately the narrowest: it fires only while a
+  # person's grant is live and inside its own bounds, it spends one of the
+  # continuations that grant allowed, and it ends the night itself the moment a
+  # bound is reached. It cannot loop — the platform sets stop_hook_active on a
+  # block and caps consecutive blocks, which is the same ceiling the gate's own
+  # refusal has always had.
+  #
+  # What it says is what the machine can actually see: maintenance rows that
+  # are due, and decisions already deferred. It does not invent work. When two
+  # continuations in a row find neither, the night ends rather than nag, and the
+  # report is the last thing the session is handed.
+  # The condition is "a night exists", not "a night is live", and the
+  # difference is a branch that could never run. `felix_overnight_active` is
+  # false precisely when a bound has been reached, so an expired night entered
+  # through `active` could only ever be one that expired DURING this stop — a
+  # deadline that passed while the session sat idle would skip the branch
+  # entirely, leave the state file behind, and close without ever handing over
+  # the report. A fixture whose deadline was in the past is what found it.
+  if [ -f "$(felix_overnight_dir "$PROJ")/active" ]; then
+    if _on_over="$(felix_overnight_expired "$PROJ")"; then
+      felix_overnight_end "$PROJ" "$_on_over"
+      _on_body="Overnight is over: ${_on_over}.
+
+$(felix_overnight_report "$PROJ")"
+      felix_say "$PROJ" "overnight-end" "$_on_body" "" "${SID:-}"
+      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+        "$(escape_for_json "$_on_body")"
+      exit 0
+    fi
+
+    _on_due="$(felix_maint_status "$PROJ" "$ROOT" 2>/dev/null | awk -F'\t' '$1 == "due" { printf "%s%s", sep, $2; sep = ", " }')"
+    _on_waiting="$(felix_overnight_deferred_count "$PROJ")"
+    _on_quiet=0; [ -z "$_on_due" ] && _on_quiet=1
+    _on_left="$(felix_overnight_spend "$PROJ" "$_on_quiet")"
+    # One line per continuation, so the morning report can show the shape of
+    # the night rather than only its ending. Counting events was all the report
+    # had, and a count cannot say whether the night spent itself on one stuck
+    # thing or moved through several.
+    felix_overnight_log_event "$PROJ" continue \
+      "left ${_on_left}; due ${_on_due:-none}; deferred ${_on_waiting}"
+
+    # The branch holds the session, so it must also carry what the branches
+    # below it would have said. Written the other way round first, and it cost
+    # the founder's own instruction: a night swallowed the verification nudge
+    # and the skipped-play question entirely, because a blocking branch that
+    # exits first is a branch that silences every message after it. Each is
+    # still once per session, using the same markers those branches use.
+    _on_extra=""
+    _on_blocks="$(_felix_stop_blocks)"
+    [ -n "$_on_blocks" ] && _on_extra="${_on_extra}
+
+${_on_blocks}"
+    _on_unrec="$(felix_guard_unrecorded "$PROJ")"
+    [ -n "$_on_unrec" ] && _on_extra="${_on_extra}
+
+${_on_unrec}"
+    if [ -n "${SID:-}" ] \
+       && grep -qE "	superpowers(@[^	]*)?	" "$PROJ/stack.tsv" 2>/dev/null \
+       && [ ! -f "$FELIX_HOME_DIR/state/verified/$SID" ]; then
+      mkdir -p "$FELIX_HOME_DIR/state/verified" 2>/dev/null \
+        && : > "$FELIX_HOME_DIR/state/verified/$SID" 2>/dev/null
+      _on_extra="${_on_extra}
+
+The gate is green, which means the suite passed. It does not mean the things
+you said are true. Use superpowers:verification-before-completion on this
+piece before you take the next one: check the claims, not the tests."
+    fi
+
+    # Spending can be what exhausts the grant, so the same question is asked
+    # again on the way out.
+    if _on_over="$(felix_overnight_expired "$PROJ")"; then
+      felix_overnight_end "$PROJ" "$_on_over"
+      _on_body="Overnight is over: ${_on_over}.
+
+$(felix_overnight_report "$PROJ")"
+      felix_say "$PROJ" "overnight-end" "$_on_body" "" "${SID:-}"
+      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+        "$(escape_for_json "$_on_body")"
+      exit 0
+    fi
+
+    _on_body="Overnight is on, the gate is green, and ${_on_left} continuation(s) remain.
+Do not stop to report — take the next piece of work.
+
+What this hook can see from here:"
+    [ -n "$_on_due" ] && _on_body="${_on_body}
+  * maintenance due: ${_on_due}"
+    [ "${_on_waiting:-0}" -gt 0 ] && _on_body="${_on_body}
+  * ${_on_waiting} decision(s) already deferred, which stay deferred until morning"
+    [ -z "$_on_due" ] && _on_body="${_on_body}
+  * nothing mechanical is due. Two continuations in a row with nothing due end
+    the night by themselves."
+    # Pointed at rather than run. felix next ranks the backlog by reading gate
+    # history, the ledger and the tables, which is a second or two of work —
+    # affordable when a person asks for it and not in a hook that fires at
+    # every stop of every session.
+    _on_body="${_on_body}
+  * felix next ranks what is left, and HANDOFF's own Next list is the queue
+    this hook cannot see."
+    _on_body="${_on_body}
+
+Anything that needs the founder gets written down rather than waited on:
+
+  felix overnight --defer approval --what \"...\" --unblock \"the command\"
+
+felix overnight --end stops the night now.${_on_extra}"
+    felix_say "$PROJ" "overnight" "$_on_body" "" "${SID:-}"
+    printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$_on_body")"
+    exit 0
+  fi
+  # The gate is satisfied, so nothing is held. But this is the one moment where
+  # "you changed the results page and never opened a browser" is a fact about
+  # the work rather than a rule quoted at turn one, so it is worth saying.
+  # additionalContext is non-error feedback: the conversation continues.
+  # Somebody else's plugin refusing your edits looks like the editor being
+  # broken, because the error lands on the tool rather than on the plugin that
+  # caused it. This is the moment the count is already known.
+  blocks="$(_felix_stop_blocks)"
+  if [ -n "$blocks" ]; then
+    felix_say "$PROJ" "plugin-blocked" "$blocks" "" "${SID:-}"
+    printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+      "$(escape_for_json "$blocks")"
+    exit 0
+  fi
+
+  # One message per stop, most urgent first. Something actively blocking the
+  # session outranks a step that was skipped, which outranks a debt.
+  unrecorded="$(felix_guard_unrecorded "$PROJ")"
+
+  skipped="$(_felix_stop_skipped)"
+  if [ -z "$skipped" ] && [ -n "$unrecorded" ]; then
+    felix_say "$PROJ" "unrecorded" "$unrecorded" "" "${SID:-}"
+    printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+      "$(escape_for_json "$unrecorded")"
+    exit 0
+  fi
+  if [ -n "$skipped" ]; then
+    # Three defects lived in this block and each got its own fix (#98).
+    #
+    # The sentence misnamed the play: both interpolations were ${skipped}, so a
+    # partly-followed three-step play was reported as though the route had only
+    # ever asked for the one step that was missed — and the message asks the
+    # reader to judge whether the skip was right, which is the judgement it had
+    # just removed the context for. The first slot now names the play.
+    #
+    # There was no way to answer it: it asked for a sentence and nothing could
+    # receive one, so it fired identically at every close and got read as
+    # furniture. `felix route --ack` is the answer channel; a recorded decline
+    # consumes here, once, and lands the reason in decisions.log.
+    #
+    # And it repeated every stop. Once per session now, same state pattern as
+    # the verification nudge below — the second raise of an unanswered question
+    # adds pressure, not information.
+    playline=""
+    if [ -f "$FELIX_HOME_DIR/state/route/${SID:-}" ]; then
+      routename="$(cut -d: -f1 < "$FELIX_HOME_DIR/state/route/${SID:-}" 2>/dev/null)"
+      playline="$(_felix_route_rows "$PROJ" | awk -F'\t' -v r="$routename" '$1==r{print $4}')"
+    fi
+    if felix_route_ack_consume "$ROOT" "$FELIX_HOME_DIR"; then
+      felix_verify_log "$PROJ" "allowed" "$TID" "play declined on the record"
+      exit 0
+    fi
+    sstate="$FELIX_HOME_DIR/state/skipped/${SID:-none}"
+    if [ -n "${SID:-}" ] && [ ! -f "$sstate" ]; then
+      mkdir -p "$(dirname "$sstate")" 2>/dev/null && : > "$sstate" 2>/dev/null
+      body="Before you call this finished: this session routed to work whose play is
+${playline:-$skipped}, and the transcript shows ${skipped} was never used.
+
+That may be right. Decline it on the record —
+
+  felix route --ack \"why it does not fit\"
+
+— or use it. A recorded decline tunes the table; this message will not repeat
+this session either way."
+      felix_say "$PROJ" "skipped" "$body" "" "${SID:-}"
+      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+        "$(escape_for_json "$body")"
+    fi
+    exit 0
+  fi
+
+  # A green gate proves the suite passed. It proves nothing about the claims
+  # made on the way there, and those are what go wrong: work reported as fixed
+  # that reached no session, a tool reported as removed that was still
+  # installed, a document describing a capability the thing had already
+  # outgrown. Every one of those passed a gate.
+  #
+  # So the last word before a session ends is the verification skill, once, and
+  # only when the gate is green — a red gate is already the more urgent message
+  # and has said so above. This is the end of the session, which the doctrine
+  # says is one of the two moments Felix is allowed to speak.
+  # Declared, not routed. Requiring a route to name it would mean it never
+  # fires for a project whose table happens not to mention it — including
+  # Felix's own, which is exactly the session this was missing from.
+  if [ -n "${SID:-}" ] \
+     && grep -qE "	superpowers(@[^	]*)?	" "$PROJ/stack.tsv" 2>/dev/null; then
+    vstate="$FELIX_HOME_DIR/state/verified/$SID"
+    if [ ! -f "$vstate" ]; then
+      mkdir -p "$(dirname "$vstate")" 2>/dev/null && : > "$vstate" 2>/dev/null
+      # What the gate actually checked, not what green is assumed to mean.
+      # `felix gate --quick` skips the suite and still exits 0, and this
+      # sentence said "the suite passed" over it. The receipt's fifth field
+      # names what the gate reported skipping; `-` means it reported none,
+      # which is not the same as none having been skipped.
+      _skips="$(printf '%s' "$receipt" | cut -f5)"
+      if [ -n "$_skips" ] && [ "$_skips" != "-" ]; then
+        _green_line="The gate is green, but it skipped: ${_skips}. Green here does not
+mean those ran."
+      else
+        _green_line="The gate is green, which means the suite passed."
+      fi
+      body="${_green_line} It does not mean
+the things you said are true.
+
+Use superpowers:verification-before-completion before calling this done. Check
+the claims, not the tests: that what you reported as fixed is fixed where it
+runs, that what you reported as removed is gone, and that anything you wrote
+down describes what the code does now."
+      felix_say "$PROJ" "verify" "$body" "" "$SID"
+      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+        "$(escape_for_json "$body")"
+    fi
+  fi
+  exit 0
+fi
+
+if [ -z "$receipt" ]; then
+  why="The gate has never run in this checkout."
+  detail="never verified"
+elif [ "$r_tid" = "$TID" ]; then
+  why="The gate failed on this exact tree, at $r_when."
+  detail="failed"
+else
+  why="The gate last ran at $r_when, on a different tree. It has not seen this work."
+  detail="stale receipt"
+fi
+
+felix_verify_log "$PROJ" "blocked" "$TID" "$detail"
+
+reason="$why
+
+Do not describe this work as complete until it has passed.
+
+  felix gate
+
+If you have already decided to stop with a red gate, that is the founder's call
+to make, not yours: they can set FELIX_ALLOW_RED=1 in the environment they
+launch a session from."
+
+felix_say "$PROJ" "held" "$reason" "" "${SID:-}"
+printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$reason")"
+exit 0

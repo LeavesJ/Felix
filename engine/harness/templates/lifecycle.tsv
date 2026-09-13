@@ -1,0 +1,38 @@
+# Every moment Claude Code offers a harness, and Felix's stance on each.
+#
+# This file exists because two coverage gaps were found by a person noticing.
+# The Stop hook checked the gate and never asked anyone to verify their claims;
+# SubagentStop was not wired at all, so a subagent could finish, report success,
+# and be believed. Both are the same defect — a completion moment with nothing
+# at it — and neither was findable by reading the code, because absence has no
+# line number.
+#
+# A stance is required for every event. `wired` must be backed by an entry in
+# hooks.json, and `declined` must carry a reason someone can argue with. An
+# event with neither is the gap, and `felix coverage` fails on it.
+#
+# `holds` is what keeps a decline honest. `wired` is re-checked against reality
+# every run; `declined` never was, so a reason could stop being true and no
+# check could tell. The column names a literal that must still appear in
+# hooks.json for the reason to stand — PreCompact is declined *because* the
+# SessionStart matcher says `compact`, so narrowing that matcher turns this row
+# red instead of leaving a stale excuse in place. `-` means the reason rests on
+# judgement rather than on anything readable; that is allowed and counted, not
+# failed, because forcing a literal out of every row would only invent fake ones.
+#
+# The point is not the current answers. It is that a new event added by the
+# platform, or a hook quietly removed, cannot sit here unnoticed.
+#
+# event	stance	reason	holds
+SessionStart	wired	bind the session, mount doctrine, tidy, report what is due
+UserPromptSubmit	wired	route the work, name the tool due next, mount matching lessons
+PreToolUse	wired	refuse what this project has forbidden, on the shell and on the files a session reaches for
+PostToolUse	wired	record what was reached for, so what is never used can be found
+Stop	wired	refuse completion on an unverified tree, then ask for verification of the claims
+SubagentStop	wired	a subagent finishing is a completion moment too, and the parent inherits its report
+SessionEnd	wired	roll the session's tool calls into the ledger, with zeroes for what went untouched
+PreCompact	declined	SessionStart matches on compact, so doctrine is re-mounted afterwards; nothing needs saving before	compact
+Notification	declined	fires when Claude wants attention. Felix has nothing to add, and speaking here would break stealth in the middle	-
+SubagentStart	wired	a subagent starts blank; give it the project, the constitution and the gate that will judge it
+PostToolBatch	declined	PostToolUse already records every call the ledger needs, and recording the same work twice would double every count	"PostToolUse"
+PostToolUseFailure	declined	a tool that failed has already reported so to the session, and Felix would add nothing by repeating it. Bound here by another plugin the day it was installed; whether the ledger undercounts reaches that failed is the open question, and that decides whether this becomes wired	-

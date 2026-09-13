@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# PreToolUse: the one hook that decides rather than describes.
+#
+# Exit 2 blocks the call and hands stderr to the model. Exit 0 allows. That
+# contract was read off two working implementations installed on this machine
+# rather than assumed, because a hook that guesses it wrong allows everything
+# and looks exactly like a hook that is working.
+#
+# Everything here fails open. There is no path through this file that blocks
+# because something went wrong; it blocks only when a row in the project's own
+# deny.tsv matched the thing the tool was about to act on. A harness that denies
+# by accident gets switched off, and then it enforces nothing at all.
+#
+# Bound for more than Bash since the ledger showed where sessions actually spend
+# their calls. What stops a bad rule reaching Edit is felix_deny_overbroad, not
+# the matcher; see lib/deny.sh for why that swap was the point.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/deny.sh"    2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/say.sh"     2>/dev/null || true
+
+raw="$(cat 2>/dev/null || true)"
+[ -n "$raw" ] || exit 0
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+[ -f "$PROJ/deny.tsv" ] || exit 0
+
+# The tool name, read the same conservative way as the command: escaped quotes
+# are neutralised first so a payload cannot run a match past its own string.
+# Extracted with parameter expansion, not a pipeline. This hook is synchronous
+# on every tool call, so a subprocess here is a tax on the whole session: the
+# old `printf | sed | sed | head` cost about 21ms of the 49ms floor, purely in
+# process spawns, for a substring any shell can find on its own.
+tool=""
+case "$raw" in
+  *'"tool_name"'*)
+    tool="${raw#*\"tool_name\"}"      # everything after the key
+    tool="${tool#*\"}"                # past the colon, to the opening quote
+    tool="${tool%%\"*}"               # up to the closing quote
+    ;;
+esac
+[ -n "$tool" ] || exit 0
+
+# Does any row even name this tool? One grep on a small table, before anything
+# expensive happens.
+#
+# This hook is synchronous and runs on every Bash, Edit, Write, Read,
+# NotebookEdit and WebFetch call, so its cost is the session's cost. Measured at
+# 105ms per Bash call before this line existed — roughly 40 seconds across a
+# working session — because it extracted the subject with four subprocesses and
+# ran the over-broad probe against every rule before discovering that no rule
+# applied. A project whose deny.tsv holds only Bash rows was paying that on
+# every file read.
+#
+# Cheap and conservative: a false positive here costs the old path, and the
+# match is anchored so `Bash` cannot be satisfied by a row for `BashOutput`.
+_names_tool=0
+while IFS=$'\t' read -r _t _rest; do
+  [ "$_t" = "$tool" ] && { _names_tool=1; break; }
+done < "$PROJ/deny.tsv"
+[ "$_names_tool" -eq 1 ] || exit 0
+
+cmd="$(felix_deny_subject "$raw" "$tool")"
+[ -n "$cmd" ] || exit 0
+
+reason="$(felix_deny_match "$PROJ" "$tool" "$cmd")" || exit 0
+[ -n "$reason" ] || exit 0
+
+# Said out loud as well as refused. A refusal with no record is indistinguishable
+# from a tool that is broken, which is the whole complaint guard.sh exists to
+# make about other people's plugins.
+sid="$(printf '%s' "$raw" \
+  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+felix_say "$PROJ" "denied" "$cmd
+$reason" "" "${sid:-}" 2>/dev/null || true
+
+printf 'Felix refused this command.\n\n  %s\n\n%s\n\n' "$cmd" "$reason" >&2
+printf 'This is a rule in %s/deny.tsv, which this project owns.\n' "$PROJ" >&2
+printf 'If the rule is wrong, change the row rather than working around it.\n' >&2
+exit 2

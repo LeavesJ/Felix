@@ -1,0 +1,62 @@
+# What this project asks reality, seeded by felix new.
+#
+# Felix may declare which question to ask. Felix may never author the answer.
+# Each row names a predicate and the command that enumerates its members; the
+# members come back from the command, and nothing in the engine can add one.
+#
+# predicate	grounds	when	probe	witness
+#
+#   predicate  what is being established. A noun, not a verdict.
+#   grounds    the capability this supplies ground truth for, or `-`. This is
+#              what lets `felix probes` report a surface the checkout has and
+#              nothing reads.
+#   when       a command deciding whether this row applies here. Non-zero means
+#              not-applicable, which is silent and claims nothing. `-` = always.
+#   probe      the enumerating command. One member per line on stdout.
+#   witness    an INDEPENDENT command that exits 0 when the surface exists.
+#
+# The witness is the only thing that separates "there is nothing here" from "I
+# cannot see", so a row without one can never report `empty` and always blocks
+# as `unknown`. That is deliberate and it is the point of the whole table: on
+# five occasions a check reported clean because it found nothing, and the last
+# of them printed "All gates passed" while naming four unlimited services.
+#
+# Make the witness genuinely independent. A witness that re-runs the probe
+# agrees with it by construction, which buys nothing — the same defect as a
+# fixture that builds only the shapes the rule already names.
+#
+# And make sure its EXIT STATUS answers the question. The seeded `test_file`
+# witness here first read `ls -d test tests spec __tests__ 2>/dev/null | head -1`,
+# whose status is head's — zero, whatever ls found. It said "this surface
+# exists" about every repository on earth, so a project with no tests was born
+# `blind` rather than `empty`. That is this table's own failure class inside its
+# own template: a verdict taken from the last stage of a pipeline instead of
+# from the question. End a witness in `grep -q .`, not in `head`.
+#
+# And make sure it proves the SURFACE, not its container. The seeded
+# `tracked_file` witness was `test -e .git`, which proves a repository exists
+# and nothing about whether it tracks a file — so a project created on a fresh
+# `git init` with no commit read `blind` and its first gate went red. The last
+# commit's tree (`git ls-tree -r HEAD`) is what proves files are tracked, and
+# it is independent of the index the probe reads.
+#
+# START THE PROBE WITH A BARE COMMAND NAME WHERE YOU CAN. The instrument that
+# answered is derived from the first word — `git ls-files` records git and a
+# token that changes when git is replaced, so a count that moves because the
+# tool moved can be told apart from one that moves because the tree did. A probe
+# beginning with an assignment, a variable or a subshell records no instrument,
+# which is honest and is also less than you could have had. `felix probes` says
+# how many rows are in that state.
+#
+# It is only ever the OUTERMOST command, so `python -c "import x; ..."` records
+# python and not x. Where that matters, the report saying "identifies no
+# instrument" is more useful than a name that tracks the wrong thing.
+#
+# Rows run in the checkout being examined, as shell. They are founder-authored
+# and live in an enforcing table: shrinking this file escapes to a person.
+#
+# Seeded rows below read what git and the filesystem already know, so no row
+# here is a new idea. Delete what does not apply and add what does.
+tracked_file	-	-	git ls-files	git ls-tree -r HEAD --name-only 2>/dev/null | grep -q .
+test_file	tests	test -e .git	git ls-files 'test*' 'tests/*' 'spec/*' '*_test.*' '*test_*'	ls -d test tests spec __tests__ 2>/dev/null | grep -q .
+ci_workflow	ci	test -e .git	git ls-files '.github/workflows/*' '.gitlab-ci.yml' 'azure-pipelines.yml'	test -d .github/workflows

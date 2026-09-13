@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# SubagentStop: the other completion moment.
+#
+# The parent session is gated — its Stop hook refuses to let it call work
+# finished on a tree nothing verified. A subagent is not. It finishes, reports
+# back, and the parent integrates the report; if the report says "done, tests
+# pass" and nothing ran, the parent has no way to know and every later claim
+# inherits it.
+#
+# Found the same way the Stop-hook gap was found: by sweeping the lifecycle
+# rather than by noticing. It is the identical defect one level down, and it
+# matters more now that Felix decides when work fans out, because deciding to
+# fan out is deciding to create these moments.
+#
+# Non-blocking on purpose. A subagent may legitimately have changed nothing — a
+# reader, a reviewer, a search — and blocking those would make fan-out
+# expensive enough that people stop doing it, which is a worse outcome than an
+# unverified report. What this does instead is make an unverified hand-off
+# declare itself at the moment it is handed over, while the parent can still
+# act on it. The parent's own Stop hook remains the thing that actually refuses.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/verify.sh"  2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/say.sh"     2>/dev/null || true
+
+raw="$(cat 2>/dev/null || true)"
+
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+[ -n "$PROJ" ] || exit 0
+
+ROOT="$(felix_repo_root "$PWD" 2>/dev/null)"
+git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+SID="$(printf '%s' "$raw" \
+  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+# Nothing changed in this checkout: there is no claim to qualify, so say
+# nothing. This is the common case for a reader or a reviewer.
+#
+# Asked with the same two helpers `stop` uses, because this was a raw
+# `git status --porcelain` and that is wrong in BOTH directions (#83).
+#
+# It under-fired: a subagent that COMMITS its work leaves a clean tree, and
+# committing is what you do at the end — so the whole check was skipped exactly
+# when it mattered. stop diagnosed and fixed that for itself and the fix was
+# never carried across; felix_session_committed is what makes "this session
+# changed something" answerable separately from "the tree is dirty now".
+#
+# And it over-fired: raw status counts Felix's own bookkeeping, which
+# felix_tree_dirty excludes deliberately — a session that appended one line to a
+# log has not changed the work, and demanding a gate run for having recorded
+# that a gate ran is the tail chasing itself.
+#
+# Unknown counts as unchanged, as it does in stop: no session id, no mark, no
+# git, and the hook keeps its old silence rather than starting to speak about
+# trees it knows nothing about.
+if ! felix_tree_dirty "$ROOT" "$FELIX_HOME_DIR"; then
+  felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT" || exit 0
+fi
+
+TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)" || exit 0
+receipt="$(felix_verify_receipt "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)"
+[ "$(printf '%s' "$receipt" | cut -f1)" = "$TID" ] \
+  && [ "$(printf '%s' "$receipt" | cut -f2)" = "green" ] && exit 0
+
+# Once per parent session, and the sentence claims only what this hook can
+# know (#97). SubagentStop carries the PARENT's session id and nothing about
+# which subagent just finished or what it touched — so after the parent's
+# first commit, felix_session_committed stays true for the rest of the session
+# and this fired at every reader and reviewer with "This subagent changed
+# files": measured, 48 of the 136 things Felix said in five days, and false
+# for every read-only subagent among them. A false sentence in the loudest
+# channel is how the true ones stop being read.
+#
+# What IS known: this checkout holds work no gate has passed on, and a report
+# is about to cross a boundary the reader cannot see past. Say that. Whether
+# THIS subagent produced the work is not knowable here, so the message no
+# longer asserts it — and it says it once, because the second telling of an
+# unchanged fact to the same session is pressure, not information.
+nstate="$FELIX_HOME_DIR/state/subnag/${SID:-none}"
+[ -n "${SID:-}" ] && [ -f "$nstate" ] && exit 0
+[ -n "${SID:-}" ] && mkdir -p "$(dirname "$nstate")" 2>/dev/null && : > "$nstate" 2>/dev/null
+
+body="A subagent report is about to be integrated, and this checkout holds
+changes no gate has passed on. If they are this subagent's work, the report
+must say so plainly: partial, or unverified — not done, working, or passing.
+If this subagent only read, its report should say that instead.
+
+Whoever reads the report cannot see the tree behind it, and will otherwise
+inherit a claim nobody checked. This is said once per session, not per agent."
+
+felix_say "$PROJ" "subagent-unverified" "$body" "" "${SID:-}" 2>/dev/null || true
+printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SubagentStop",\n    "additionalContext": "%s"\n  }\n}\n' \
+  "$(printf '%s' "$body" \
+     | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')"
+exit 0

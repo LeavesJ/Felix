@@ -1,0 +1,50 @@
+# Risk tiers for Felix itself.
+#
+# The constitution already says editing engine/harness/lib or a hook is
+# adversarial: those run in every session of every governed project, and a
+# mistake there is silent. This is that sentence made mechanical, so felix
+# classify and felix scope work on Felix the way they work on everything else.
+#
+# tier	kind	pattern	reason	channel	confine
+#
+# tier is advice: it says how carefully to look. `channel` is the stop, and it
+# names what merging writes outside this tree that a revert cannot reach. A row
+# with no channel classifies and stops nothing, which is what most of these are
+# now: routine engine work on Felix was decided 2026-08-11 to need no approval,
+# and until this column existed the table said the opposite of the doctrine and
+# the table won.
+#
+# `confine` says what must stay true for a row NOT to fire. Bare means every
+# changed line matches it. `count:` means at least as many matching lines as
+# before — the right test for a verifier, which is judged by how much it checks
+# and not by which lines it is written on.
+#
+# .github/workflows carries no row on purpose. It is an unconditional engine
+# channel that no project can demote, because merging one runs the job holding
+# every secret the repository has.
+red	path	^engine/harness/hooks/	runs in every session of every governed project
+# The marker is the binding itself: it names which project governs this
+# checkout, and every hook resolves through it before it can enforce
+# anything. One line naming a project that does not exist used to buy no
+# gate, no hold and no record, and the table said nothing about the file
+# that did it. It carries a channel because a revert restores the word and
+# does not un-run the sessions that went unchecked while it was wrong.
+red	path	^\.felix$	names which project governs this checkout, and every hook resolves through it	verifier
+red	path	^engine/hooks/	decides which hooks run at all; a bad edit here silently disables every enforcement Felix has
+red	path	^engine/harness/lib/	sourced by the CLI and by every hook
+red	path	^engine/\.claude-plugin/	the version here decides whether anything deploys at all
+yellow	path	^engine/harness/felix$	the CLI surface; wrong here is loud rather than silent
+yellow	path	^engine/harness/templates/	seeds every new project, but only at creation
+yellow	path	^projects/[^/]+/gate\.sh$	a gate that cannot fail is not a gate	verifier	count:^[[:space:]]*(pass|fail|check) 
+yellow	path	^engine/harness/tests/run$	weakening the suite is how a gate stops being one	verifier	count:^[[:space:]]*(ok|is|has|bad) 
+yellow	path	^projects/[^/]+/(routes|profiles|stack|risk|evidence)\.tsv$	changes what gets suggested, not what runs
+yellow	path	^projects/[^/]+/probes\.tsv$	a probe removed is a fact nobody reads any more, and the surface it grounded goes back to being a filename match	verifier	count:^[a-z][a-z_]*[[:space:]]
+yellow	path	^projects/[^/]+/obligations\.tsv$	an obligation removed is a requirement waived by whoever removed it, and admitted obligations may not decrease within an epoch	verifier	count:^[a-z][a-z_]*[[:space:]]
+yellow	path	^projects/[^/]+/commissioning\.tsv$	a need removed is a question nobody asks at first encounter, and the receipt that certified it keeps certifying	verifier	count:^[a-z][a-z_]*[[:space:]]
+green	path	^projects/[^/]+/maintenance\.log$	a record of when upkeep ran
+# Constrained to prose by extension, 2026-08-15. `^docs/` was an unqualified
+# prefix, so a committed docs/tool.sh classified green against the unmodified
+# table — reproduced, not theorised. A directory name says where a file sits
+# and never what it is, and green is the tier that can auto-merge.
+green	path	^docs/.*\.md$	prose; a document runs nothing
+green	path	^projects/[^/]+/memory/	records, not behaviour

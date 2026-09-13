@@ -1,0 +1,128 @@
+# Checker qualification. Does a check fail when the thing it protects is broken?
+#
+# checker <TAB> command <TAB> control <TAB> expect <TAB> mutation
+#
+# The command is the checker, run in a throwaway worktree of HEAD after the
+# mutation has been applied to it. `expect` is what a checker worth having must
+# say.
+#
+# The six controls come from v3.2 conformance amendments 2.1. The first four
+# all move the marker and the property together, so a checker keyed on a
+# lexical shadow tracks every one of them; decoupled_violation and
+# decoupled_satisfaction are the two that pull them apart, and the amendments
+# record that decoupled_violation alone caught four cheats out of four.
+#
+# AUTHORSHIP. Amendments 2.2 requires the mutations be written by something
+# that has not seen the checker, because whoever writes both writes mutations
+# its own checker survives. These were authored by a subagent given the
+# obligation in prose and forbidden the checker's source; the session that
+# built the runner did not write them and did not read secret-scan first. That
+# is as close as this gets, and it is unverifiable from inside — a report that
+# it was blind is worth nothing on its own — so this records the method rather
+# than claiming the property.
+#
+# The values are assembled by the mutation rather than written out here, and
+# that is not cosmetic. A table of mutations for a CREDENTIAL checker is itself
+# full of credential-shaped strings, and the first version of this file was
+# caught by the very scanner it qualifies — correctly. The credential belongs
+# in the worktree the checker is pointed at, never in the diff that adds the
+# table. Keeping the two apart is the same distinction the checker exists to
+# draw, applied to its own fixture.
+secret	engine/harness/bin/secret-scan	violation	fail	{ printf %s\\n "" "# publish the run summary to the ops bucket"; printf AWS_%s_ACCESS_KEY=\"fake%s\"\\n SECRET MHZ7bQx2Jv9pLd4KfR8nTsW1yUcE0aGiOb3X; } >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+secret	engine/harness/bin/secret-scan	restoration	pass	printf AWS_%s_ACCESS_KEY=\"fake%s\"\\n SECRET MHZ7bQx2Jv9pLd4KfR8nTsW1yUcE0aGiOb3X >> engine/harness/lib/say.sh && printf %s\\n "$(grep -v ACCESS_KEY engine/harness/lib/say.sh)" > engine/harness/lib/say.sh
+secret	engine/harness/bin/secret-scan	irrelevant	pass	printf '%s\n' "$(sed 's/# proj, kind, text, \[what caused it\], \[session\]/# proj, kind, text, [the prompt that caused it], [session id]/' engine/harness/lib/say.sh)" > engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+secret	engine/harness/bin/secret-scan	alternate	fail	printf '%s\n' 'name: publish' 'on:' '  workflow_dispatch:' 'jobs:' '  publish:' '    runs-on: ubuntu-latest' '    env:' '      NPM_AUTH_TOKEN: fakenpm7QvZ2mKxT9bLd4RzW8pJyUc0AeGhSfXo31' '    steps:' '      - uses: actions/checkout@v4' '      - run: ./engine/harness/felix gate' > .github/workflows/publish.yml && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+secret	engine/harness/bin/secret-scan	decoupled_violation	fail	printf '%s\n' '' '# Archive the run summary into the ops warehouse.' 'felix_monitor_archive() {' '  psql "postgresql://felix_ops:fakeR7mQx2LbNvT4hJyUc0AeGhSdWq@db.ops.example.com:5432/felix_state" -c "select 1" >/dev/null 2>&1 || true' '}' >> engine/harness/lib/monitor.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled violation"
+secret	engine/harness/bin/secret-scan	decoupled_satisfaction	pass	printf '%s\n' '# Placeholders only. Every value below is invented and inert.' 'FELIX_PUBLISH_TOKEN=fakeXbQ7m2ZvT9kLd4RnW8pJyUc0AeGhSfXo' 'FELIX_DB_URL=postgresql://felix:fakeNv4hT2mQxZbLd7RyW9pJ@db.example.invalid:5432/felix' > .env.example && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled satisfaction"
+secret	engine/harness/bin/secret-scan	alternate	fail	printf -- '-----%s RSA PRIVATE %s-----\nMIIEfakeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' BEGIN KEY > engine/harness/lib/deploy-key.pem && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: pem"
+secret	engine/harness/bin/secret-scan	decoupled_satisfaction	pass	printf '# what the scanner catches\n| `%s RSA PRIVATE %s` | caught |\n' BEGIN KEY > docs/scanner-table.md && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: prose names the pattern"
+#
+# independence. Four of six declared. The two below are written out in full and
+# NOT declared, because a declared control binds and neither of these can be
+# met by the checker as it stands — and they cannot be met by a better grep:
+#
+#   decoupled_violation: the name assembled from fragments at run time. A
+#   checker that reads text cannot see a name that only exists when the engine
+#   runs. This is the residual v3.2 amendments §6 names — enumeration cannot be
+#   behavioural — and it is stated on the receipt rather than hidden here.
+#
+#   decoupled_satisfaction: a governed project named `ledger`, a word the engine
+#   uses ninety-eight times as its own noun. -F rejects the word; -w was measured
+#   and rejected in turn because it misses a governed name inside an identifier.
+#   A checker keyed on the letters cannot pass this without a second signal.
+#
+# They are here as rows-in-waiting so declaring one is one edit, and so
+# `felix qualify` reports the gap by name instead of the table looking complete.
+#
+# UNDECLARED, the name is assembled from fragments at run time; no contiguous string exists for grep to find:
+# independence	engine/harness/bin/independence-scan	decoupled_violation	fail	echo '# When nothing binds, fall back to the project this checkout was built for.' >> engine/harness/lib/resolve.sh && echo 'felix_fallback_project() { printf "%s/projects/%s%s" "$1" vel dra; }' >> engine/harness/lib/resolve.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+# UNDECLARED, a governed project named for a word the engine already uses 98 times; -F substring match rejects the word, not the project:
+# independence	engine/harness/bin/independence-scan	decoupled_satisfaction	pass	mkdir -p projects/ledger && printf '{"name":"ledger","remote_match":"example.com/ledger","gate":"true"}\n' > projects/ledger/project.json && printf '# A zero row is a ledger entry like any other; it is written down, not inferred.\n' >> engine/harness/lib/ledger.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"
+independence	engine/harness/bin/independence-scan	violation	fail	printf '# another governed project reads says.log too; keep the column order stable for it.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+independence	engine/harness/bin/independence-scan	restoration	pass	printf '# another governed project reads says.log too; keep the column order stable for it.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (introduce)" && git checkout HEAD~1 -- engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
+independence	engine/harness/bin/independence-scan	irrelevant	pass	sed 's/leaves the decision where it belongs\./leaves the decision with the founder./' engine/harness/lib/unattended.sh > engine/harness/lib/unattended.sh.tmp && mv engine/harness/lib/unattended.sh.tmp engine/harness/lib/unattended.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+independence	engine/harness/bin/independence-scan	alternate	fail	{ head -n 1 engine/harness/bin/secret-scan; printf 'VELDRA_ALLOWLIST="${VELDRA_ALLOWLIST:-}"\n'; tail -n +2 engine/harness/bin/secret-scan; } > engine/harness/bin/secret-scan.tmp && mv engine/harness/bin/secret-scan.tmp engine/harness/bin/secret-scan && chmod +x engine/harness/bin/secret-scan && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+
+# obligations: the first admitted obligation's checker, judged over the two
+# files its evidence contract reads. The six mutations were authored blind
+# (amendments §2.2) by an agent given the property and the two inputs and
+# forbidden the checker; its decoupled_violation moved a whole event entry one
+# level down, every token intact, and the lexical check in coverage.sh read it
+# as wired. That control held on first run and the check was rewritten to
+# read keys, not strings — which is what these rows are for.
+obligations	engine/harness/bin/obligations-check projects/felix release	violation	fail	python3 -c 'import json,pathlib;P=pathlib.Path("engine/hooks/hooks.json");d=json.loads(P.read_text());del d["hooks"]["SubagentStop"];P.write_text(json.dumps(d,indent=2)+"\n")'
+obligations	engine/harness/bin/obligations-check projects/felix release	restoration	pass	python3 -c 'import json,pathlib;P=pathlib.Path("engine/hooks/hooks.json");d=json.loads(P.read_text());i=list(d["hooks"]).index("SubagentStop");h=d["hooks"].pop("SubagentStop");P.write_text(json.dumps(d,indent=2)+"\n");d=json.loads(P.read_text());assert "SubagentStop" not in d["hooks"];it=list(d["hooks"].items());it.insert(i,("SubagentStop",h));d["hooks"]=dict(it);P.write_text(json.dumps(d,indent=2)+"\n")'
+obligations	engine/harness/bin/obligations-check projects/felix release	irrelevant	pass	python3 -c 'import json,pathlib;P=pathlib.Path("engine/hooks/hooks.json");P.write_text(json.dumps(json.loads(P.read_text()),indent=4,sort_keys=True)+"\n");T=pathlib.Path("engine/harness/templates/lifecycle.tsv");L=T.read_text().split("\n");c=[l for l in L if l.startswith("#")];r=[("Stop\twired\thold completion until the tree is verified, then ask that every claim be checked" if l.split("\t")[0]=="Stop" else l) for l in L if l and not l.startswith("#")][::-1];T.write_text("\n".join(c+r)+"\n")'
+obligations	engine/harness/bin/obligations-check projects/felix release	alternate	fail	python3 -c 'import json,pathlib;P=pathlib.Path("engine/hooks/hooks.json");d=json.loads(P.read_text());d["hooks"]["Notification"]=d["hooks"]["SessionEnd"];P.write_text(json.dumps(d,indent=2)+"\n")'
+obligations	engine/harness/bin/obligations-check projects/felix release	decoupled_violation	fail	python3 -c 'import json,pathlib;P=pathlib.Path("engine/hooks/hooks.json");d=json.loads(P.read_text());d["hooks"]["PostToolUse"][0]["SubagentStop"]=d["hooks"].pop("SubagentStop");P.write_text(json.dumps(d,indent=2)+"\n")'
+obligations	engine/harness/bin/obligations-check projects/felix release	decoupled_satisfaction	pass	python3 -c 'import json,pathlib;e=lambda:[{"hooks":[{"type":"command","command":"true"}]}];H={"hooks":{"PreCompact":[{"matcher":"manual|auto","hooks":[{"type":"command","command":"true"}]}],"Notification":e(),"PostToolBatch":e(),"PostToolUseFailure":e()}};pathlib.Path("engine/hooks/hooks.json").write_text(json.dumps(H,indent=2)+"\n");R=[["PostToolUseFailure","wired","count the failures the ledger would otherwise miss"],["Notification","wired","surface attention requests in the monitor"],["PreCompact","wired","save the route decision before context is compacted"],["PostToolBatch","wired","record each batch as one unit"],["SessionEnd","declined","PostToolBatch already rolls the ledger at the end of each batch","\"PostToolBatch\""],["Stop","declined","PreCompact handles the manual case and the gate runs at commit","manual"],["SubagentStop","declined","PostToolUseFailure catches what a subagent breaks","-"],["SubagentStart","declined","nothing to mount when the parent already carries the constitution","-"],["SessionStart","declined","doctrine is mounted on the auto path of PreCompact","auto"],["UserPromptSubmit","declined","routing moved to the monitor","-"],["PreToolUse","declined","the deny table was retired","-"],["PostToolUse","declined","recorded per batch instead","-"]];pathlib.Path("engine/harness/templates/lifecycle.tsv").write_text("# event\tstance\treason\tholds\n"+"\n".join("\t".join(r) for r in R)+"\n")'
+
+# memory: invariant 6 as a command, bin/memory-scan. Twelve controls, six per
+# half of the property, authored blind (amendments §2.2) by an agent given the
+# property in prose and the tree layout and forbidden gate.sh, qualify.sh, bin/
+# and this table; its own notes on where a lexical checker would be blind are
+# kept below as it wrote them. Run against the inline check the gate carried
+# until then, row 5 passed — memory by name, one level up — and the doctrine
+# half was found to fire only for a project whose log did not exist, because
+# `git check-ignore` never reports a tracked file. The scanner reads with
+# --no-index and by name; all twelve met on its first run.
+# memory-scan qualification controls, written 2026-09-07 blind to the checker, from the prose of the property only.
+# Where a lexical checker for this property is probably blind: it will look for the path `projects/<name>/memory/` in `git ls-files`, so a canonical memory file (lessons.md, ledger.tsv, DEVLOG.md ...) tracked one level up or under docs/ is invisible to it, while a directory merely *named* memory anywhere else trips it (the tree already tracks engine/harness/lib/memory.sh and templates/commission/, so a bare-token grep would fail a clean tree). For maintenance.log it will read the root .gitignore for the literal token, so it is blind to a nested .gitignore (projects/.gitignore with `*.log` overrides the root negation), to rule order (the last matching line wins, so an unnegated line followed by its negation ignores nothing), and it will mistake a comment or a `maintenance.log.*` pattern for a rule. git's own `check-ignore --no-index` is the only honest oracle, and plain `check-ignore` is itself blind for a file that is already tracked, which both existing maintenance.logs are.
+#
+# Twelve rows: six for half 1 (no memory tracked), then six for half 2 (maintenance.log never ignored). Every mutation is one line of shell evaluated from the root of a clean worktree of HEAD and ends with its change committed.
+#
+# ---- half 1: no project memory is tracked ----
+#
+# violation: the old layout comes back the way the .gitignore says it would, with one `git add -f` past the ignore rule. A lessons.md with a verbatim founder prompt is tracked at projects/felix/memory/.
+memory	engine/harness/bin/memory-scan	violation	fail	mkdir -p projects/felix/memory && printf '# Lessons\n\n- 2026-09-07 (session s-41): the founder said, verbatim, "do not tell me it passed until the gate has run." Cause: the report preceded the receipt. Rule: run the gate, read the receipt, then report.\n' > projects/felix/memory/lessons.md && git add -f projects/felix/memory/lessons.md && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+# restoration: the same force-add is committed, then `git rm` takes the file back out (git also drops the now-empty memory/ directory) and that removal is committed, so HEAD is clean and the history holds the violation.
+memory	engine/harness/bin/memory-scan	restoration	pass	mkdir -p projects/felix/memory && printf '# Lessons\n\n- 2026-09-07 (session s-41): the founder said, verbatim, "do not tell me it passed until the gate has run."\n' > projects/felix/memory/lessons.md && git add -f projects/felix/memory/lessons.md && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (break)" && git rm -q projects/felix/memory/lessons.md && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
+# irrelevant: the comment above the memory ignore rule in .gitignore is reworded; the rule itself and the tree are untouched.
+memory	engine/harness/bin/memory-scan	irrelevant	pass	git show HEAD:.gitignore | sed 's/must never come back/must not come back/' > .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+# alternate: instead of forcing past the backstop, the backstop is removed (the `projects/*/memory/` line is deleted from .gitignore) and a second project's ledger.tsv lands under projects/another/memory/ with a plain `git add`.
+memory	engine/harness/bin/memory-scan	alternate	fail	git show HEAD:.gitignore | sed '/^projects\/\*\/memory\/$/d' > .gitignore && mkdir -p projects/another/memory && printf 'ts\tsession\tprompt\toutcome\n2026-09-07T10:00:00Z\ts-41\tfounder, verbatim: "ship the ledger row before the receipt, not after"\tdone\n' > projects/another/memory/ledger.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+# decoupled_violation: the identical lessons.md from the violation row, with the same verbatim founder prompt, is tracked one level up at projects/felix/lessons.md. No path contains memory/, the ignore rule is intact, no memory directory exists on disk; only the file's name and content say what it is.
+memory	engine/harness/bin/memory-scan	decoupled_violation	fail	printf '# Lessons\n\n- 2026-09-07 (session s-41): the founder said, verbatim, "do not tell me it passed until the gate has run." Cause: the report preceded the receipt. Rule: run the gate, read the receipt, then report.\n' > projects/felix/lessons.md && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+# decoupled_satisfaction: a tracked directory named memory (docs/memory/) holding one README that names every memory file and says they live under ~/.felix/memory/<name>/. It is not under projects/<name>/memory/ (the prose forbids anything there, doctrine included) and it is not memory; a grep for memory/ or for the file names in content would fail it wrongly.
+memory	engine/harness/bin/memory-scan	decoupled_satisfaction	pass	mkdir -p docs/memory && printf '# Where memory lives\n\nSince 2026-08-14 no project memory is tracked in this repository. Each governed project keeps its lessons.md, ledger.tsv, DEVLOG.md, SESSION_HANDOFF.md and commission/ under ~/.felix/memory/<name>/, outside every checkout, because a checkout is the home whenever Felix governs itself. This directory holds this note and nothing else.\n' > docs/memory/README.md && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"
+#
+# ---- half 2: no project's maintenance.log is ignored ----
+#
+# violation: the accident the .gitignore describes, replayed. The `!projects/*/maintenance.log` exception is deleted, so the `*.log` rule above it swallows every project's maintenance.log (git check-ignore --no-index reports all three, and a third governed project's, which does not exist yet, could never be added).
+memory	engine/harness/bin/memory-scan	violation	fail	git show HEAD:.gitignore | sed '/^!projects\/\*\/maintenance\.log$/d' > .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+# restoration: the exception is deleted and committed, then .gitignore is checked out from the commit before and committed again, byte-identical to HEAD's original.
+memory	engine/harness/bin/memory-scan	restoration	pass	git show HEAD:.gitignore | sed '/^!projects\/\*\/maintenance\.log$/d' > .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (break)" && git checkout -q HEAD~1 -- .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
+# irrelevant: a new, unrelated ignore rule (*.swp) is appended to .gitignore after the maintenance.log exception; nothing tracked matches it and maintenance.log is unaffected.
+memory	engine/harness/bin/memory-scan	irrelevant	pass	printf '\n# editor swap files are never doctrine\n*.swp\n' >> .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+# alternate: the exception line stays exactly where it is, but an unnegated `projects/*/maintenance.log` is appended after it; the last matching rule wins, so the file is ignored while a check for the presence of the exception line still passes.
+memory	engine/harness/bin/memory-scan	alternate	fail	printf '\n# run records stay on the machine that ran them\nprojects/*/maintenance.log\n' >> .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+# decoupled_violation: the root .gitignore is untouched and never stops naming the exception; a nested projects/.gitignore containing only `*.log` is added. Patterns in a deeper .gitignore override the root, so every projects/<name>/maintenance.log is ignored without the string maintenance.log appearing anywhere new.
+memory	engine/harness/bin/memory-scan	decoupled_violation	fail	printf '# anything a run writes is runtime, not doctrine\n*.log\n' > projects/.gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+# decoupled_satisfaction: an unnegated `projects/*/maintenance.log` line is appended, immediately followed by its own negation. The later line wins, so git ignores nothing, but the .gitignore now contains a literal ignore rule for maintenance.log that a textual check would count as a violation.
+memory	engine/harness/bin/memory-scan	decoupled_satisfaction	pass	printf '\n# the log is named once so nobody adds it by accident and re-allowed on the next line: git keeps it\nprojects/*/maintenance.log\n!projects/*/maintenance.log\n' >> .gitignore && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"
+executable	engine/harness/bin/executable-check	violation	fail	chmod -x engine/harness/hooks/subagent-stop && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+executable	engine/harness/bin/executable-check	restoration	pass	chmod -x engine/harness/hooks/subagent-stop && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (break)" && chmod +x engine/harness/hooks/subagent-stop && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
+executable	engine/harness/bin/executable-check	irrelevant	pass	printf '%s\n' '' '# Invoked by the gate, never sourced: this file needs its own mode bit.' >> engine/harness/hooks/subagent-stop && chmod +x engine/harness/tests/assertions.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+executable	engine/harness/bin/executable-check	alternate	fail	git show HEAD:engine/harness/tests/run > engine/harness/tests/run.tmp && rm engine/harness/tests/run && mv engine/harness/tests/run.tmp engine/harness/tests/run && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+executable	engine/harness/bin/executable-check	decoupled_violation	fail	printf '%s\n' '#!/usr/bin/env bash' '# Reports checkouts whose deployed engine has drifted. The gate shells out to it.' 'set -eu' 'exit 0' > engine/harness/bin/drift-scan && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+executable	engine/harness/bin/executable-check	decoupled_satisfaction	pass	printf '%s\n' '# Scanners' '' 'Every extensionless file here is an executable the gate shells out to. This note is documentation; nothing runs it.' > engine/harness/bin/README.md && mkdir -p docs/hooks && printf '%s\n' '#!/usr/bin/env bash' '# Quoted in the hooks guide as an example. Nothing invokes this file.' 'exit 0' > docs/hooks/session-start.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"

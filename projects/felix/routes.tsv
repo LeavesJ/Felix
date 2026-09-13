@@ -1,0 +1,87 @@
+# Routes for Felix itself.
+#
+# Not the generic template. Work on a governance harness divides differently
+# from work on a product: there is no frontend and no deploy, and the dangerous
+# change is an edit to something that runs in every session of every governed
+# project. The constitution already calls that adversarial; this table is where
+# that shows up before the work starts rather than during review.
+#
+# name	keywords	profile	play
+# Task-shape routes come FIRST, so they win a tie.
+#
+# They were below the subsystem rows, with a comment saying file order let a
+# subsystem win — and that is backwards. A row says what the work is ABOUT; a
+# task-shape row says what KIND of work it is, and the play depends far more on
+# the kind. "debug why the harness hook is failing" scored harness and was told
+# to go and brainstorm, while the debug row naming systematic-debugging sat
+# below it and lost the tie. Four of ten rows lead with brainstorming and all
+# four are subsystem rows, so any prompt naming a subsystem got the play for
+# starting a new thing, whatever the turn was actually for.
+debug	debug broken failing crash traceback reproduce	core	superpowers:systematic-debugging
+document	document xlsx pptx docx slide spreadsheet guidebook	core	anthropic-skills:pdf anthropic-skills:xlsx anthropic-skills:docx
+research	research investigat survey unrelated random parallel compar	core	superpowers:dispatching-parallel-agents superpowers:brainstorming
+security	security audit vulnerabilit injection secret credential	core	code-review semgrep superpowers:requesting-code-review
+# `executing-plans` appended 2026-08-25. It is installed, it appears nowhere in
+# this engine — not in any project table and not in the shipped template — and a
+# blind study of 158 logged prompts found it was the capability wanted on three
+# of the eight turns where anything was applicable at all. It was unnameable at
+# any threshold by any matcher.
+#
+# Third, after writing-plans, because that is the sequence: brainstorm, write the
+# plan, then work it. Appending costs no extra noise — felix_route_due names only
+# the first unused step — and the sequence only began functioning tonight, since
+# before the step-used fix every superpowers step read as already used and no
+# play ever advanced past its first entry.
+build	build implement feature create	core	superpowers:brainstorming superpowers:writing-plans superpowers:executing-plans
+# Added 2026-08-13 from the misses, not from a guess about what work happens
+# here. `merge` was the fourth most common word in prompts no row understood,
+# and the top three above it were the project's own name and two pieces of
+# conversation. Shipping is most of what a session ends on and had no row at
+# all, so `code-review` was named by one route whose keywords nothing here says.
+# `verification-before-completion` appended 2026-08-25, last, and from evidence
+# rather than taste. The engine's own templates/routes.tsv ships a `release` row
+# naming it. Felix's table replaced that row with `ship` and dropped the one
+# capability that matters at the moment somebody says the work is done — so the
+# Stop hook has been retrofitting it after the fact, twice in the session that
+# noticed. Last in the play is the point: it comes due only once the review steps
+# have actually run, which is when "is this really finished" is a real question
+# rather than a rule quoted at turn one.
+ship	ship merge pull-request escape channel classify release	core	code-review superpowers:requesting-code-review superpowers:finishing-a-development-branch superpowers:verification-before-completion
+
+# Narrowed 2026-08-18, from three misroutes reproduced in one session rather
+# than from a guess. `review` matched "peer review" in a design conversation and
+# demanded semgrep; `memory` matched "back the memory"; and `route` matched
+# *misroute*, so a complaint about routing was routed as harness work. One
+# mechanism: generic English words this project says constantly ABOUT itself,
+# widened further by substring matching.
+#
+# The `review` row is now `security`, which is what it always was: its keywords
+# are audit/vulnerabilit/injection/secret/credential and its play is a security
+# audit. Renaming rather than deleting the keyword keeps the suite's rule that
+# every route is reachable by its own name — a name you cannot summon is a lie —
+# and "review this diff for injection" still lands here on `injection`.
+#
+# Narrowing is the safe direction because the cost is asymmetric. A missed route
+# loses one suggestion. A false route arrives worded as a requirement, sends the
+# session at the wrong work, and teaches it to read routing as noise — after
+# which the correct routes stop working too.
+
+# `orient` added 2026-09-10 from a measurement, not a guess. The knowledge
+# graph under graphify-out/ had been built three times and queried once across
+# 72 recorded sessions, and the once was the session in which the founder asked
+# why it was never used. No row named it, so the ledger's `named` column for it
+# read 0 in every session: a tool no route names cannot be pointed at, and its
+# zero measured this table rather than the tool. The keywords are the words a
+# structure question is actually asked with — who calls what, how the pieces
+# fit. `trace` ties with `debug` on a traceback, and the file order above
+# resolves that toward debugging, which is right. Placed above the subsystem
+# rows so a question ABOUT the harness's shape wins over the play for changing
+# it. Substring matching still applies: `calls` reaches "recalls", and if that
+# misroutes in practice the fix is to narrow, per the note above.
+orient	orient graphify trace caller callers calls architecture codebase	core	graphify
+
+# Subsystem routes. What the work is about, when nothing said what kind.
+harness	harness engine hook resolve lesson routes.tsv verify library	core	superpowers:brainstorming superpowers:writing-plans superpowers:test-driven-development superpowers:requesting-code-review
+gate	gate verification receipt failing regression assertion	core	superpowers:systematic-debugging superpowers:test-driven-development
+doctrine	constitution doctrine lesson invariant promote	core	superpowers:brainstorming claude-md-management
+tooling	tooling stack catalog plugin server marketplace capability adopt discover	core	superpowers:brainstorming

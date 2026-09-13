@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Does the engine name a governed project?
+#
+#   independence-scan            exit 0 when it names none, 1 when it does or
+#                                when it could not look; prints what it found
+#
+# Constitution invariant 1: the engine names no project. This is the property
+# that makes Felix portable and the one most easily lost to a well-meant
+# comment. It lived inline in one project's gate and is a command now so that
+# felix qualify can ask it the question every checker has to answer — does it
+# fail when the thing it protects is broken — without running the whole gate
+# six times to find out.
+#
+# Every governed name, enumerated, never a literal. An earlier form grepped one
+# particular name, so what it established was that seven particular letters
+# were absent; mounting a second project made the gap real, when the engine
+# hard-coding one governed name passed and the identical edit naming another
+# failed. Enumerating means governing something new cannot quietly widen what
+# the engine is allowed to say. The engine's own name is the one exemption and
+# has to be: it is the product, the function prefix and the binary, not a
+# governed product being named.
+#
+# bin/ is searched, and that includes this file. So nothing below may carry a
+# governed name, which is why this comment says "one project" where the gate's
+# older comment said which.
+#
+# tests/ and templates/ stay out. The suite names what it refuses to depend on
+# in its own comments on purpose, and the fixture project names itself a few
+# hundred times.
+set -u
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
+
+INDEP_PATHS="engine/harness/felix engine/harness/lib engine/harness/hooks engine/harness/bin"
+
+# The ecosystem check greps the same four directories, and used to read this
+# list off the gate's own independence block. One list, printed on request, so
+# the two checks cannot search different trees.
+if [ "${1:-}" = "--paths" ]; then printf '%s\n' "$INDEP_PATHS"; exit 0; fi
+
+# A path this cannot search is a FAILURE, not a clean result. git grep exits 128
+# on a pathspec it cannot resolve and abandons the entire search, so one absent
+# path made every name come back non-zero and the check printed ok for
+# violations it never looked at. Two conditions, because there are two ways to
+# search nothing: the path must exist, and something tracked must be under it —
+# ls-files reads the index and git grep reads the working tree, and a directory
+# holding only untracked files lets git grep return 0 having read no bytes.
+blind=""
+for p in $INDEP_PATHS; do
+  if [ ! -e "$p" ] || [ -z "$(git ls-files -- "$p" 2>/dev/null)" ]; then
+    blind="$blind $p"
+  fi
+done
+if [ -n "$blind" ]; then
+  printf 'independence-scan: cannot search:%s\n' "$blind" >&2
+  printf '  git grep abandons the whole search on a path it cannot resolve,\n' >&2
+  printf '  so this would have reported ok without reading anything.\n' >&2
+  exit 1
+fi
+
+# A project is a directory that DECLARES itself: project.json is what separates
+# a governed project from a leftover directory, and a plain file dropped into
+# projects/ contributes nothing.
+#
+# Matched as a literal (-F), case-insensitively. -E made a name containing a
+# dot search for a pattern rather than for itself. -w was tried and rejected on
+# measurement: it rescues none of the common-word names, because short ordinary
+# words appear as standalone words in engine prose, and it MISSES a governed
+# name embedded in an identifier, which is a violation.
+leak=""
+for meta in projects/*/project.json; do
+  [ -f "$meta" ] || continue
+  name="${meta%/project.json}"; name="${name##*/}"
+  [ "$name" = "felix" ] && continue
+  # shellcheck disable=SC2086
+  if git grep -qniF -- "$name" $INDEP_PATHS 2>/dev/null; then
+    leak="$leak $name"
+  fi
+done
+[ -z "$leak" ] && exit 0
+printf 'independence-scan: the engine names:%s\n' "$leak" >&2
+for name in $leak; do
+  # shellcheck disable=SC2086
+  git grep -niF -- "$name" $INDEP_PATHS | head -3 | sed 's/^/  /' >&2
+done
+exit 1

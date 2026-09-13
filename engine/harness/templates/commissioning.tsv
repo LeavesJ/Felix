@@ -1,0 +1,52 @@
+# What commissioning must answer, and what answers it.
+#
+# The first-encounter moment (v3.2 §8) as a table rather than a printed list
+# of next steps. Felix names a need and the engine stage that answers it; an
+# independent check decides whether it is answered. The engine never marks a
+# row done: the check does, after the answer ran.
+#
+# need        a noun id
+# grounds     the capability the row serves, or `-`; an inactive capability
+#             makes the row not-applicable and silent
+# instrument  the bare command the question needs on this machine, or `-`;
+#             an absent instrument makes the row `unknown` — asked of nothing
+# when        an applicability command: non-zero = not-applicable,
+#             126/127 = unknown; `-` = always
+# answer      the engine stage that answers it: `felix:discover --adopt`,
+#             `felix:stack apply --yes`, `felix:ready --fix`,
+#             `felix:toolbox --route`, `felix:obligations --seed` (writes the
+#             template ledger where none exists, never over one),
+#             `provider:<plugin>:<skill>` (a skill a session's model runs; its
+#             row is `awaiting` until a file it cannot write appears), or `-`
+#             (a person)
+# check       a shell expression exiting 0 when the need is answered, run in
+#             the checkout with the engine's functions visible and
+#             FELIX_PROJECT, FELIX_PROJECT_NAME, FELIX_HOME_DIR,
+#             FELIX_MEMORY_DIR, FELIX_ROOT_DIR exported. A check may not begin
+#             with `!` and may not end in `head`: a negated pipeline reads met
+#             when its producer dies. A provider row carries `-`.
+# step        the §8 pipeline step (1-10) this row answers, or `-`
+#
+# States are computed on every run and never stored: done, held (a person's
+# queue), not-applicable, unknown (blocks the receipt), malformed (counts
+# toward nothing, fails the run), awaiting (provider rows only; holds nothing).
+#
+# Every seeded row is a question whose answer comes from the checkout, this
+# machine, or a person. A row with no check can never be done. A table with
+# no row is refused — an empty table is a shelf with nothing on it.
+#
+# need	grounds	instrument	when	answer	check	step
+envelope	-	-	-	-	felix_json_str "$FELIX_PROJECT/project.json" maturity | grep -qxE 'prototype|internal|public-beta|production'	1
+constitution	-	-	-	-	test -s "$FELIX_PROJECT/CLAUDE.md"	3
+gate_declared	-	-	-	-	[ -n "$(felix_json_str "$FELIX_PROJECT/project.json" gate)" ]	9
+gate_shown_failing	-	-	-	-	cut -f4 "$FELIX_MEMORY_DIR/mistakes.log" 2>/dev/null | tr ' ' '\n' | grep -vxE 'commission|probes' | grep -q .	9
+probes	-	git	-	-	[ -n "$(felix_probe_rows "$FELIX_PROJECT")" ] && [ -z "$(felix_probe_malformed "$FELIX_PROJECT")" ] && [ -z "$(felix_probes_run "$FELIX_PROJECT" "$FELIX_ROOT_DIR" | felix_probes_blocking)" ]	7
+obligations	-	-	-	felix:obligations --seed	[ -n "$(felix_obligation_rows "$FELIX_PROJECT")" ] && [ -z "$(felix_obligation_malformed "$FELIX_PROJECT")" ] && [ -z "$(felix_obligations_orphans "$FELIX_PROJECT")" ]	8
+discover	-	claude	-	felix:discover --adopt	felix_discover_cache_current "$FELIX_PROJECT" "$FELIX_HOME_DIR" && [ "$(felix_discover_adopt "$FELIX_PROJECT" "$FELIX_HOME_DIR" | grep -c '^declare')" -eq 0 ]	6
+stack	-	claude	-	felix:stack apply --yes	[ "$(felix_stack_plan "$FELIX_PROJECT" | grep -c "^install$(printf '\t')")" -eq 0 ]	6
+preflight	-	claude	-	felix:ready --fix	[ "$(felix_ready_report "$FELIX_PROJECT" | grep -cE "^(absent|disabled)$(printf '\t')")" -eq 0 ]	5
+reach	-	-	-	felix:toolbox --route	[ -z "$(felix_toolbox_unwired "$FELIX_PROJECT")" ]	5
+baseline	-	gh	-	-	cmd_bootstrap 2>/dev/null | grep -q 'Baseline already in place'	5
+human_steps	-	-	-	-	test -f "$FELIX_PROJECT/setup.tsv" && [ "$(felix_setup_status "$FELIX_PROJECT" | grep -c "^todo$(printf '\t')")" -eq 0 ]	6
+constitution_audited	-	-	-	provider:claude-md-management:claude-md-improver	-	4
+automation_surveyed	-	-	-	provider:claude-code-setup:claude-automation-recommender	-	4

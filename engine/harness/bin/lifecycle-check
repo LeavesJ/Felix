@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Does the shipped hooks.json bind every lifecycle moment the stance table
+# says is wired, and say nothing about no moment it binds?
+#
+#   lifecycle-check <templates-dir> <hooks.json>
+#
+#   exit 0  every moment's stance and wiring agree
+#   exit 1  a moment is declared wired and nothing wires it, or wired and
+#           unexplained, or declined on a premise hooks.json no longer holds
+#   exit 2  cannot examine: no stance table, no hooks file, or a table that
+#           declares no moment. Never read as clean.
+#
+# This is the evidence contract of the first admitted obligation, and its
+# output is the coverage report the amendments' seventh control asks for: one
+# line per moment, the verdict beside it. The judgement is coverage.sh's; this
+# only refuses to answer when there is nothing to examine, which
+# felix_coverage_check itself treats as "no output" — and no output would
+# discharge the obligation by saying nothing.
+set -u
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 2
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+TPL="${1:-}"; HOOKS="${2:-}"
+[ -n "$TPL" ] && [ -n "$HOOKS" ] || { printf 'usage: lifecycle-check <templates-dir> <hooks.json>\n' >&2; exit 2; }
+[ -s "$TPL/lifecycle.tsv" ] || { printf 'lifecycle-check: cannot examine: no stance table at %s/lifecycle.tsv\n' "$TPL"; exit 2; }
+[ -s "$HOOKS" ] || { printf 'lifecycle-check: cannot examine: no hooks at %s\n' "$HOOKS"; exit 2; }
+
+# shellcheck source=../lib/coverage.sh
+. "$HERE/lib/coverage.sh"
+out="$(felix_coverage_check "$TPL" "$HOOKS")"
+[ -n "$out" ] || { printf 'lifecycle-check: cannot examine: %s/lifecycle.tsv takes no stance on any moment\n' "$TPL"; exit 2; }
+
+printf '%s\n' "$out" | awk -F'\t' '{ printf "  %-13s %-20s %s\n", $1, $2, $3 }'
+if printf '%s\n' "$out" | awk -F'\t' '$1 != "ok"' | grep -q .; then
+  printf 'lifecycle-check: %s moment(s) where stance and wiring disagree\n' \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1 != "ok"' | grep -c .)"
+  exit 1
+fi
+exit 0

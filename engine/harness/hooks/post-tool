@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# PostToolUse: one append per tool call, and nothing else.
+#
+# This runs after every tool call in every governed session, so its cost is the
+# design constraint rather than an afterthought. It deliberately does not
+# resolve the project, because the ledger is keyed on the session and resolution
+# touches git — which would put a git invocation behind every Read, Edit and
+# Bash in every session on this machine.
+#
+# It records and never blocks. PostToolUse cannot deny anything anyway, and a
+# measurement that interrupts the thing it measures is not worth having.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/ledger.sh"  2>/dev/null || exit 0
+
+raw="$(cat 2>/dev/null || true)"
+[ -n "$raw" ] || exit 0
+
+home="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+[ -d "$home" ] || exit 0
+
+session="$(printf '%s' "$raw" \
+  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+[ -n "$session" ] || exit 0
+
+signal="$(felix_ledger_signal "$raw")"
+[ -n "$signal" ] || exit 0
+
+felix_ledger_record "$home" "$session" "$signal"
+exit 0

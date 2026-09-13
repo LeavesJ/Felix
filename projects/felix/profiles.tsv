@@ -1,0 +1,8 @@
+# Task profiles for Felix itself.
+#
+# Felix has one surface: bash that runs in other people's sessions. It has no
+# frontend, no database, and nothing deployed, so the elaborate profile split
+# the generic template ships would be five empty rows pretending otherwise.
+#
+# name	capabilities
+core	always

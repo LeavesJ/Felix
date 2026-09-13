@@ -1,0 +1,29 @@
+# Declared tooling for Felix itself.
+#
+# Only what work on this harness actually reaches for, and only what is already
+# installed. Written so the router can tell a declared tool from an undeclared
+# one honestly; an empty stack.tsv would have reported every play entry as
+# missing, which is a worse lie than saying nothing.
+#
+# Felix has no frontend, no database, no billing and nothing deployed, so the
+# capability-gated half of the catalogue is deliberately absent rather than
+# listed dormant.
+#
+# kind	name	source	risk	capability
+marketplace	claude-plugins-official	anthropics/claude-plugins-official	low	always
+plugin	superpowers@claude-plugins-official	-	low	always
+plugin	code-review@claude-plugins-official	-	low	always
+plugin	code-simplifier@claude-plugins-official	-	low	always
+plugin	security-guidance@claude-plugins-official	-	low	always
+plugin	claude-md-management@claude-plugins-official	-	low	always
+plugin	semgrep@claude-plugins-official	-	high	always
+# Bundled into the Claude Code binary, so it carries no marketplace and appears
+# in no plugin list. Its skills are live in every session regardless; declaring
+# it is what lets a route name one honestly.
+plugin	anthropic-skills	-	low	always
+# A standalone skill under ~/.claude/skills, not a plugin: no marketplace and
+# no entry in the plugin list. Declared so the orient route can name it and
+# felix ready can find it, the same row another governed project carries. Its graph lives at
+# graphify-out/ in the home checkout and is gitignored; maintenance.tsv says
+# when it is behind the tree.
+skill	graphify	-	low	always

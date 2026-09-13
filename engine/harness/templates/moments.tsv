@@ -1,0 +1,18 @@
+# The moments a procedure can be due at, and nothing about what is due.
+#
+# A table rather than a constant, so that adding a moment is an edit somebody
+# makes rather than a release somebody ships. Felix reads this; it does not
+# write it.
+#
+# What must be answered AT each moment is deliberately not here. That is a
+# stance — judgement, arguable, per project — and it lives in
+# projects/<name>/procedures.tsv. Putting the obligations here would make this
+# file the enumeration, which is the exact mistake the procedures design
+# exists to avoid: a list Felix wrote cannot report what nobody put on it.
+#
+# moment	description
+pre-deploy	before anything is served or shipped: what is exposed, and what has no ceiling
+session-start	what this session should reach for, and what it must read before planning
+pre-conclude	before work is called done: what was verified, recorded, and handed over
+post-incident	after something broke: what is re-checked, and what becomes a rule
+commissioning	the first time Felix binds a checkout, and whenever its table set or detected surfaces change: what is here, what serves it, what reaches it, what a person still owes

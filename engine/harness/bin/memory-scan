@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Is any project memory tracked in this repository, or any project's doctrine
+# ignored?
+#
+#   memory-scan     exit 0 when neither, 1 when either or when it could not
+#                   look; prints what it found
+#
+# Constitution invariant 6, the half a gate can read. Doctrine and memory were
+# one directory tree until 2026-08-14, and that is what made this repository
+# unpublishable: a home is the checkout whenever Felix governs itself, so
+# memory rooted under the home meant every governed project's record — the
+# founder's prompts verbatim, other people's material — accumulated inside the
+# thing meant to be shown. Memory moved to the memory root, outside every
+# checkout, and the gate's check was inverted rather than deleted: it used to
+# demand memory be tracked and now fails if any is, which is the only thing
+# that would notice the old layout returning one project at a time.
+#
+# The second half is the mirror: `projects/<p>/maintenance.log` is doctrine, a
+# record a person reads, and an ignore rule that swallows it hides doctrine.
+# That was once done by accident, by a rule written for the memory that used to
+# live beside it.
+#
+# It lived inline in one project's gate and is a command now for the reason
+# independence-scan gives: so felix qualify can ask whether it fails when the
+# thing it protects is broken, without running the whole gate six times. The
+# first time it was asked, blind, it found two things the inline check did not
+# do:
+#
+#   `git check-ignore` never reports a TRACKED file — tracked files are not
+#   subject to exclude rules — so the inline check could only ever see an
+#   ignored maintenance.log for a project whose log did not exist yet. The two
+#   that existed were invisible to it by construction. --no-index asks the
+#   question the property asks: would this path be ignored.
+#
+#   Memory is not a path. lessons.md tracked one level up, at
+#   projects/<p>/lessons.md, is the same file with the same verbatim prompt in
+#   it, and a path rule cannot see it. So the canonical memory files are also
+#   looked for by NAME under projects/, where the doctrine files are few and
+#   known. That is a heuristic and is stated as one: memory under an invented
+#   name, or outside projects/, is the residual a lexical checker cannot
+#   enumerate, the same class §6 of the amendments names for independence.
+#
+# The names are the files the memory root holds for a project, and the list
+# was first written from memory rather than from the directory. It omitted
+# routes.log — which stores the founder's prompt text verbatim, one line per
+# routed prompt, and is therefore the single file this check exists to keep
+# out of a repository — along with decisions.log and the ledger.d shards. It
+# is read off what the engine actually writes now: the names below, the
+# directories beside them, and a trailing backup suffix, because a rotated
+# ledger.tsv.bak-20260816010302 is the same record with a date on it.
+set -u
+# Captured first, then tested. `cd "$(git rev-parse ...)"` with the
+# substitution empty is `cd ""`, which bash treats as a no-op that succeeds,
+# so the refusal below was unreachable and the scanner passed outside any
+# checkout by finding nothing — the suite's own lesson about a branch a test
+# cannot reach, caught here by the test that reaches it.
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+[ -n "$top" ] || { printf 'memory-scan: cannot search: not a git checkout\n'; exit 1; }
+cd "$top" || { printf 'memory-scan: cannot search: %s\n' "$top"; exit 1; }
+
+MEMORY_NAMES='lessons\.md|ledger\.tsv|DEVLOG\.md|SESSION_HANDOFF\.md|mistakes\.log|verification\.log|facts\.log|says\.log|commissioning\.log|routes\.log|decisions\.log'
+MEMORY_DIRS='ledger\.d|commission|audits'
+rc=0
+
+# Nothing tracked under projects/ is not a clean tree, it is a tree this
+# scanner cannot say anything about — every loop below would be empty and the
+# verdict would be "clean" over something never examined. independence-scan
+# beside this one refuses exactly that, and this is the same refusal.
+if [ -z "$(git ls-files -- 'projects/*' 2>/dev/null | head -1)" ]; then
+  printf 'memory-scan: cannot search: nothing tracked under projects/\n'
+  exit 1
+fi
+
+for d in projects/*/; do
+  [ -d "$d" ] || continue
+  # --no-index: a tracked file is never reported by the default form, and the
+  # question is about the rules, not the index.
+  #
+  # And the CODE, not the truthiness. git check-ignore exits 0 for ignored, 1
+  # for not, and 128 for a path it cannot evaluate; `if git check-ignore` put
+  # 128 in the same arm as 1, so a project the scanner could not evaluate
+  # simply vanished from the report and, if it was the only offender, the
+  # scanner exited 0. The header promises exit 1 when it could not look.
+  git check-ignore -q --no-index "${d}maintenance.log" 2>/dev/null
+  case $? in
+    0) printf 'doctrine ignored: %smaintenance.log\n' "$d"; rc=1 ;;
+    1) ;;
+    *) printf 'memory-scan: cannot search: %smaintenance.log could not be evaluated\n' "$d"; rc=1 ;;
+  esac
+done
+
+leaked="$(git ls-files -- 'projects/*/memory/*' 2>/dev/null)"
+if [ -n "$leaked" ]; then
+  printf '%s\n' "$leaked" | sed 's/^/memory tracked: /'; rc=1
+fi
+named="$(git ls-files -- 'projects/*' 2>/dev/null \
+  | grep -E "(^|/)($MEMORY_NAMES)(\.bak[^/]*)?\$" | grep -v '/memory/')"
+if [ -n "$named" ]; then
+  printf '%s\n' "$named" | sed 's/^/memory tracked by name: /'; rc=1
+fi
+indir="$(git ls-files -- 'projects/*' 2>/dev/null \
+  | grep -E "(^|/)($MEMORY_DIRS)/" | grep -v '/memory/')"
+if [ -n "$indir" ]; then
+  printf '%s\n' "$indir" | sed 's/^/memory tracked in a memory directory: /'; rc=1
+fi
+[ "$rc" -eq 0 ] || printf 'memory belongs under the memory root, outside any checkout; doctrine stays tracked\n'
+exit "$rc"
