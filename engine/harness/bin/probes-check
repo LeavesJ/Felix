@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# One project's probes, each run against this checkout, and whether any of
+# them stops it.
+#
+#   probes-check <project-dir>
+#
+#   exit 0  no row is unknown or blind
+#   exit 1  a row is unknown or blind, the table is absent, or it has no rows
+#
+# The gate has asked reality through `felix probes --gate` since the probe
+# table existed, and that command resolves its project through the binding —
+# which in a detached worktree is the HOME's copy of the table, not the tree's.
+# So nothing could stage a mutation of probes.tsv and ask the checker about
+# it, and the probe gate was the one checker qualification.tsv could not
+# name. This takes the project as a path, the way obligations-check does, and
+# runs in whatever checkout it is standing in. Both read felix_probes_run and
+# felix_probes_blocking, so the two cannot disagree about a row.
+#
+# Every way this script can fail to look is 126 or 127, never 1: 1 is a
+# verdict about the rows, and a checker that could not start must not be read
+# as one that looked and found a blocker.
+set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)" || exit 127
+[ -n "$HERE" ] || exit 127
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 126
+PROJ="${1:-}"
+[ -n "$PROJ" ] || { printf 'usage: probes-check <project-dir>\n' >&2; exit 1; }
+[ -d "$PROJ" ] || { printf 'probes-check: no project at %s\n' "$PROJ"; exit 1; }
+
+# shellcheck source=../lib/resolve.sh
+. "$HERE/lib/resolve.sh" 2>/dev/null || exit 127
+# shellcheck source=../lib/probes.sh
+. "$HERE/lib/probes.sh" 2>/dev/null || exit 127
+command -v felix_probes_run >/dev/null 2>&1 || exit 127
+command -v felix_probes_blocking >/dev/null 2>&1 || exit 127
+
+printf 'probes for %s\n\n' "$(basename "$PROJ")"
+if [ ! -f "$PROJ/probes.tsv" ]; then
+  printf 'This project asks reality nothing: there is no probes.tsv at %s.\n' "$PROJ"
+  exit 1
+fi
+rows="$(felix_probe_rows "$PROJ")"
+if [ -z "$rows" ]; then
+  printf '%s/probes.tsv declares no probe, which is a shelf with nothing on it.\n' "$PROJ"
+  exit 1
+fi
+
+out="$(felix_probes_run "$PROJ" .)"
+printf '  %-20s %-15s %5s  %s\n' PREDICATE STATE COUNT ''
+printf '%s\n' "$out" | while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  printf '  %-20s %-15s %5s  %s\n' \
+    "$(printf '%s\n' "$line" | cut -f1)" "$(printf '%s\n' "$line" | cut -f3)" \
+    "$(printf '%s\n' "$line" | cut -f4)" "$(printf '%s\n' "$line" | cut -f5)"
+done
+
+blocking="$(printf '%s\n' "$out" | felix_probes_blocking | grep -c .)"
+printf '\n%s probe(s): %s found, %s empty, %s not applicable, %s unknown, %s blind; %s blocking\n' \
+  "$(printf '%s\n' "$out" | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$3 == "found"'          | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$3 == "empty"'          | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$3 == "not-applicable"' | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$3 == "unknown"'        | grep -c .)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$3 == "blind"'          | grep -c .)" \
+  "$blocking"
+[ "$blocking" -eq 0 ] || exit 1
+exit 0

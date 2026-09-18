@@ -122,11 +122,13 @@ question before adding a library that answers it again.
 
 ## Non-obvious patterns
 
-- **Engine work happens in the home checkout, not a worktree.** The marketplace
+- **Engine deploys happen in the home checkout, not a worktree.** The marketplace
   is a directory marketplace pinned to one path, so a worktree's engine is never
-  the one served: `felix install` from a worktree re-points the marketplace at
-  that worktree, and `felix merge` cannot be reached from a worktree that
-  changed the engine. The deadlock is structural, not a mistake somebody made.
+  the one served, and `felix install` from a worktree re-points the marketplace
+  at that worktree. Merging is not affected: since #239 the gate's `installed`
+  check asks whether the engine main declares is the one deployed, which a
+  worktree can answer, so engine work is done in a worktree, merged from there
+  on green CI, and deployed by pulling the home and running `felix install`.
 - **The gate gates the tree it is standing in, not the tree it lives in**, and
   it prints that path in its header. Read the header before believing a pass.
 - **A tab-separated read applies its IFS to the substitution too.**

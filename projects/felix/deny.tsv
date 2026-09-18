@@ -45,3 +45,14 @@ Bash	(>|tee|cp |mv |rm |ln |truncate|sed -i|install |dd of=)[^;&|]*["']?\.felix(
 # There is no good use of it. Work that must be waited on runs as a background
 # job, whose completion notifies the session, or under a monitor.
 Bash	read -t [0-9]+ [^;&|]*< <\(	a timed read from a process substitution never returns under zsh and leaks its helper; run the work as a background job and wait for its completion instead
+# The exception table (amendments §3) is read from refs/remotes/origin/main, so
+# that a grant takes effect only by being merged where a person decides. Two
+# named commands would let a session move that ref itself — writing a
+# remote-tracking ref, fetching a refspec into one, rewriting the remote,
+# pushing main — and each is refused here, global options tolerated. A regex
+# over command text refuses the spellings it names and no other; branch
+# protection on the remote is the rule that cannot be evaded from here at
+# all, and until it exists these are the floor, not the wall.
+Bash	git( +-[^ ]+( +[^ ]+)?)* +(update-ref|symbolic-ref|fetch|push)[^;&|]*refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it
+Bash	git( +-[^ ]+( +[^ ]+)?)* +remote +(add|set-url|rename|remove|rm)( |$)	the remote is where the person is; a session that rewrites it chooses what refs/remotes/origin/main means
+Bash	git( +-[^ ]+( +[^ ]+)?)* +push[^;&|]* \+?([^ ]*:)?(refs/heads/)?main([[:space:];&|)]|$)	main is merged through felix merge and a person, never pushed from a session; the exception table is read from it

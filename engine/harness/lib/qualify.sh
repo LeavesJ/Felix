@@ -40,7 +40,32 @@
 
 FELIX_QUALIFY_CONTROLS='violation restoration irrelevant alternate decoupled_violation decoupled_satisfaction'
 
-# checker <TAB> command <TAB> control <TAB> expect <TAB> mutation
+# checker <TAB> command <TAB> control <TAB> expect <TAB> mutation [<TAB> premise]
+#
+# The premise, and why a fourth verdict exists (#233).
+#
+# Some controls can only be staged where something already exists. The
+# independence violation plants a governed project's name in the engine and
+# requires the checker to find it; in a checkout that governs only the engine's
+# own project there is no such name, the mutation leaks nothing, the checker
+# rightly passes, and the control was counted HELD — a red gate over an engine
+# with nothing wrong with it. Counting it met instead would be a lie. The honest
+# report is a third thing: this control's premise is absent here.
+#
+# So a row may carry a premise, run in the worktree of HEAD before the mutation,
+# and the exit status is read strictly. 0 applies the control. 1 — the
+# conventional "no" of test, grep -q and false — makes it `inapplicable`, and
+# neither the mutation nor the checker runs. Anything else is `unrunnable`:
+# a premise that errored has not said the premise is absent, and reading 2 or
+# 127 as "absent" is how a typo would silence a control forever.
+#
+# That trap has a second half the exit status cannot close: a premise that
+# answers a clean 1 everywhere, because it tests the wrong path. A control that
+# never applies never holds. felix_qualify_unshown names the checker whose every
+# fail-expecting control came back inapplicable, because such a checker has not
+# been shown failing in this checkout and must not be read as qualified in it —
+# so `felix qualify --gate` refuses on it, exactly as on a held control. The way
+# out is a control that stages its own premise, which applies everywhere.
 _felix_qualify_table() { printf '%s/qualification.tsv' "$1"; }
 
 felix_qualify_rows() {
@@ -78,37 +103,73 @@ felix_qualify_missing_controls() {
 # is tracked, what is ignored — and a bare directory of files would make every
 # such checker fail for a reason that has nothing to do with the mutation. It
 # shares the object store, so this costs a checkout and not a clone.
-_felix_qualify_one() {   # root, command, mutation -> pass | fail | unrunnable
-  local root="$1" cmd="$2" mut="$3" base scratch got
+_felix_qualify_one() {   # root, command, mutation, [premise] -> pass | fail | unrunnable | inapplicable
+  local root="$1" cmd="$2" mut="$3" premise="${4:-}" base scratch got prc
   base="$(mktemp -d 2>/dev/null)" || { printf 'unrunnable'; return 0; }
   scratch="$base/w"
   if ! git -C "$root" worktree add --detach -q "$scratch" HEAD 2>/dev/null; then
     rmdir "$base" 2>/dev/null; printf 'unrunnable'; return 0
   fi
-  # The mutation may legitimately fail (a control whose point is that the tree
-  # already satisfies the obligation), so its status is not the verdict.
-  ( cd "$scratch" && eval "$mut" ) >/dev/null 2>&1
-  if ( cd "$scratch" && eval "$cmd" ) >/dev/null 2>&1; then got=pass; else got=fail; fi
+  got=""
+  if [ -n "$premise" ] && [ "$premise" != "-" ]; then
+    ( cd "$scratch" && eval "$premise" ) </dev/null >/dev/null 2>&1; prc=$?
+    case "$prc" in
+      0) : ;;
+      1) got=inapplicable ;;
+      *) got=unrunnable ;;
+    esac
+  fi
+  if [ -z "$got" ]; then
+    # The mutation may legitimately fail (a control whose point is that the tree
+    # already satisfies the obligation), so its status is not the verdict.
+    ( cd "$scratch" && eval "$mut" ) >/dev/null 2>&1
+    if ( cd "$scratch" && eval "$cmd" ) >/dev/null 2>&1; then got=pass; else got=fail; fi
+  fi
   git -C "$root" worktree remove --force "$scratch" >/dev/null 2>&1
   rmdir "$base" 2>/dev/null
   printf '%s' "$got"
 }
 
-# Emits: checker <TAB> control <TAB> expect <TAB> got <TAB> met|held|unrunnable
+# Emits: checker <TAB> control <TAB> expect <TAB> got <TAB> met|held|unrunnable|inapplicable
+#
+# An inapplicable row's got is `-`: nothing ran, so there is no pass or fail to
+# report, and printing the expected word there would read as a result.
 felix_qualify_run() {
   local proj="$1" root="$2" want="${3:-}"
-  local checker cmd control expect mut got verdict
-  felix_qualify_rows "$proj" | while IFS=$'\t' read -r checker cmd control expect mut; do
+  local checker cmd control expect mut premise got verdict
+  # Read with cut, not a tab IFS: the premise column is optional, and a tab IFS
+  # hands a missing sixth field and an empty one the same way only by luck.
+  felix_qualify_rows "$proj" | while IFS= read -r line; do
+    checker="$(printf '%s\n' "$line" | cut -f1)"
     [ -n "$checker" ] || continue
     [ -z "$want" ] || [ "$want" = "$checker" ] || continue
-    got="$(_felix_qualify_one "$root" "$cmd" "$mut")"
+    cmd="$(printf '%s\n' "$line" | cut -f2)"
+    control="$(printf '%s\n' "$line" | cut -f3)"
+    expect="$(printf '%s\n' "$line" | cut -f4)"
+    mut="$(printf '%s\n' "$line" | cut -f5)"
+    premise="$(printf '%s\n' "$line" | awk -F'\t' 'NF >= 6 { print $6 }')"
+    got="$(_felix_qualify_one "$root" "$cmd" "$mut" "$premise")"
     case "$got" in
-      unrunnable) verdict=unrunnable ;;
-      "$expect")  verdict=met ;;
-      *)          verdict=held ;;
+      unrunnable)   verdict=unrunnable ;;
+      inapplicable) verdict=inapplicable; got=- ;;
+      "$expect")    verdict=met ;;
+      *)            verdict=held ;;
     esac
     printf '%s\t%s\t%s\t%s\t%s\n' "$checker" "$control" "$expect" "$got" "$verdict"
   done
+}
+
+# Checkers never shown failing here: at least one control expects `fail`, and
+# every such control came back inapplicable. A checker with no fail-expecting
+# row at all is not named — felix_qualify_missing_controls already says which
+# controls it lacks — and one whose fail control held is already a red gate.
+felix_qualify_unshown() {   # proj, run-output -> one checker name per line
+  printf '%s\n' "$2" | LC_ALL=C awk -F'\t' '
+    NF >= 5 && $3 == "fail" {
+      if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 }
+      if ($5 != "inapplicable") applied[$1] = 1
+    }
+    END { for (i = 1; i <= n; i++) if (!(order[i] in applied)) print order[i] }'
 }
 
 # The gap: a name the gate prints that no row qualifies.

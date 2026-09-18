@@ -96,6 +96,15 @@ FELIX_ESCAPE_EXECUTE='^\.github/(workflows|actions)/'
 # and the engine names none of them.
 FELIX_ESCAPE_AUTHORITY='(^|/)projects/[^/]+/autonomy(\.[a-z]+)?$'
 
+# exception: the table of grants that clear a TASK_BLOCKING obligation at the
+# task moment (amendments §3). The engine reads it from the base ref, never
+# the working tree, so writing a row does nothing; MERGING the row is what
+# makes it a grant, and that is the act a session may not perform for itself.
+# Any change fires, additions included — the amendment says so in those
+# words, and a path channel is the shape that cannot be argued down by a
+# confine: creation, a new row, a comment, a deletion, all escape.
+FELIX_ESCAPE_EXCEPTION='(^|/)projects/[^/]+/exceptions\.tsv$'
+
 # Rows already written are not restored by reverting the code that wrote them.
 FELIX_ESCAPE_DURABLE_PATH='(^|/)(migrations|alembic)(/|$)|^prisma/migrations/'
 FELIX_ESCAPE_DURABLE_ADDED='(DROP TABLE|TRUNCATE |DELETE FROM [^W]*$)'
@@ -238,6 +247,9 @@ felix_escapes() {
     printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_AUTHORITY" \
       && printf 'authority\t%s\tmerging grants Felix a power it then holds in every session; a revert does not un-run them\n' "$f"
 
+    printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_EXCEPTION" \
+      && printf 'exception\t%s\tmerging turns a written row into a grant that clears an obligation, and only a person may give one\n' "$f"
+
     printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_DURABLE_PATH" \
       && printf 'durable\t%s\trows already written are not restored by a revert\n' "$f"
 
@@ -366,13 +378,17 @@ felix_merge_blockers() {
     esac
   done
 
-  tid="$(felix_tree_id "$root" "$home" 2>/dev/null)" || tid=""
-  receipt="$(felix_verify_receipt "$root" "$home" 2>/dev/null)"
-  if [ -z "$tid" ] \
-       || [ "$(printf '%s' "$receipt" | cut -f1)" != "$tid" ] \
-       || [ "$(printf '%s' "$receipt" | cut -f2)" != "green" ]; then
-    printf 'unverified\ttree\tno green receipt for this exact tree; run felix gate\n'
-  fi
+  # One reader for what a current receipt is (verify.sh), so the boundary and
+  # the Stop hook cannot disagree. Stale for a fact that moved outside the tree
+  # is named as such, because "run felix gate" on a tree that did not change
+  # reads as the hook being broken until the reason is beside it.
+  local cur
+  cur="$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" || true
+  case "$cur" in
+    current) ;;
+    stale*)  printf 'unverified\ttree\t%s\n' "$(printf '%s' "$cur" | cut -f2)" ;;
+    *)       printf 'unverified\ttree\tno green receipt for this exact tree; run felix gate\n' ;;
+  esac
 
   felix_evidence_check "$proj" "$base" "$root" 2>/dev/null \
     | while IFS=$'\t' read -r status name reason; do
@@ -445,7 +461,7 @@ felix_merge_blockers() {
       [ -n "$line" ] || continue
       printf 'obligations\ttable\ta row grounds on %s, which %s/probes.tsv does not declare\n' "$line" "$proj"
     done
-    felix_obligations_run "$proj" "$root" | felix_obligations_blocking release \
+    felix_obligations_run "$proj" "$root" release | felix_obligations_blocking release \
       | while IFS= read -r line; do
           [ -n "$line" ] || continue
           printf 'obligations\t%s\t%s %s: %s\n' \

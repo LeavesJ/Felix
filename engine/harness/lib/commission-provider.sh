@@ -104,11 +104,37 @@ felix_commission_request() {
   caps="$( { felix_detect "$root" 2>/dev/null; felix_declared "$proj" 2>/dev/null; } | LC_ALL=C sort -u | tr '\n' ' ')"
   declared="$(grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null | cut -f2 | tr '\n' ' ')"
   topo="$(felix_commission_topology "$proj" "$root")"
+  # Three placeholders the obligations request needs, computed only when the
+  # template names them: the decision epoch, the probe rows as a session can
+  # read them, and the admitted ledger. Each may hold newlines, backslashes
+  # and `&`, none of which survive `awk -v` or a gsub replacement intact, so
+  # they travel through the environment and are spliced by index rather than
+  # by pattern.
+  local epoch="" probes="" admitted=""
+  if grep -q '{{EPOCH}}\|{{PROBES}}\|{{ADMITTED}}' "$src" 2>/dev/null; then
+    command -v felix_epoch >/dev/null 2>&1 || . "$(dirname "${BASH_SOURCE[0]:-$0}")/epoch.sh"
+    command -v felix_obligation_rows >/dev/null 2>&1 || . "$(dirname "${BASH_SOURCE[0]:-$0}")/obligations.sh"
+    epoch="$(felix_epoch "$proj" "$root" 2>/dev/null)" || epoch=""
+    probes="$(felix_probes_run "$proj" "$root" 2>/dev/null \
+      | awk -F'\t' '{ printf "    %-20s %-15s %5s  %s\n", $1, $3, $4, $6 }')"
+    admitted="$(felix_obligation_rows "$proj" 2>/dev/null | awk -F'\t' '{ printf "    %s (%s): %s\n", $1, $2, $7 }')"
+  fi
+  FELIX_TPL_EPOCH="${epoch:-unknown}" FELIX_TPL_PROBES="${probes:-    (no probes declared)}" \
+  FELIX_TPL_ADMITTED="${admitted:-    (nothing admitted yet)}" \
   awk -v project="$(basename "$proj")" -v pdir="$proj" -v root="$root" -v caps="${caps% }" \
       -v declared="${declared% }" -v topo="$topo" -v ans="$(felix_commission_answer_path "$proj" "$need")" '
+    function splice(line, ph, val,   i, out) {
+      out = ""
+      while ((i = index(line, ph)) > 0) { out = out substr(line, 1, i - 1) val; line = substr(line, i + length(ph)) }
+      return out line
+    }
     { gsub(/\{\{PROJECT\}\}/, project); gsub(/\{\{PROJ_DIR\}\}/, pdir); gsub(/\{\{ROOT\}\}/, root)
       gsub(/\{\{CAPS\}\}/, (caps == "" ? "nothing yet" : caps)); gsub(/\{\{DECLARED\}\}/, (declared == "" ? "nothing" : declared))
-      gsub(/\{\{TOPOLOGY\}\}/, topo); gsub(/\{\{OUT\}\}/, ans); print }' "$src" > "$out" 2>/dev/null || return 1
+      gsub(/\{\{TOPOLOGY\}\}/, topo); gsub(/\{\{OUT\}\}/, ans)
+      $0 = splice($0, "{{EPOCH}}", ENVIRON["FELIX_TPL_EPOCH"])
+      $0 = splice($0, "{{PROBES}}", ENVIRON["FELIX_TPL_PROBES"])
+      $0 = splice($0, "{{ADMITTED}}", ENVIRON["FELIX_TPL_ADMITTED"])
+      print }' "$src" > "$out" 2>/dev/null || return 1
   printf '%s' "$out"
 }
 
@@ -141,7 +167,7 @@ felix_commission_provider_state() {
 # The file is model-written, so this is the place shape is enforced and the
 # only place: nothing here is ever executed.
 _felix_commission_provider_shape() {   # need -> expected field count
-  case "$1" in constitution_audited) printf 3 ;; *) printf 5 ;; esac
+  case "$1" in constitution_audited) printf 3 ;; obligations_surveyed) printf 7 ;; *) printf 5 ;; esac
 }
 
 # Which field of a row classifies it, for the report. An automation row ends in
@@ -152,7 +178,7 @@ _felix_commission_provider_shape() {   # need -> expected field count
 # while the log keeps it. That is exactly what happened to the grade on the
 # protocol's first real answer, 2026-09-04.
 felix_commission_provider_classifier() {   # need -> 1-based field index
-  case "$1" in constitution_audited) printf 3 ;; *) printf 4 ;; esac
+  case "$1" in constitution_audited) printf 3 ;; obligations_surveyed) printf 2 ;; *) printf 4 ;; esac
 }
 _felix_commission_provider_lines() {
   local f; f="$(felix_commission_answer_path "$1" "$2")"; [ -f "$f" ] || return 0
@@ -172,7 +198,13 @@ felix_commission_provider_rows() {
       printf '%s' "$name" | grep -qE '^[A-Za-z0-9@._:-]+$' || continue
       [ -n "$(_felix_commission_provider_toolong "$line")" ] && continue
     fi
-    case "$line" in *'`'*|*'$('*|*';'*|*'|'*|*'&'*) continue ;; esac
+    # A candidate obligation carries two shell commands by design, so the
+    # metacharacter ban that keeps nomination rows inert would refuse every
+    # evidence anyone could propose. candidates.sh applies its own rules to
+    # that shape, and never executes a field; the ban stays for every other.
+    if [ "$want" -ne 7 ]; then
+      case "$line" in *'`'*|*'$('*|*';'*|*'|'*|*'&'*) continue ;; esac
+    fi
     printf '%s\n' "$line"
   done
   return 0
@@ -196,7 +228,9 @@ felix_commission_provider_rejects() {
           "$name" "${long% *}" "${long##* }"; continue
       fi
     fi
-    case "$line" in *'`'*|*'$('*|*';'*|*'|'*|*'&'*) printf '%s\tshell metacharacters, in a row that is never executed anyway\n' "$name" ;; esac
+    if [ "$want" -ne 7 ]; then
+      case "$line" in *'`'*|*'$('*|*';'*|*'|'*|*'&'*) printf '%s\tshell metacharacters, in a row that is never executed anyway\n' "$name" ;; esac
+    fi
   done
   return 0
 }

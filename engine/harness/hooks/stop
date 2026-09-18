@@ -194,7 +194,12 @@ r_tid="$(printf '%s' "$receipt" | cut -f1)"
 r_res="$(printf '%s' "$receipt" | cut -f2)"
 r_when="$(printf '%s' "$receipt" | cut -f3)"
 
-if [ -n "$receipt" ] && [ "$r_tid" = "$TID" ] && [ "$r_res" = "green" ]; then
+# Current by verify.sh's reading, which the merge boundary shares: the exact
+# tree, green, and the decision epoch the gate ran under still the epoch now.
+# The epoch is recomputed only on this branch, where the answer would
+# otherwise be "verified", so the cost lands where a wrong answer would.
+current="$(felix_verify_current "$ROOT" "$FELIX_HOME_DIR" "$PROJ" 2>/dev/null)" || true
+if [ "$current" = "current" ]; then
   felix_verify_log "$PROJ" "allowed" "$TID" "green"
 
   # A night that was granted is a reason not to close on a green gate.
@@ -429,6 +434,12 @@ fi
 if [ -z "$receipt" ]; then
   why="The gate has never run in this checkout."
   detail="never verified"
+elif [ "$r_tid" = "$TID" ] && [ "$r_res" = "green" ]; then
+  # Green on this exact tree and still not current: a fact the verdict rests
+  # on moved outside the tree. Said with the reason, because "run the gate" on
+  # a tree that did not change reads as the hook being broken.
+  why="The gate passed on this exact tree at $r_when, but $(printf '%s' "$current" | cut -f2 | sed 's/; run felix gate$//')."
+  detail="epoch moved"
 elif [ "$r_tid" = "$TID" ]; then
   why="The gate failed on this exact tree, at $r_when."
   detail="failed"
@@ -447,7 +458,9 @@ Do not describe this work as complete until it has passed.
 
 If you have already decided to stop with a red gate, that is the founder's call
 to make, not yours: they can set FELIX_ALLOW_RED=1 in the environment they
-launch a session from."
+launch a session from. If the red is one TASK_BLOCKING obligation, the narrower
+way past it is a row in the project's exceptions.tsv, keyed to that obligation
+and dated, merged by a person; a session cannot grant itself one."
 
 felix_say "$PROJ" "held" "$reason" "" "${SID:-}"
 printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$reason")"

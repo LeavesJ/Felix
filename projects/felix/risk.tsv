@@ -47,4 +47,5 @@ green	path	^projects/[^/]+/maintenance\.log$	a record of when upkeep ran
 # table — reproduced, not theorised. A directory name says where a file sits
 # and never what it is, and green is the tier that can auto-merge.
 green	path	^docs/.*\.md$	prose; a document runs nothing
+red	path	^projects/[^/]+/exceptions\.tsv$	a row here clears an obligation at the task moment; merging one is a person's act, and the exception channel escapes on any change
 green	path	^projects/[^/]+/memory/	records, not behaviour

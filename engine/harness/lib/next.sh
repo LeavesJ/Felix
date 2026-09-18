@@ -38,13 +38,13 @@ felix_next() {
   local tid receipt line kind subject reason
 
   # 1 — the change in hand.
-  tid="$(felix_tree_id "$root" "$home" 2>/dev/null)" || tid=""
-  receipt="$(felix_verify_receipt "$root" "$home" 2>/dev/null)"
-  if [ -z "$tid" ] \
-       || [ "$(printf '%s' "$receipt" | cut -f1)" != "$tid" ] \
-       || [ "$(printf '%s' "$receipt" | cut -f2)" != "green" ]; then
-    _felix_next_row 1 felix "this tree has no green gate receipt" "felix gate"
-  fi
+  local cur
+  cur="$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" || true
+  case "$cur" in
+    current) ;;
+    stale*)  _felix_next_row 1 felix "$(printf '%s' "$cur" | cut -f2 | sed 's/; run felix gate$//')" "felix gate" ;;
+    *)       _felix_next_row 1 felix "this tree has no green gate receipt" "felix gate" ;;
+  esac
 
   # And the one thing that makes running that gate a waste of the minutes it
   # costs: a deployment that is not this tree.

@@ -1,0 +1,38 @@
+# What a person has excepted, for a while, from blocking a task.
+#
+# A row here clears ONE admitted obligation of class TASK_BLOCKING at the task
+# moment — the gate and the Stop hook — and nothing else: never a
+# RELEASE_BLOCKING or AUTHORITY_BLOCKING row, never the merge boundary, never
+# an escape channel. A release-blocking obligation somebody wants past is a
+# policy decision, not an exception (amendments §3).
+#
+# obligation	row_hash	expires	granted_by	reason
+#
+#   obligation  the ledger name in obligations.tsv this grant is for.
+#   row_hash    `git hash-object --stdin` of that row's exact line, newline
+#               included — `felix obligations` prints it beside each row so it
+#               can be copied. Twelve or more hex characters of it. The grant
+#               is void the moment the row changes in any column, reason
+#               included: an obligation cannot be rewritten under a live grant.
+#   expires     an absolute UTC stamp, YYYY-MM-DDTHH:MM:SSZ. Refused once
+#               passed; refused in any other shape.
+#   granted_by  the person, as text. The commit that merged the row is the
+#               attestation.
+#   reason      why, for whoever reads this ledger later.
+#
+# WHERE IT IS READ FROM. Never this working tree. The engine reads this file
+# from refs/remotes/origin/main — the remote-tracking main, never a local
+# branch, which a session could move — of the repository that holds it, so a
+# row a session writes here clears nothing until it is merged and fetched, and
+# merging it is an escape (`exception`) that felix merge hands to a person.
+# That is what makes the grant a person's act and not a command a session
+# can invoke. `felix obligations` still lists rows found only in the working
+# tree, marked as not yet a grant, so what was written can be seen before it
+# is merged.
+#
+# Missing, malformed, expired, moved, or naming a row that no longer matches:
+# all read as no clearance, identically. Nothing here can waive an obligation;
+# it can only defer one, until a date, with a name beside it.
+#
+# Seeded empty by felix new. A project that never writes a row here is a
+# project that never needed one, which is the common case.

@@ -10,10 +10,12 @@
 #   grounds    the capability this supplies ground truth for, or `-`. This is
 #              what lets `felix probes` report a surface the checkout has and
 #              nothing reads.
-#   when       a command deciding whether this row applies here. Non-zero means
-#              not-applicable, which is silent and claims nothing. `-` = always.
+#   when       a command deciding whether this row applies here. Exit 1 means
+#              not-applicable, which is silent and claims nothing; any other
+#              non-zero is unknown, which blocks. `-` = always.
 #   probe      the enumerating command. One member per line on stdout.
-#   witness    an INDEPENDENT command that exits 0 when the surface exists.
+#   witness    an INDEPENDENT command that exits 0 when the surface exists and
+#              1 when it does not. Any other exit is neither, and blocks.
 #
 # The witness is the only thing that separates "there is nothing here" from "I
 # cannot see", so a row without one can never report `empty` and always blocks

@@ -107,8 +107,12 @@ $body")"
   [ -n "$play" ] && printf '\nplay:     %s\n' "$play"
 
   if [ "$sev" = "red" ]; then
-    printf '\nOUT OF SCOPE. This implicates a red path. Escalate rather than\n'
-    printf 'starting: approval comes before the work, not after it.\n'
+    # rc 3 is kept: an unattended start refuses red work, because running with
+    # nobody present is consent the founder grants. The sentence is not a merge
+    # rule, and used to read as one.
+    printf '\nOUT OF SCOPE for an unattended start: this implicates a red path. In a\n'
+    printf 'session, read it adversarially and do the work. The tier is advice; felix\n'
+    printf 'merge stops only on an escape channel, which is where a person decides.\n'
     return 3
   fi
   return 0

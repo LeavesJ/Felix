@@ -1,0 +1,47 @@
+# The red run: this tree's assertions against the engine the base ref holds,
+# written whole by tests/red, which tests/run --record-assertions calls.
+#   base  <ref>  <sha>  <engine version there>
+#   run   <failed>  <passed>  <skipped>        lines counted, not the summary
+#   <assertion name>  <times it failed>        failed names only
+# A base of - means no red run was possible. Reproduce with: tests/red <ref>
+base	origin/main	fd2635ce49e225b22559eed1b8034e3fa01a617a	0.49.120
+run	39	2404	1
+a grant committed locally on top of the fetched main but not pushed clears nothing	1
+a grant committed on local main with no remote clears nothing	1
+a grant committed only on a side branch clears nothing even once the origin holds that branch	1
+a grant expiring past the horizon clears nothing	1
+a grant hashed over the line without its newline clears nothing	1
+a grant keyed to another line's hash clears nothing	1
+a grant naming a release-blocking obligation clears nothing	1
+a grant naming an unknown-pathway obligation clears nothing	1
+a grant on a dormant row is not applied	1
+a grant that expired before the base commit is expired whatever the clock says	1
+a grant under a home that is a different repository from the governed root clears nothing	1
+a grant written only in the working tree clears nothing	1
+a hold on an unverified tree names the exceptions table and says a session cannot grant itself one	1
+a home that is no repository has its grants unread, and the widget report says so under the new summary	1
+a live grant is listed live and a grant on a dormant row is listed armed	1
+a name admitted twice is refused the second time and admitted once	1
+a project directory outside any repository, or one that is itself the repository root, grants nothing	1
+a release-mode run carries no clearance in any row	1
+an evidence line carrying tabs and a carriage return cannot forge the eighth column nor break the row	1
+an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied	1
+an expired grant clears nothing	1
+an upper-case hash, a bad stamp or an empty grantor is no grant	1
+at the task moment an excepted row does not block	1
+creating a project's exceptions table escapes on the exception channel	1
+deleting the table from the working tree does not revoke a grant at origin/main	1
+each refused grant is listed with its reason	1
+every obligations run row carries eight columns	1
+felix new seeds an exceptions table of comment lines only	1
+felix obligations --gate passes when its only blocking row is excepted, and writes the exception to says.log	1
+felix obligations prints a row column carrying the ledger line's twelve-character hash	1
+rows written in this tree and not at origin/main are listed as not yet grants	1
+so do an added row, a comment edit and a deletion	1
+the exceptions template names the row hash column and holds no rows	1
+the gate's obligations line reads excepted and the gate passes	1
+the report heads the grants with the base ref and its commit date	1
+the same repository after push and fetch clears it, and among valid rows the earliest expiry wins	1
+the summary counts the excepted rows	1
+the whole forty-character hash grants too, and an expired row above it does not shadow it	1
+without lib/exceptions.sh every eighth column is a dash and every row is still reported	1
