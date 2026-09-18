@@ -65,4 +65,13 @@ test-flake	0	ci	on repeated CI failure, with evidence
 # is a change of status and not of what the graph models. A row that is on in
 # almost every session, and whose remedy does not address the thing it names,
 # is the status table this repository already keeps a lesson about.
-graphify	0	always	refresh the knowledge graph after a merge; it went fifteen days stale on one project while its row read event	G="$(dirname "$(git rev-parse --git-common-dir)")"; test -n "$(find "$G/graphify-out/graph.json" -newermt "$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$(git -C "$G" rev-parse HEAD)" -- . ":(exclude)projects/*/maintenance.log")" 2>/dev/null)"
+#
+# And prose is not in the key. Measured 2026-09-17 on felix: the graph was
+# refreshed at 14:41 after an engine merge, a handoff-only merge landed at
+# 14:54, and the row read due — and a second refresh could not clear it,
+# because graphify writes nothing when no code changed, so the file's time
+# never moves past a commit that touched nothing the graph models. The key is
+# the last commit touching something other than this log and Markdown; a
+# handoff section is the most common merge, and without this the row is
+# permanently due, which is the shape the paragraph above already refuses.
+graphify	0	always	refresh the knowledge graph after a merge; it went fifteen days stale on one project while its row read event	G="$(dirname "$(git rev-parse --git-common-dir)")"; test -n "$(find "$G/graphify-out/graph.json" -newermt "$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$(git -C "$G" rev-parse HEAD)" -- . ":(exclude)projects/*/maintenance.log" ":(exclude)*.md")" 2>/dev/null)"

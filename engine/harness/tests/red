@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# The red run: this tree's assertions against the engine the base ref holds.
+#
+#   tests/red [base]        base defaults to origin/main, then main
+#
+# "Shown failing before believed" (invariant 5) was, until this, a sentence in
+# a pull request body: the author ran the suite against the previous engine,
+# read a count, and typed it. When six handoff sections were audited by readers
+# forbidden the suite (HANDOFF §0bh), every claim about method — authored
+# blind, shown red — turned out to leave no artifact on the machine, and the
+# red count was one of them. This makes the count a file in the tree, taken
+# against a named commit, so "N assertions fail against the previous engine" is
+# a diff on red.tsv that anybody reproduces with the same command.
+#
+# What it does: checks the base commit out whole — libraries, bin scripts,
+# gate, tables, hooks — as a detached worktree under a temporary directory,
+# puts THIS tree's tests/run into it, and runs that. So the assertions are the
+# tree's and the engine is the base's, which is exactly the run a reviewer
+# would do by hand. The base's own tests/run never executes. The manifest
+# comparison is off for that run (FELIX_TEST_NO_MANIFEST=1): "assertion did
+# not run" against the base's manifest would count as red, and it is not.
+#
+# A worktree and not an archive, measured: the first version unpacked
+# `git archive` and read 2 of 2357 red against a base whose engine was
+# byte-identical to the tree's. Both were assertions that ask git about the
+# checkout the suite stands in — the independence scanner's `git ls-files`,
+# deploy-check's base ref — and an archive has no repository to answer, so
+# they failed for the wrong reason and would have inflated every count since.
+# The worktree is removed on the way out, whatever happened, and stale
+# metadata is pruned; a red run killed mid-way leaves an entry `git worktree
+# prune` clears.
+#
+# What it writes: red.tsv beside this script, whole, every time —
+#   base   <ref>  <sha>  <engine version at the base>
+#   run    <failed>  <passed>  <skipped>
+#   <assertion name>  <times it failed>        one row per failed name
+# and when no red run was possible, base and run rows of `-`, so the file says
+# nothing was shown rather than keeping the previous claim.
+#
+# Lines are counted, not the summary. PASS and FAIL are incremented in the
+# suite's main shell only, and some assertions run inside subshells, so the
+# summary line can read fewer than the FAIL lines above it. The lines are the
+# record; the summary is a convenience.
+#
+# What it does not do: judge. A red count of zero is a true statement about a
+# change that added no assertion the old engine fails — a documentation change,
+# a refactor with an unchanged contract — and is recorded as zero, not refused.
+# Whether zero is acceptable for a given change is the reviewer's question, and
+# the file gives them the number to ask it about.
+#
+#   exit 0  the red run ran; red.tsv holds its result, zero included
+#   exit 2  it could not: no base ref, no run beside this script, or the tree
+#           could not be read. red.tsv says so.
+#
+# One trap, from HANDOFF §5: a test for a hang leaks the hang unless its
+# watchdog kills the children, and a red run is precisely where such tests
+# fail. After the run, anything still holding the temporary path in its
+# command line is a stray of this run and is ended.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 2
+OUT="$HERE/red.tsv"
+
+_header() {
+  printf '# The red run: this tree'"'"'s assertions against the engine the base ref holds,\n'
+  printf '# written whole by tests/red, which tests/run --record-assertions calls.\n'
+  printf '#   base  <ref>  <sha>  <engine version there>\n'
+  printf '#   run   <failed>  <passed>  <skipped>        lines counted, not the summary\n'
+  printf '#   <assertion name>  <times it failed>        failed names only\n'
+  printf '# A base of - means no red run was possible. Reproduce with: tests/red <ref>\n'
+}
+
+# Every write to red.tsv lands whole or not at all: a sibling file, then one
+# rename. A truncate-then-write that died half way would leave base and run
+# rows with the failed names missing below them, which reads as zero
+# regressions when there were some — the one shape this file must never take.
+# A write that fails is said, not swallowed; what is on disk then is whatever
+# the retraction below already put there.
+_put() {   # stdin -> red.tsv, atomically
+  cat > "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"
+}
+
+# Nothing was shown. Said in the file, not only on the terminal, because a
+# red.tsv left over from the previous change is the previous change's claim.
+_none() {
+  { _header; printf 'base\t-\t-\t-\nrun\t-\t-\t-\n'; } | _put \
+    || printf 'red: could not write %s\n' "$OUT" >&2
+  printf 'red: not run: %s\n' "$1"
+  exit 2
+}
+
+# Retract FIRST, before anything that can take minutes or be killed. A run
+# ended by a signal nothing here can trap — kill -9, an out-of-memory kill, a
+# runner's hard timeout — reaches neither write below, and until this line
+# existed such a run left the previous change's claim on disk, current-looking
+# and false. From here on, a red.tsv that is not this run's result says so.
+{ _header; printf 'base\t-\t-\t-\nrun\t-\t-\t-\n'; } | _put \
+  || { printf 'red: not run: could not write %s\n' "$OUT"; exit 2; }
+
+ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" || _none "$HERE is not inside a git repository"
+[ -f "$HERE/run" ] || _none "no tests/run beside $HERE/red"
+
+BASE="${1:-}"
+if [ -z "$BASE" ]; then
+  for _r in origin/main main; do
+    git -C "$ROOT" rev-parse --verify --quiet "$_r" >/dev/null 2>&1 && { BASE="$_r"; break; }
+  done
+fi
+[ -n "$BASE" ] || _none "no origin/main or main in this repository"
+SHA="$(git -C "$ROOT" rev-parse --verify --quiet "$BASE^{commit}" 2>/dev/null)" || _none "no such ref: $BASE"
+VER="$(git -C "$ROOT" show "$SHA:engine/.claude-plugin/plugin.json" 2>/dev/null \
+       | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+[ -n "$VER" ] || VER="-"
+
+TMP="$(mktemp -d 2>/dev/null)" || _none "no temporary directory"
+TREE="$TMP/tree"
+_cleanup() {
+  git -C "$ROOT" worktree remove --force "$TREE" >/dev/null 2>&1
+  git -C "$ROOT" worktree prune >/dev/null 2>&1
+  rm -rf "$TMP"
+}
+trap _cleanup EXIT
+# The whole commit, not engine/ alone: the suite reads the repository's own
+# gate, tables, hooks and commands through REAL_HARNESS/../.., and a tree
+# missing them would skip those assertions and call the skip a verdict.
+# Judged by what is on disk, not by the exit status: a post-checkout hook
+# that fails makes `worktree add` exit 1 over a checkout that is complete and
+# registered, and this repository is entitled to grow such a hook.
+git -C "$ROOT" worktree add --detach "$TREE" "$SHA" >/dev/null 2>&1
+[ -d "$TREE/engine/harness" ] && git -C "$TREE" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
+  || _none "could not check out $BASE under $TMP"
+mkdir -p "$TREE/engine/harness/tests" "$TMP/t" 2>/dev/null
+cp "$HERE/run" "$TREE/engine/harness/tests/run" 2>/dev/null \
+  || _none "could not place tests/run into the tree at $BASE"
+
+# The suite makes its own temporary root with mktemp, and everything it
+# spawns names paths under it. Pointed under this run's directory, so that
+# root is removed with this run and a process still holding any of it is
+# findable by one pattern — the path, with its regex metacharacters escaped,
+# since mktemp's own template puts a dot in it.
+LOG="$TMP/red.log"
+( cd "$TREE" && TMPDIR="$TMP/t" FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ) > "$LOG" 2>&1
+pkill -9 -f "$(printf '%s' "$TMP" | sed 's/[][\\.*^$(){}+?|]/\\&/g')" >/dev/null 2>&1
+
+PASSED="$(grep -c '^  ok    ' "$LOG")"
+FAILED="$(grep -c '^  FAIL  ' "$LOG")"
+SKIPPED="$(grep -c '^  skip  ' "$LOG")"
+[ "$((PASSED + FAILED + SKIPPED))" -gt 0 ] || _none "the suite reached no assertion against $BASE"
+
+{
+  _header
+  printf 'base\t%s\t%s\t%s\n' "$BASE" "$SHA" "$VER"
+  printf 'run\t%s\t%s\t%s\n' "$FAILED" "$PASSED" "$SKIPPED"
+  # The names, once each, with how many times each failed: eleven names in the
+  # suite legitimately appear more than once, and a count keeps that visible.
+  sed -n 's/^  FAIL  //p' "$LOG" | LC_ALL=C sort | uniq -c \
+    | sed 's/^[[:space:]]*\([0-9][0-9]*\) \(.*\)$/\2	\1/'
+} | _put || _none "could not write $OUT"
+
+printf 'red: %s of %s assertions fail against %s (%.7s) at engine %s\n' \
+  "$FAILED" "$((PASSED + FAILED + SKIPPED))" "$BASE" "$SHA" "$VER"
+exit 0

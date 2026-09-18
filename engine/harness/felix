@@ -139,12 +139,15 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"   # engine: read-only when installe
 . "${SCRIPT_DIR}/lib/probes.sh"
 # shellcheck source=lib/obligations.sh
 . "${SCRIPT_DIR}/lib/obligations.sh"
+# shellcheck source=lib/exceptions.sh
+. "${SCRIPT_DIR}/lib/exceptions.sh"
 # shellcheck source=lib/epoch.sh
 . "${SCRIPT_DIR}/lib/epoch.sh"
 # shellcheck source=lib/facts.sh
 . "${SCRIPT_DIR}/lib/facts.sh"
 . "${SCRIPT_DIR}/lib/commission.sh"
 . "${SCRIPT_DIR}/lib/commission-provider.sh"
+. "${SCRIPT_DIR}/lib/candidates.sh"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"   # writable: projects, doctrine, memory
 
@@ -203,7 +206,7 @@ specific project, language, or toolchain.
     felix pulse [--install|--uninstall] back up memory, report what waits; --install schedules it daily
     felix procedures      what each moment must answer for, and what nothing answers yet
     felix probes [--gate] what reality says about this checkout, and what nothing asks
-    felix obligations [--gate] what this project has admitted it owes, and whether it owes it here
+    felix obligations [--gate|--request] what this project has admitted it owes, and whether it owes it here; --request asks a session to propose what nobody named
     felix epoch            the decision epoch those obligations are scoped to, and what would make a new one
     felix commission [--status] the first-encounter moment: what serves this checkout, what reaches it, what a person still owes
     felix adopt <cap>      declare a capability and everything it implies
@@ -230,7 +233,7 @@ specific project, language, or toolchain.
     felix budget           how much unattended work has been spent today
 
   memory
-    felix handoff [--was]  regenerate the handoff; --was records what was in progress
+    felix handoff [note]   regenerate the handoff; the note (or --was) records what was in progress
     felix log <text>       add a devlog entry
     felix lesson <text>    add a lesson, matched into later prompts
     felix lessons          what this project has already paid for
@@ -575,9 +578,17 @@ cmd_gate() {
       printf '                     %s control(s) met across %s checker(s)\n' \
         "$(printf '%s\n' "$qout" | grep -cE '  ok$')" \
         "$(felix_qualify_checkers "$proj" | grep -c .)"
+      # An `ok` that covered less than the table declares says by how much, on
+      # the line a reader stops at. Counted off the verdict column, the way the
+      # met count above is, and not off the summary sentence: #206 removed a
+      # count read from prose, and a reworded sentence would drop this line in
+      # exactly the checkout that needs it.
+      local qna
+      qna="$(printf '%s\n' "$qout" | grep -cE '  n/a$')"
+      [ "${qna:-0}" -gt 0 ] 2>/dev/null && printf '                     %s did not apply here\n' "$qna"
     else
       printf '  %-18s FAIL\n' qualified | tee -a "$log"
-      printf '%s\n' "$qout" | grep -E 'HELD|UNRUNNABLE' | head -8 | sed 's/^/  /'
+      printf '%s\n' "$qout" | grep -E 'HELD|UNRUNNABLE|^never shown failing in this checkout' | head -8 | sed 's/^/  /'
       [ "$rc" -eq 0 ] && printf '\ngate: FAIL (qualified)\n'
       rc=1
     fi
@@ -595,7 +606,14 @@ cmd_gate() {
   if [ -f "$proj/obligations.tsv" ]; then
     oout="$(cmd_obligations --gate 2>&1)"; orc=$?
     if [ "$orc" -eq 0 ]; then
-      printf '  %-18s ok\n' obligations | tee -a "$log"
+      # A green that rests on a person's grant is not the green of nothing
+      # owed, and the receipt's states carry the word printed here: `excepted`,
+      # so nobody reads a deferred obligation as a discharged one.
+      if printf '%s\n' "$oout" | grep -qE '^[0-9]+ obligation.*; [0-9]+ blocking, [1-9][0-9]* excepted'; then
+        printf '  %-18s excepted\n' obligations | tee -a "$log"
+      else
+        printf '  %-18s ok\n' obligations | tee -a "$log"
+      fi
       printf '                     %s\n' "$(printf '%s\n' "$oout" | grep -E '^[0-9]+ obligation' | head -1)"
     else
       printf '  %-18s FAIL\n' obligations | tee -a "$log"
@@ -700,8 +718,12 @@ cmd_gate() {
 
   # The receipt. Recorded on failure as well as success: no receipt and a red
   # one both stop a session, but only one of them says what happened — and now
-  # also what it did not check, and what it did.
-  felix_verify_record "$root" "$FELIX_HOME_DIR" "$rc" "$gate" "$tid" "$skipped" "$reported"
+  # also what it did not check, and what it did, and the decision epoch it ran
+  # under, so a fact that moves outside the tree stales it.
+  local epoch_fields
+  epoch_fields="$(felix_verify_epoch_fields "$proj" "$root")"
+  felix_verify_record "$root" "$FELIX_HOME_DIR" "$rc" "$gate" "$tid" "$skipped" "$reported" \
+    "$(printf '%s' "$epoch_fields" | cut -f1)" "$(printf '%s' "$epoch_fields" | cut -f2)"
   exit "$rc"
 }
 
@@ -784,6 +806,11 @@ EOF
   # is Felix deciding what a stranger owes. The commissioning row for step 8
   # seeds it where felix new did not run: a project older than the template.
   cp "$tpl/obligations.tsv" "$dir/obligations.tsv"
+  # And the table of exceptions, empty: a grant that clears a TASK_BLOCKING
+  # row at the task moment (amendments §3) is read from the base ref, never
+  # the working tree, so seeding the file grants nothing; it gives the person
+  # the columns and the reasons in the place a grant would go.
+  cp "$tpl/exceptions.tsv" "$dir/exceptions.tsv"
 
   # Same filter for human steps, and only copy the runbooks that survive it.
   {
@@ -1151,13 +1178,8 @@ closes #$issue"
   #
   # Opened anyway rather than refused. The repair loop attaches to an existing
   # pull request, so refusing here would leave it nothing to attach to.
-  local draft="--draft" tid receipt
-  tid="$(felix_tree_id "$root" "$FELIX_HOME_DIR" 2>/dev/null)" || tid=""
-  receipt="$(felix_verify_receipt "$root" "$FELIX_HOME_DIR" 2>/dev/null)"
-  if [ -n "$tid" ] && [ "$(printf '%s' "$receipt" | cut -f1)" = "$tid" ] \
-     && [ "$(printf '%s' "$receipt" | cut -f2)" = "green" ]; then
-    draft=""
-  fi
+  local draft="--draft"
+  felix_verify_current "$root" "$FELIX_HOME_DIR" "$proj" >/dev/null 2>&1 && draft=""
 
   # shellcheck disable=SC2086
   gh pr create --repo "$slug" --base "$base" --head "$branch" \
@@ -1675,10 +1697,13 @@ cmd_qualify() {
     printf 'No checker here is qualified, because %s/qualification.tsv\n' "$proj"
     printf 'declares nothing. Every check this project runs is currently trusted\n'
     printf 'on the strength of having been written.\n\n'
-    printf '  checker <TAB> command <TAB> control <TAB> expect <TAB> mutation\n\n'
+    printf '  checker <TAB> command <TAB> control <TAB> expect <TAB> mutation [<TAB> premise]\n\n'
     printf 'Six controls per checker, from the conformance amendments: violation,\n'
     printf 'restoration, irrelevant, alternate, decoupled_violation and\n'
-    printf 'decoupled_satisfaction.\n'
+    printf 'decoupled_satisfaction.\n\n'
+    printf 'A premise is optional: a command run before the mutation. Exit 1 means\n'
+    printf 'the control cannot be staged in this checkout and it is reported as not\n'
+    printf 'applying; any other failure is a control that could not run.\n'
     return 1
   fi
 
@@ -1690,20 +1715,23 @@ cmd_qualify() {
     printf 'silence about it reads as a control that passed.\n\n'
   fi
 
-  local out held=0 unrun=0 total=0
+  local out held=0 unrun=0 total=0 inapp=0 unshown
   out="$(felix_qualify_run "$proj" "$root" "$want")"
   printf '  %-10s %-24s %-7s %-7s %s\n' CHECKER CONTROL EXPECT GOT ''
   printf '%s\n' "$out" | while IFS=$'\t' read -r c ctl exp got v; do
     [ -n "${c:-}" ] || continue
     case "$v" in
-      met)        printf '  %-10s %-24s %-7s %-7s ok\n'         "$c" "$ctl" "$exp" "$got" ;;
-      unrunnable) printf '  %-10s %-24s %-7s %-7s UNRUNNABLE\n' "$c" "$ctl" "$exp" "$got" ;;
-      *)          printf '  %-10s %-24s %-7s %-7s HELD\n'       "$c" "$ctl" "$exp" "$got" ;;
+      met)          printf '  %-10s %-24s %-7s %-7s ok\n'         "$c" "$ctl" "$exp" "$got" ;;
+      unrunnable)   printf '  %-10s %-24s %-7s %-7s UNRUNNABLE\n' "$c" "$ctl" "$exp" "$got" ;;
+      inapplicable) printf '  %-10s %-24s %-7s %-7s n/a\n'        "$c" "$ctl" "$exp" "$got" ;;
+      *)            printf '  %-10s %-24s %-7s %-7s HELD\n'       "$c" "$ctl" "$exp" "$got" ;;
     esac
   done
   held="$(printf '%s\n' "$out"  | awk -F'\t' '$5 == "held" { n++ } END { print n+0 }')"
   unrun="$(printf '%s\n' "$out" | awk -F'\t' '$5 == "unrunnable" { n++ } END { print n+0 }')"
+  inapp="$(printf '%s\n' "$out" | awk -F'\t' '$5 == "inapplicable" { n++ } END { print n+0 }')"
   total="$(printf '%s\n' "$out" | awk -F'\t' 'NF >= 5 { n++ } END { print n+0 }')"
+  unshown="$(felix_qualify_unshown "$proj" "$out" | tr '\n' ' ')"
 
   # Controls a checker has no row for. Four of six is not qualified, and the two
   # usually missing are the two that separate the marker from the property.
@@ -1715,6 +1743,27 @@ cmd_qualify() {
   done
 
   printf '\n%s of %s control(s) held; %s could not run.\n' "$held" "$total" "$unrun"
+  # Said only when it happened, and never folded into the held count or the met
+  # one: a control whose premise is absent is neither broken nor kept.
+  [ "${inapp:-0}" -gt 0 ] && printf '%s did not apply in this checkout: its premise is absent here.\n' "$inapp"
+  # One inapplicable control is not a refusal: it is not a control anybody broke.
+  # A checker ALL of whose fail-expecting controls did not apply is, under
+  # --gate, and the first draft of this said otherwise. It reasoned from the
+  # ratchet — a checker with no rows is not red — and the reasoning does not
+  # transfer: those controls were written, which is the claim that the checker
+  # catches something, and in this checkout nothing shows it catching anything.
+  # `qualified ok` over that is invariant 5 broken in the one check that exists
+  # to enforce invariant 5. A review caught it before it merged.
+  #
+  # The remedy is not a looser verdict but a better control: one that stages its
+  # own premise — creates the thing whose absence made the others inapplicable,
+  # then breaks the property with it — applies in every checkout.
+  if [ -n "${unshown% }" ]; then
+    printf '\nnever shown failing in this checkout: %s\n' "${unshown% }"
+    printf 'Every control that expects it to fail has a premise this checkout lacks,\n'
+    printf 'so nothing here shows it catching anything. It is not qualified here.\n'
+    printf 'Declare a control that stages its own premise, and it applies everywhere.\n'
+  fi
   if [ "${held:-0}" -gt 0 ]; then
     printf '\nA held control is the checker passing over a tree that violates what it\n'
     printf 'protects. That is not a failing test — it is the check reporting a\n'
@@ -1764,10 +1813,12 @@ cmd_qualify() {
     fi
   fi
   if [ "$gate" -eq 1 ]; then
-    [ "${held:-0}" -eq 0 ] && [ "${unrun:-0}" -eq 0 ] && return 0
-    printf '\nA declared control that does not hold is this check reporting a\n'
-    printf 'property the tree does not have. Fix the checker, or delete the\n'
-    printf 'control and say in the diff that it is no longer claimed.\n'
+    [ "${held:-0}" -eq 0 ] && [ "${unrun:-0}" -eq 0 ] && [ -z "${unshown% }" ] && return 0
+    if [ "${held:-0}" -gt 0 ] || [ "${unrun:-0}" -gt 0 ]; then
+      printf '\nA declared control that does not hold is this check reporting a\n'
+      printf 'property the tree does not have. Fix the checker, or delete the\n'
+      printf 'control and say in the diff that it is no longer claimed.\n'
+    fi
     return 1
   fi
   printf '\nA declared control binds; an undeclared one does not. felix qualify\n'
@@ -2780,8 +2831,8 @@ cmd_bootstrap() {
     gh label create needs-founder --repo "$slug" --color D93F0B --description "Repair loop hit its ceiling; a human must diagnose" >/dev/null 2>&1
     gh label create needs-architecture --repo "$slug" --color 5319E7 --description "Failure is a design problem, not a patch" >/dev/null 2>&1
     gh label create risk-green --repo "$slug" --color 0E8A16 --description "Reversible" >/dev/null 2>&1
-    gh label create risk-yellow --repo "$slug" --color FBCA04 --description "Human reviews" >/dev/null 2>&1
-    gh label create risk-red --repo "$slug" --color B60205 --description "Approval required" >/dev/null 2>&1
+    gh label create risk-yellow --repo "$slug" --color FBCA04 --description "Not obviously safe; look closely, then merge on green CI" >/dev/null 2>&1
+    gh label create risk-red --repo "$slug" --color B60205 --description "Look hardest; an escape channel, not this label, stops a merge" >/dev/null 2>&1
     printf '  created    5 labels\n'
   fi
   if [ -n "$slug" ] && ! _felix_bs_have_protection "$slug" "$branch"; then
@@ -3265,8 +3316,15 @@ cmd_classify() {
         printf 'Reversible, but %s evidence gap(s). Not auto-merge eligible: a green\ntier means no risky path was touched, not that the change was proven.\nRun felix evidence.\n' "$ev_gaps"
       fi
       ;;
-    yellow) printf 'Implement autonomously; a human merges. Nothing here is irreversible,\nbut something in it is not obviously safe.\n' ;;
-    red)    printf 'Approval required before merge. Show a preview of the exact change and\nits reversal path; do not merge on a green gate alone.\n' ;;
+    # Tier is advice about how hard to look, and these two lines are what a
+    # session reads when it ships. They used to say "a human merges" and
+    # "approval required before merge", which nothing enforced — felix merge
+    # never reads the tier, only escape channels — and which the founder had
+    # already overruled (2026-09-12: Felix merges its own pull requests). A
+    # session believed the printed sentence over the direction and left five
+    # merges for a person. The stop is a channel; the sentence now says so.
+    yellow) printf 'Not obviously safe, though nothing here is irreversible. Look closely,\nthen merge once CI is green; felix merge stops only on a channel that\nescapes the tree.\n' ;;
+    red)    printf 'Look hardest here: a mistake in these paths is silent and reaches every\nsession. Put the exact change and its reversal path in the pull request.\nThe tier stops nothing: merge once CI is green unless felix merge names an\nescape channel, which is where a person decides.\n' ;;
   esac
 
   [ "$apply" -eq 1 ] || { printf '\nlabel the PR with: felix classify --apply\n'; return 0; }
@@ -3417,7 +3475,7 @@ EOF
   # Policy, stated every time because urgency is exactly when it gets skipped.
   printf '\nUrgency does not bypass the gates. The fix goes through the same gate,\n'
   printf 'the same classification, and the same evidence policy as any other change.\n'
-  [ "$sev" = "red" ] && printf 'A red path is implicated: a human decides before anything is changed.\n'
+  [ "$sev" = "red" ] && printf 'A red path is implicated: read the fix harder than usual. The tier is\nadvice; the fix merges on green CI unless felix merge names an escape\nchannel, and that is the part a person decides.\n'
 
   [ "$create" -eq 1 ] || { printf '\nopen an issue with: felix incident --create\n'; return 0; }
 
@@ -3482,9 +3540,12 @@ cmd_repair() {
   if [ -n "$implicated" ] && [ -f "$proj/risk.tsv" ]; then
     sev="$(felix_incident_severity "$proj" "$implicated")"
     if [ "$sev" = "red" ]; then
-      printf '\nOUT OF SCOPE. The failure implicates a red path:\n\n'
+      # Out of scope for an unattended repair, which is a consent boundary and
+      # stays one: nobody is present to read a red fix adversarially. It is not
+      # a merge rule — a session takes this, and merges on green like any other.
+      printf '\nOUT OF SCOPE for unattended repair. The failure implicates a red path:\n\n'
       printf '%s\n' "$implicated" | sed 's|^|  |'
-      printf '\nAttempts remaining is the wrong bound here. Escalate:\n\n'
+      printf '\nAttempts remaining is the wrong bound here. A session takes it; to flag it:\n\n'
       printf '  gh pr edit --repo %s --add-label needs-founder\n' "$repo"
       return 3
     fi
@@ -3651,14 +3712,39 @@ cmd_lesson() {
 }
 
 cmd_handoff() {
-  resolve_or_die; local proj="$PROJ" root gate note=""
+  resolve_or_die; local proj="$PROJ" root gate note="" was="" words=""
+  # #127. The catch-all used to shift anything it did not know, so
+  # `felix handoff "what was in progress"` — the invocation everyone types —
+  # dropped the one line git cannot rebuild and printed success over an older
+  # note. Words are the note now, a flag it does not know refuses, and a note
+  # given both ways refuses rather than choosing one silently.
   while [ $# -gt 0 ]; do
-    case "$1" in --was) need_value "$@"; note="$2"; shift 2 ;; *) shift ;; esac
+    case "$1" in
+      --was) need_value "$@"; was="$2"; shift 2 ;;
+      --)    shift; words="${words:+$words }$*"; break ;;
+      -*)    die "usage: felix handoff [--was \"what was in progress\" | what was in progress]" ;;
+      *)     words="${words:+$words }$1"; shift ;;
+    esac
   done
+  [ -n "$was" ] && [ -n "$words" ] \
+    && die "usage: felix handoff [--was \"what was in progress\" | what was in progress] — the note was given twice"
+  note="${was:-$words}"
   root="$(felix_repo_root "$PWD")"
   gate="$(felix_json_str "$proj/project.json" gate)"
   felix_mem_handoff "$proj" "$root" "$gate" "$note"
   printf 'wrote %s/SESSION_HANDOFF.md\n\n' "$(felix_mem_dir "$proj")"
+  # Carrying a note across a regeneration is right; carrying it in silence is
+  # how a two-session-old note read as this session's. Said only when nothing
+  # was given, because then the note in the file is not the caller's.
+  if [ -z "$note" ]; then
+    local kept
+    kept="$(sed -n 's/^- what was in progress: //p' "$(felix_mem_dir "$proj")/SESSION_HANDOFF.md" 2>/dev/null | head -1)"
+    case "$kept" in
+      ''|_fill*) printf 'no note of what was in progress. felix handoff "..." records one.\n\n' ;;
+      *)         printf 'kept the note from the last handoff, which may not be this session'"'"'s:\n  %s\n' "$(printf '%s' "$kept" | cut -c1-160)"
+                 printf 'felix handoff "..." replaces it.\n\n' ;;
+    esac
+  fi
 
   # The session-end list from the guidebook, as a check rather than a memory
   # exercise. Each line is something a person is about to not do.
@@ -4241,15 +4327,35 @@ EOF
 }
 
 cmd_obligations() {
-  resolve_or_die; local proj="$PROJ" gate=0 seed=0 a
+  resolve_or_die; local proj="$PROJ" gate=0 seed=0 request=0 a
   for a in "$@"; do
     case "$a" in
       --gate) gate=1 ;;
       --seed) seed=1 ;;
-      *) die "usage: felix obligations [--gate|--seed] (got: $a)" ;;
+      --request) request=1 ;;
+      *) die "usage: felix obligations [--gate|--seed|--request] (got: $a)" ;;
     esac
   done
   local root; root="$(felix_repo_root "$PWD")"
+
+  # --request: write the discovery request for a session's model to answer
+  # (docs/2026-09-16-discovery-baseline-design.md). felix commission writes
+  # every provider request on a real run and is the founder's; this writes
+  # the one for candidate obligations, touches no table, and is therefore
+  # Felix's to run whenever the epoch has moved. Refused when the epoch cannot
+  # be computed: a request about a topology the probes could not read would
+  # ask for a proposal grounded on nothing.
+  if [ "$request" -eq 1 ]; then
+    local req
+    if req="$(felix_candidates_request "$proj" "$root" "$SCRIPT_DIR/templates")"; then
+      printf 'wrote %s\n\nA session answers it by running the request and writing the answer file\n' "$req"
+      printf 'it names; felix obligations reads the answer back and admits nothing.\n'
+      return 0
+    fi
+    printf 'no request written: the decision epoch cannot be computed for %s here,\n' "$(basename "$proj")"
+    printf 'so nothing could be proposed about it. felix probes says which fact is unknown.\n'
+    return 1
+  fi
 
   # --seed: the §8 step 8 answer, "initialize obligation and evidence state".
   # A project born before the template existed has no ledger, and a ledger
@@ -4306,30 +4412,95 @@ cmd_obligations() {
   fi
 
   local out; out="$(felix_obligations_run "$proj" "$root")"
-  printf '  %-22s %-18s %-9s %-12s %s\n' OBLIGATION CLASS APPLIES DISCHARGE ''
+  # ROW is the hash a grant in exceptions.tsv is keyed to (exceptions.sh): the
+  # ledger line, verbatim, with its newline. Printed so a person copies it
+  # rather than computing it. An excepted row keeps its discharge — the
+  # obligation is still owed — and says who accepted that, until when.
+  printf '  %-22s %-18s %-9s %-12s %-12s %s\n' OBLIGATION CLASS APPLIES DISCHARGE ROW ''
   printf '%s\n' "$out" | while IFS= read -r line; do
     [ -n "$line" ] || continue
-    printf '  %-22s %-18s %-9s %-12s %s\n' \
-      "$(printf '%s\n' "$line" | cut -f1)" "$(printf '%s\n' "$line" | cut -f2)" \
+    local oname odetail oexc ohash
+    oname="$(printf '%s\n' "$line" | cut -f1)"; odetail="$(printf '%s\n' "$line" | cut -f6)"
+    oexc="$(printf '%s\n' "$line" | cut -f8)"
+    ohash="$(command -v felix_obligation_row_hash >/dev/null 2>&1 && felix_obligation_row_hash "$proj" "$oname" 2>/dev/null | cut -c1-12)"
+    case "$oexc" in
+      'excepted|'*) odetail="excepted until $(printf '%s\n' "$oexc" | cut -d'|' -f2) by $(printf '%s\n' "$oexc" | cut -d'|' -f3-)${odetail:+; $odetail}" ;;
+    esac
+    printf '  %-22s %-18s %-9s %-12s %-12s %s\n' \
+      "$oname" "$(printf '%s\n' "$line" | cut -f2)" \
       "$(printf '%s\n' "$line" | cut -f4)" "$(printf '%s\n' "$line" | cut -f5)" \
-      "$(printf '%s\n' "$line" | cut -f6)"
+      "${ohash:--}" "$odetail"
   done
   local n_block; n_block="$(printf '%s\n' "$out" | felix_obligations_blocking | grep -c .)"
-  printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking' \
+  local n_exc; n_exc="$(printf '%s\n' "$out" | awk -F'\t' 'index($8, "excepted|") == 1' | grep -c .)"
+  printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking, %s excepted' \
     "$(printf '%s\n' "$out" | grep -c .)" \
     "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "ACTIVE"'  | grep -c .)" \
     "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "DORMANT"' | grep -c .)" \
     "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "UNKNOWN"' | grep -c .)" \
-    "$n_block"
+    "$n_block" "$n_exc"
   local n_ung; n_ung="$(felix_obligations_ungrounded "$proj" | grep -c .)"
   [ "$n_ung" -gt 0 ] && printf '; %s ground on no probe' "$n_ung"
   printf '\n'
+  # A clearance that happened silently would leave the founder a green with
+  # nothing in the record saying a person's grant produced it: said, once per
+  # row, at the moment it is consumed (exceptions.sh, amendments §3).
+  if [ "$gate" -eq 1 ] && [ "$n_exc" -gt 0 ]; then
+    printf '%s\n' "$out" | awk -F'\t' 'index($8, "excepted|") == 1 { print $1 "\t" $8 }' | while IFS=$'\t' read -r xname xexc; do
+      [ -n "$xname" ] || continue
+      felix_say "$proj" "excepted" "$xname: excepted until $(printf '%s\n' "$xexc" | cut -d'|' -f2) by $(printf '%s\n' "$xexc" | cut -d'|' -f3-)" "felix obligations --gate" "" 2>/dev/null || true
+    done
+  fi
+  # The grants themselves, read from the base ref and judged against the
+  # ledger as it stands, and what this tree holds that the base does not.
+  if [ "$gate" -ne 1 ] && command -v felix_exceptions_judge >/dev/null 2>&1 && ! felix_same_repo "$proj" "$root" 2>/dev/null; then
+    if [ -f "$proj/exceptions.tsv" ] && grep -qvE '^[[:space:]]*(#|$)' "$proj/exceptions.tsv"; then
+      printf '\nexceptions: not read for this project. Its tables live in %s, whose merges\n' "$(dirname "$proj")"
+      printf 'this boundary does not examine, so a grant there is not yet a person'"'"'s act.\n'
+    fi
+  elif [ "$gate" -ne 1 ] && command -v felix_exceptions_judge >/dev/null 2>&1; then
+    local xref xj xu n_x
+    xref="$(felix_exceptions_ref "$proj" 2>/dev/null)" || xref=""
+    xj="$(felix_exceptions_judge "$proj" "" "$out")"; xu="$(felix_exceptions_unmerged "$proj" "$root")"; n_x="$(felix_exceptions_count "$proj")"
+    if [ -n "$xj" ] || [ -n "$xu" ]; then
+      local xhead
+      if [ -n "$xref" ]; then xhead="$xref ($(felix_exceptions_ref_date "$proj"))"; else xhead="no refs/remotes/origin/main, so none can be read"; fi
+      printf '\nexceptions at %s: %s granted\n' "$xhead" "$n_x"
+      [ -n "$xj" ] && printf '%s\n' "$xj" | awk -F'\t' 'NF >= 5 { printf "  %-8s %-22s %-21s %-14s %s\n", $1, $2, $3, $4, $5 }'
+      if [ -n "$xu" ]; then
+        printf '\n  written in this tree and not at %s, so not yet a grant:\n' "${xref:-the base ref}"
+        printf '%s\n' "$xu" | awk -F'\t' '{ printf "    %-22s until %s by %s\n", $1, $3, $4 }'
+      fi
+    fi
+  fi
   # The epoch these were evaluated under. Report only, and only in the report:
   # the gate's copy of this output is read by other things, and a line added
   # there would be a format change rather than a fact.
   if [ "$gate" -ne 1 ]; then
     local ep; ep="$(felix_epoch "$proj" "$root")" || ep=""
     [ -n "$ep" ] && printf '\nscoped to decision epoch %s\n' "$ep"
+    # What a model proposed, and nothing admitted. Ingested here on every
+    # read rather than in a hook, so the file a session wrote is read the
+    # first time anyone asks; reported only in the report, never under
+    # --gate, because the gate's copy of this output is parsed.
+    if [ -f "$(felix_candidates_answer_path "$proj")" ] || [ -f "$(felix_candidates_path "$proj")" ]; then
+      felix_candidates_record "$proj" "$root" >/dev/null 2>&1
+      local cands refused n_c n_cur n_adm
+      cands="$(felix_candidates_stale "$proj" "$root")"
+      refused="$(felix_candidates_rules "$proj" "$root" | awk -F'\t' '$1 == "refuse" { print $2 ": " $3 }')"
+      n_c="$(printf '%s\n' "$cands" | grep -c .)"
+      n_cur="$(printf '%s\n' "$cands" | awk -F'\t' '$2 == "current"' | grep -c .)"
+      n_adm="$(printf '%s\n' "$rows" | grep -c .)"
+      printf '\ncandidates: %s proposed, %s under this epoch, none admitted by the engine\n' "$n_c" "$n_cur"
+      printf '%s\n' "$cands" | awk -F'\t' 'NF == 2 { printf "  %-22s %s\n", $1, $2 }'
+      if [ -n "$refused" ]; then
+        printf '\n  refused, with the reason\n'
+        printf '%s\n' "$refused" | sed 's/^/    /'
+      fi
+      printf '\ndiscovered %s, admitted %s, granted %s. A candidate is admitted by a person copying its\n' \
+        "$n_c" "$n_adm" "$(command -v felix_exceptions_count >/dev/null 2>&1 && felix_exceptions_count "$proj" || printf 0)"
+      printf 'row into %s/obligations.tsv and committing; the engine never does.\n' "$proj"
+    fi
   fi
   if [ "$gate" -eq 1 ]; then
     [ "$n_block" -eq 0 ] && [ -z "$bad" ] && [ -z "$orphans" ] || return 1

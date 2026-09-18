@@ -55,7 +55,12 @@ FELIX_TEST_RAN="$TMP/ran"; : > "$FELIX_TEST_RAN"
 # The manifest of assertions this suite is supposed to reach, beside the suite
 # and tracked. Regenerated with `tests/run --record-assertions`, which is the
 # one command that changes it, so the diff on every PR says plainly which
-# assertions were added and which were removed.
+# assertions were added and which were removed. The same command then runs
+# tests/red, which writes red.tsv beside it: this suite against the engine the
+# base ref holds, so "N fail against the previous engine" is a file in the
+# tree and not a sentence in a pull request. FELIX_TEST_NO_MANIFEST=1 is how
+# that red run asks this suite not to compare itself against a manifest that
+# describes another tree.
 FELIX_TEST_MANIFEST="$HERE/assertions.tsv"
 FELIX_TEST_RECORD=0
 [ "${1:-}" = "--record-assertions" ] && { FELIX_TEST_RECORD=1; shift; }
@@ -954,6 +959,49 @@ out="$( cd "$REPO" && "$FELIX" classify --base HEAD~1 2>&1 )"
 has "an unrecognised file is yellow, never green" "$out" "tier:  yellow"
 has "and says why"                                "$out" "no rule matched"
 _reset
+
+# The tier sentences are what a session reads when it ships. They said "a human
+# merges" and "Approval required before merge", which nothing enforced — felix
+# merge never reads the tier — and which the founder had overruled on 2026-09-12:
+# Felix merges its own pull requests. A session believed the printed sentence
+# over the direction and left five merges for him. Each negative is paired with
+# the sentence that replaced it, so an output that printed nothing cannot pass.
+printf 'x\n' > "$REPO/unknown_thing.xyz"; _stage
+out="$( cd "$REPO" && "$FELIX" classify --base HEAD~1 2>&1 )"
+case "$out" in
+  *"a human merges"*) bad "a yellow diff no longer hands its merge to a person" "$out" ;;
+  *)                  ok  "a yellow diff no longer hands its merge to a person" ;;
+esac
+has "and says it merges once CI is green" "$out" "merge once CI is green"
+_reset
+mkdir -p "$REPO/migrations"; printf 'x\n' > "$REPO/migrations/003.sql"; _stage
+out="$( cd "$REPO" && "$FELIX" classify --base HEAD~1 2>&1 )"
+case "$out" in
+  *"Approval required"*) bad "a red diff no longer says approval is required before merge" "$out" ;;
+  *)                     ok  "a red diff no longer says approval is required before merge" ;;
+esac
+has "and names the escape channel as where a person decides" "$out" "escape channel"
+_reset
+# The same sentence, injected into the session on a routed turn whenever the
+# tree touches a red path. It was the loudest of them: "a person decides here".
+mkdir -p "$REPO/migrations"; printf 'x\n' > "$REPO/migrations/004.sql"
+_rred="$( cd "$REPO" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/classify.sh"
+          . "$FROOT/harness/lib/incident.sh"; . "$FROOT/harness/lib/route.sh"
+          _felix_route_red "$FROOT/projects/widget" "$REPO" 2>&1 )"
+rm -rf "$REPO/migrations"
+has "a red working tree is still named in the session" "$_rred" "calls red"
+case "$_rred" in
+  *"person"*"decides here"*|*"A person"*) bad "and the session is not told a person decides on tier alone" "$_rred" ;;
+  *)                                      ok  "and the session is not told a person decides on tier alone" ;;
+esac
+# A bootstrapped repository asked a person before every `gh pr merge`, whatever
+# the tier. What still asks is a merge that bypasses a required check.
+_perm="$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/bootstrap.sh"; felix_bs_render_perms )"
+has "a bootstrapped repository still asks before a merge that bypasses checks" "$_perm" 'gh pr merge*--admin*'
+case "$_perm" in
+  *'"Bash(gh pr merge*)"'*) bad "but no longer before every merge" "$_perm" ;;
+  *)                        ok  "but no longer before every merge" ;;
+esac
 
 # The marker decides which project governs a checkout, and the template rated
 # it GREEN until 2026-09-03 — the one tier that can auto-merge. So the single
@@ -2274,6 +2322,38 @@ has "handoff lists the session-end checks" "$out" "before you stop"
 grep -q "## Where" "$MEM/widget/SESSION_HANDOFF.md" \
   && ok "handoff is regenerated from the tree" || bad "handoff is regenerated from the tree"
 
+# #127. The note is the one line git cannot rebuild, and the CLI threw away the
+# obvious way of giving it: `felix handoff "what was in progress"` passed a
+# positional, the parser's catch-all shifted it off, and the command printed
+# success over a note from two sessions earlier. The library carries a note
+# across a regeneration on purpose; the defect is the call site, so the call
+# site is what is tested.
+_hn() { sed -n 's/^- what was in progress: //p' "$MEM/widget/SESSION_HANDOFF.md" | head -1; }
+( cd "$MEMREPO" && "$FELIX" handoff --was "set with the flag" >/dev/null 2>&1 )
+is  "handoff --was still records the note" "$(_hn)" "set with the flag"
+( cd "$MEMREPO" && "$FELIX" handoff "given as words" "not a flag" >/dev/null 2>&1 ); _hrc=$?
+is  "a note typed without --was is recorded, not dropped" "$(_hn)" "given as words not a flag"
+is  "and the command succeeds"                            "$_hrc" "0"
+_ho="$(cd "$MEMREPO" && "$FELIX" handoff --wsa "misspelled" 2>&1)"; _hrc=$?
+is  "an unrecognised flag refuses rather than printing success" "$_hrc" "1"
+has "and says how the command is used"                          "$_ho" "usage"
+is  "and leaves the recorded note as it was"                    "$(_hn)" "given as words not a flag"
+( cd "$MEMREPO" && "$FELIX" handoff --was "one" "two" >/dev/null 2>&1 ); _hrc=$?
+is  "a note given twice, by flag and by words, refuses"         "$_hrc" "1"
+is  "and records neither"                                       "$(_hn)" "given as words not a flag"
+# The stale note that started this: nothing given, an old note carried, and
+# nothing said. Carrying stays; silence does not.
+_ho="$(cd "$MEMREPO" && "$FELIX" handoff 2>&1)"
+has "a handoff given no note says it kept the last one" "$_ho" "kept the note from the last handoff"
+has "and shows which note it kept"                      "$_ho" "given as words not a flag"
+rm -f "$MEM/widget/SESSION_HANDOFF.md"
+_ho="$(cd "$MEMREPO" && "$FELIX" handoff 2>&1)"
+case "$_ho" in
+  *"kept the note"*) bad "and does not claim to keep a note when there was none" "$_ho" ;;
+  *)                 ok  "and does not claim to keep a note when there was none" ;;
+esac
+has "but says there is none to keep"                    "$_ho" "no note of what was in progress"
+
 # The promotion signal is recurrence across days, not volume on one day.
 D="$MEM/widget/DEVLOG.md"
 : > "$D"
@@ -2954,6 +3034,12 @@ out="$(_stop "$GREPO")"
 _blocks "an unverified change blocks completion" "$out"
 has     "and says the gate never ran"            "$out" "never"
 
+# The table is written BEFORE the gate runs. stack.tsv is in the epoch's
+# policy set, and a receipt is bound to the epoch its gate ran under (v3.2
+# §5), so a table edited after the gate stales the receipt and the stop below
+# would block on "the table set moved" — correctly — instead of reaching the
+# nudge this is about.
+printf 'plugin\tsuperpowers@x\t-\tlow\talways\n' > "$FROOT/projects/widget/stack.tsv"
 out="$(cd "$GREPO" && "$FELIX" gate 2>&1)"
 out="$(_stop "$GREPO")"
 _allows "a green gate on this exact tree allows it" "$out"
@@ -2962,7 +3048,6 @@ _allows "a green gate on this exact tree allows it" "$out"
 # way there. Those are what go wrong: work reported as fixed that reached no
 # session, a tool reported as removed that was still installed, a document
 # describing a capability the thing had outgrown. All three passed a gate.
-printf 'plugin\tsuperpowers@x\t-\tlow\talways\n' > "$FROOT/projects/widget/stack.tsv"
 rm -rf "$FROOT/state/verified"
 out="$(cd "$GREPO" && printf '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"vsess"}' \
        | "$STOP" 2>&1)"
@@ -3300,6 +3385,10 @@ cat > "$SELF/projects/self/project.json" <<'EOF'
 { "name": "self", "gate": "true" }
 EOF
 printf '# self\n' > "$SELF/projects/self/CLAUDE.md"
+# One probe, so the receipt the gate writes carries an epoch: a project that
+# declares none has a receipt resting on nothing Felix reads, and that is
+# stale by design rather than a fixture that happens to pass.
+printf 'code\t-\t-\tgit ls-files\ttest -e .git\n' > "$SELF/projects/self/probes.tsv"
 ( cd "$SELF" && git init -q -b main && printf 'x\n' > code.txt && printf 'self\n' > .felix
   git add -A >/dev/null 2>&1
   git -c user.name=t -c user.email=t@t commit -qm i >/dev/null 2>&1 )
@@ -5804,6 +5893,24 @@ has "naming the channel that escaped"                "$(_rf "$r" authority.escap
 # clearable by review, so nothing granted here and the field must say so.
 is "and that nothing granted it, on a channel review cannot clear" \
    "$(_rf "$r" authority.granted_by)" "none"
+# And the other direction. A red tier with no channel set founder_required,
+# which no merge honoured and which told any reader of the receipt that a person
+# must approve routine engine work. The founder is required where a channel
+# escapes; a red tier is advice.
+RDR="$TMP/redreceipt"; mkdir -p "$RDR"
+( cd "$RDR" && git init -q -b main && printf 'widget\n' > .felix && printf 'x\n' > seed.txt && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm base ) >/dev/null 2>&1
+RDR="$(cd "$RDR" && pwd -P)"; RDB="$(git -C "$RDR" rev-parse HEAD)"
+mkdir -p "$RDR/auth"; printf 'allow = True\n' > "$RDR/auth/policy.py"
+( cd "$RDR" && git add -A && git -c user.name=t -c user.email=t@t commit -qm red ) >/dev/null 2>&1
+_rdr="$( cd "$RDR" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+         . "$FROOT/harness/lib/verify.sh"; . "$FROOT/harness/lib/review.sh"
+         . "$FROOT/harness/lib/escape.sh"; . "$FROOT/harness/lib/obligations.sh"; . "$FROOT/harness/lib/classify.sh"
+         . "$FROOT/harness/lib/evidence.sh"; . "$FROOT/harness/lib/receipt.sh"
+         felix_receipt "$FROOT/projects/widget" "$RDB" "$RDR" "$FROOT" )"
+is "a red change with no channel is red in the receipt"          "$(_rf "$_rdr" risk.tier)"                 "red"
+is "and nothing escapes, so the fixture can tell the two apart"  "$(_rf "$_rdr" authority.escapes)"         "[]"
+is "and the receipt does not claim the founder must approve it"  "$(_rf "$_rdr" authority.founder_required)" "false"
 
 # A base nothing can resolve must not read as "nothing changed". An empty list
 # and an unanswerable question are different facts, and the whole family of
@@ -7153,6 +7260,455 @@ printf 'a\tRELEASE_BLOCKING\tdeterministic\t-\techo cannot; exit 2\tthing\t?\n' 
 is  "evidence that says it cannot examine is UNKNOWN, not failed" "$(_obrun | cut -f5)" "UNKNOWN"
 has "carrying the evidence's own last line" "$(_obrun | cut -f6)" "cannot"
 
+printf '\ncandidates: what a model proposed, and nothing admitted\n'
+# Obligation discovery, first increment (docs/2026-09-16-discovery-baseline-
+# design.md). A session's model answers a provider request with candidate
+# obligations; the engine reads the answer offline, refuses row by row with a
+# printed reason, appends what it accepted to candidates.tsv under the memory
+# root with the epoch it was proposed under, and reports. Nothing here reaches
+# obligations.tsv, nothing here runs a candidate's command, and a candidate
+# whose epoch has moved reads stale from a comparison made now, never from a
+# stored state. Authored blind, from the prose, before the reader existed.
+CDP="$TMP/cand-proj"; CDR="$TMP/cand-repo"
+mkdir -p "$CDP" "$CDR/routes" "$MEM/cand-proj/commission"
+printf 'a\n' > "$CDR/routes/a"
+( cd "$CDR" && git init -q -b main && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm init ) >/dev/null 2>&1
+CDR="$(cd "$CDR" && pwd -P)"
+printf '{\n  "name": "cand-proj",\n  "remote_match": "example.com/cand-proj",\n  "gate": "true"\n}\n' \
+  > "$CDP/project.json"
+# Two predicates, so a candidate can ground on both, whose count moves when a
+# file is added under routes/ — that is how the epoch is made to move below.
+{ printf '# predicate\tgrounds\twhen\tprobe\twitness\n'
+  printf 'http_route\t-\t-\tls -1 routes\ttest -d routes\n'
+  printf 'ceiling_site\t-\t-\tls -1 routes\ttest -d routes\n'; } > "$CDP/probes.tsv"
+printf 'lifecycle_wired\tRELEASE_BLOCKING\tdeterministic\t-\ttrue\thttp_route\tthe fixture admits one thing, and it holds\n' \
+  > "$CDP/obligations.tsv"
+printf '# need\tgrounds\tinstrument\twhen\tanswer\tcheck\tstep\nobligations_surveyed\t-\t-\t-\tprovider:felix:obligations\t-\t4\n' \
+  > "$CDP/commissioning.tsv"
+cp "$CDP/obligations.tsv" "$TMP/cand-oblig.keep"; cp "$CDP/probes.tsv" "$TMP/cand-probes.keep"
+CDANS="$MEM/cand-proj/commission/obligations_surveyed.tsv"
+CDTAB="$MEM/cand-proj/candidates.tsv"
+
+# The sourcing shape the reader is specified under: resolve, probes,
+# obligations, epoch, then the reader. epoch.sh brings commission.sh and what
+# that carries.
+_cd() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+          . "$FROOT/harness/lib/obligations.sh"; . "$FROOT/harness/lib/epoch.sh"
+          . "$FROOT/harness/lib/candidates.sh"; "$@" ) 2>/dev/null; }
+# The topology an answer is keyed to, asked the way the provider assertions
+# ask it, and the epoch, asked the way the epoch assertions ask it. Neither is
+# the code under test, and both are checked non-empty before anything leans on
+# them: `Epoch ` with nothing after it is a needle every haystack contains.
+_cdlib() { FELIX_HOME_DIR="$FROOT"; PATH="$CMSTUB:$PATH"
+           . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"; . "$FROOT/harness/lib/stack.sh"
+           . "$FROOT/harness/lib/probes.sh"; . "$FROOT/harness/lib/verify.sh"; . "$FROOT/harness/lib/toolbox.sh"
+           . "$FROOT/harness/lib/discover.sh"; . "$FROOT/harness/lib/ready.sh"; . "$FROOT/harness/lib/commission.sh"
+           . "$FROOT/harness/lib/commission-provider.sh"; . "$FROOT/harness/lib/epoch.sh"; }
+_cdtopo()  { ( _cdlib; felix_commission_topology "${1:-$CDP}" "${2:-$CDR}" ) 2>/dev/null; }
+_cdepoch() { ( _cdlib; felix_epoch "${1:-$CDP}" "${2:-$CDR}" ) 2>/dev/null; }
+_cdps()    { ( _cdlib; felix_commission_provider_state "$CDP" "$CDR" obligations_surveyed | cut -f1 ) 2>/dev/null; }
+# Fields joined by a tab, so a row reads as its columns and an empty cell is
+# an empty cell rather than whitespace that may or may not be a tab.
+_cdr()   { local IFS=$'\t'; printf '%s' "$*"; }
+_cdw()   { printf 'w%.0s' $(seq 1 "$1"); }
+# The answer file, in the shape the design gives it: topology and epoch as
+# they are now, the rows given, and a done count — `-` for the honest count,
+# a number to make the file disagree with itself.
+_cdans() { local n="$1" r; shift
+           { printf '# topology %s\n# epoch %s\n' "$(_cdtopo)" "$(_cdepoch)"
+             for r in "$@"; do printf '%s\n' "$r"; done
+             [ "$n" = "-" ] && n=$#
+             printf 'done\t%s\n' "$n"; } > "$CDANS"; }
+_cdwhy()  { printf '%s\n' "$1" | awk -F'\t' -v n="$2" '$1 == "refuse" && $2 == n { print $3 }'; }
+_cdacc()  { printf '%s\n' "$1" | awk -F'\t' -v n="$2" '$1 == "accept" && $2 == n' | grep -c .; }
+_cdcnt()  { grep -o '[0-9][0-9]*' | head -1; }
+_cdsame() { cmp -s "$1" "$2" && echo same || echo different; }
+
+_cde0="$(_cdepoch)"; _cdt0="$(_cdtopo)"
+is  "the candidate fixture's epoch is a hash" "$(printf '%s' "$_cde0" | grep -c '^[0-9a-f]\{40\}$')" "1"
+[ -n "$_cdt0" ] && ok "and its topology is non-empty" || bad "and its topology is non-empty"
+
+# ------------------------------------------------------------- the rules ----
+# Every refusal is printed with a reason, never silently skipped; every
+# accepted line carries the row whole. Twenty data rows: five that pass and
+# fifteen that each break one rule.
+CDNS_EV='for r in routes/*; do echo "$r ceiling-armed"; done'
+CDNS_WHY='a route reachable by a stranger with a link is unbounded unless the process serving it arms the ceiling'
+CD_NS="$(_cdr route_behind_ceiling ADVISORY - "$CDNS_EV" http_route,ceiling_site uncontrolled_cost "$CDNS_WHY")"
+CD_INFO="$(_cdr info_row INFO - 'ls routes' http_route unread_route 'a route nobody lists is a route nobody reads')"
+CD_PIPED="$(_cdr piped_evidence ADVISORY 'ls routes | grep -q .' 'printf x | grep -q x; true & wait' ceiling_site pipe_in_a_command 'a pipe, a semicolon and an ampersand are how evidence is spelt, and none of it runs here')"
+CD_MARK="$(_cdr marker_row ADVISORY "touch $TMP/ran-cand-applies" "touch $TMP/ran-cand-evidence" http_route ran_anyway 'if either column is ever run, a file appears')"
+CD_MAX="$(_cdr at_ceiling ADVISORY - true http_route at_the_line "$(_cdw 300)")"
+CD_BLOCK="$(_cdr blocker RELEASE_BLOCKING - true http_route overclaim 'a model proposing a blocking class is refused, not downgraded')"
+_cdans - "$CD_NS" "$CD_INFO" "$CD_PIPED" "$CD_MARK" "$CD_MAX" \
+  "$(_cdr six_fields ADVISORY - true http_route 'six fields, no reason')" \
+  "$(_cdr eight_fields ADVISORY - true http_route fm 'seven and one more' extra)" \
+  "$(_cdr Bad_Name ADVISORY - true http_route fm 'a capital')" \
+  "$(_cdr route-x ADVISORY - true http_route fm 'a hyphen')" \
+  "$(_cdr '' ADVISORY - true http_route fm 'no name at all')" \
+  "$(_cdr lifecycle_wired ADVISORY - true http_route fm 'already in the ledger')" \
+  "$CD_BLOCK" \
+  "$(_cdr task_blocker TASK_BLOCKING - true http_route fm 'a task-blocking class is blocking too')" \
+  "$(_cdr odd_class SEVERE - true http_route fm 'a class the ledger does not know')" \
+  "$(_cdr dash_evidence ADVISORY - - http_route fm 'a dash for evidence')" \
+  "$(_cdr empty_evidence ADVISORY - '' http_route fm 'nothing for evidence')" \
+  "$(_cdr paid_route ADVISORY - true paid_model_path fm 'a probe nobody declared')" \
+  "$(_cdr ungrounded ADVISORY - true - fm 'a dash for grounds')" \
+  "$(_cdr half_grounded ADVISORY - true http_route,paid_model_path fm 'one declared, one not')" \
+  "$(_cdr long_reason ADVISORY - true http_route fm "$(_cdw 301)")"
+_cdo="$(_cd felix_candidates_rules "$CDP" "$CDR")"
+is  "the rules print one line per data row, none for the header lines or the done row" \
+    "$(printf '%s\n' "$_cdo" | grep -c .)" "20"
+is  "the done row is not a candidate" "$(printf '%s\n' "$_cdo" | awk -F'\t' '$2 == "done"' | grep -c .)" "0"
+is  "five rows are accepted, by name" \
+    "$(printf '%s\n' "$_cdo" | awk -F'\t' '$1 == "accept" { print $2 }' | LC_ALL=C sort | paste -sd, -)" \
+    "at_ceiling,info_row,marker_row,piped_evidence,route_behind_ceiling"
+is  "an accepted line carries the row whole, seven fields after the verdict" \
+    "$(printf '%s\n' "$_cdo" | awk -F'\t' '$1 == "accept" && $2 == "route_behind_ceiling"' | cut -f2-)" "$CD_NS"
+is  "fifteen are refused, each with a reason" \
+    "$(printf '%s\n' "$_cdo" | awk -F'\t' '$1 == "refuse" && $3 != ""' | grep -c .)" "15"
+has "six fields is refused for its field count"                       "$(_cdwhy "$_cdo" six_fields)"     "fields"
+has "eight fields is refused for its field count, never cut to seven" "$(_cdwhy "$_cdo" eight_fields)"   "fields"
+has "a capital in the name is not a name"                             "$(_cdwhy "$_cdo" Bad_Name)"       "not a name"
+has "a hyphen in the name is not a name"                              "$(_cdwhy "$_cdo" route-x)"        "not a name"
+is  "a row with no name is refused as unnamed" \
+    "$(printf '%s\n' "$_cdo" | awk -F'\t' '$1 == "refuse" && $2 == "(unnamed)"' | grep -c .)" "1"
+has "a name the ledger already admits is refused as already admitted" "$(_cdwhy "$_cdo" lifecycle_wired)" "already admitted"
+has "a RELEASE_BLOCKING candidate is refused because it may not block" "$(_cdwhy "$_cdo" blocker)"        "may not block"
+has "and TASK_BLOCKING may not block either"                          "$(_cdwhy "$_cdo" task_blocker)"   "may not block"
+is  "refused, not downgraded: the blocking row is accepted nowhere"    "$(_cdacc "$_cdo" blocker)"        "0"
+has "a class the ledger does not know is refused for its class"       "$(_cdwhy "$_cdo" odd_class)"      "class"
+has "a dash for evidence is no evidence"                              "$(_cdwhy "$_cdo" dash_evidence)"  "no evidence"
+has "an empty evidence cell is no evidence"                           "$(_cdwhy "$_cdo" empty_evidence)" "no evidence"
+has "a ground the probe table does not declare is refused"            "$(_cdwhy "$_cdo" paid_route)"     "not a declared probe"
+has "a dash for grounds is refused, where the ledger would only count it" "$(_cdwhy "$_cdo" ungrounded)" "not a declared probe"
+has "one undeclared ground among declared ones refuses the row"       "$(_cdwhy "$_cdo" half_grounded)"  "not a declared probe"
+has "a reason past 300 characters is refused, not shortened"          "$(_cdwhy "$_cdo" long_reason)"    "longer than"
+is  "a reason of exactly 300 is accepted"                              "$(_cdacc "$_cdo" at_ceiling)"     "1"
+is  "an INFO candidate is accepted"                                    "$(_cdacc "$_cdo" info_row)"       "1"
+is  "a pipe, a semicolon and an ampersand in applies or evidence refuse nothing" "$(_cdacc "$_cdo" piped_evidence)" "1"
+is  "the north-star row is accepted: ADVISORY, always applies, grounded on http_route and ceiling_site" \
+    "$(_cdacc "$_cdo" route_behind_ceiling)" "1"
+
+# ------------------------------------------------------------ the record ----
+# Thirteen fields, provenance first like facts.log, the pathway stamped by the
+# engine, the epoch read off the answer file rather than computed again.
+_cdans - "$CD_NS" "$CD_INFO" "$CD_PIPED" "$CD_MARK" "$CD_MAX" "$CD_BLOCK"
+_cde1="$(sed -n '2s/^# epoch //p' "$CDANS")"
+is  "the generic reader reads a seven-field answer as answered, not as five fields short" "$(_cdps)" "answered"
+_cdn="$(_cd felix_candidates_record "$CDP" "$CDR" | _cdcnt)"
+is  "recording an answered file appends the accepted rows and says how many" "$_cdn" "5"
+is  "five rows in candidates.tsv under the memory root"      "$(grep -c . "$CDTAB" 2>/dev/null)" "5"
+is  "thirteen fields per row" \
+    "$(awk -F'\t' '{ print NF }' "$CDTAB" | LC_ALL=C sort -u | paste -sd, -)" "13"
+is  "the eighth field is probabilistic on every row, stamped by the engine and never read from the model" \
+    "$(cut -f8 "$CDTAB" | LC_ALL=C sort -u)" "probabilistic"
+is  "the third field is the epoch the answer file named"     "$(cut -f3 "$CDTAB" | LC_ALL=C sort -u)" "$_cde1"
+is  "the first field is a UTC stamp" \
+    "$(cut -f1 "$CDTAB" | head -1 | grep -c '^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T[0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}Z$')" "1"
+is  "the second is a tree id, forty hex"  "$(cut -f2 "$CDTAB" | LC_ALL=C sort -u | grep -c '^[0-9a-f]\{40\}$')" "1"
+is  "and it is this checkout's tree id"   "$(cut -f2 "$CDTAB" | LC_ALL=C sort -u)" "$(_cd felix_tree_id "$CDR" "$FROOT")"
+case "$(cut -f4 "$CDTAB" | LC_ALL=C sort -u)" in
+  felix@*/*) ok  "the fourth names the engine as proposer: felix at a version and a sha" ;;
+  *)         bad "the fourth names the engine as proposer: felix at a version and a sha" "$(cut -f4 "$CDTAB" | LC_ALL=C sort -u)" ;;
+esac
+case "$(cut -f5 "$CDTAB" | LC_ALL=C sort -u)" in
+  obligations_surveyed.tsv@?*) ok  "the fifth is the answer file's name at its hash" ;;
+  *)                           bad "the fifth is the answer file's name at its hash" "$(cut -f5 "$CDTAB" | LC_ALL=C sort -u)" ;;
+esac
+_cdns="$(awk -F'\t' '$6 == "route_behind_ceiling"' "$CDTAB" | head -1)"
+is  "the north-star row's own columns follow, in the ledger's order" \
+    "$(printf '%s\n' "$_cdns" | cut -f7,9,11,12)" "$(_cdr ADVISORY - http_route,ceiling_site uncontrolled_cost)"
+is  "with its evidence whole"                    "$(printf '%s\n' "$_cdns" | cut -f10)" "$CDNS_EV"
+is  "and its reason whole"                       "$(printf '%s\n' "$_cdns" | cut -f13)" "$CDNS_WHY"
+is  "the 300-character reason survives the record whole" \
+    "$(awk -F'\t' '$6 == "at_ceiling" { print length($13) }' "$CDTAB")" "300"
+_cdn2="$(_cd felix_candidates_record "$CDP" "$CDR" | _cdcnt)"
+is  "recording the same file again appends nothing"        "$(grep -c . "$CDTAB")" "5"
+is  "and says so"                                          "${_cdn2:-0}" "0"
+is  "read prints the recorded rows" \
+    "$(_cd felix_candidates_read "$CDP" | awk -F'\t' 'NF == 13 && $8 == "probabilistic" { print $6 }' | LC_ALL=C sort | paste -sd, -)" \
+    "at_ceiling,info_row,marker_row,piped_evidence,route_behind_ceiling"
+is  "every recorded row is current under the epoch it was proposed under" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | cut -f2 | LC_ALL=C sort -u)" "current"
+is  "stale prints one line per recorded row"               "$(_cd felix_candidates_stale "$CDP" "$CDR" | grep -c .)" "5"
+[ ! -e "$TMP/ran-cand-applies" ] && [ ! -e "$TMP/ran-cand-evidence" ] \
+  && ok  "no candidate's applies or evidence ran through rules, record, read or stale" \
+  || bad "no candidate's applies or evidence ran through rules, record, read or stale" "a marker file appeared"
+is  "obligations.tsv is byte-identical after all four"    "$(_cdsame "$CDP/obligations.tsv" "$TMP/cand-oblig.keep")" "same"
+
+# -------------------------------------------------------------- the epoch ----
+# Stale is a comparison made now. A probe count moving makes every row stale;
+# the re-run that asks for is recorded again under the new epoch, same names
+# and all, because the store is per answer file and a proposal under a new
+# epoch is a new proposal; and moving the count back flips the reading,
+# because nothing about staleness was ever written down.
+printf 'b\n' > "$CDR/routes/b"
+is  "a probe count moving makes every recorded row stale" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | cut -f2 | LC_ALL=C sort -u)" "stale"
+_cdans - "$CD_NS" "$CD_INFO" "$CD_PIPED" "$CD_MARK" "$CD_MAX" \
+  "$(_cdr rerun_only ADVISORY - true ceiling_site seen_second_time 'a row the second pass found and the first did not')"
+_cde2="$(sed -n '2s/^# epoch //p' "$CDANS")"
+[ -n "$_cde2" ] && [ "$_cde2" != "$_cde1" ] \
+  && ok  "the re-run's answer names a different epoch" \
+  || bad "the re-run's answer names a different epoch" "[$_cde2] against [$_cde1]"
+is  "a re-run under the new epoch is recorded, same names and all" \
+    "$(_cd felix_candidates_record "$CDP" "$CDR" | _cdcnt)" "6"
+is  "eleven rows now"                                        "$(grep -c . "$CDTAB")" "11"
+is  "the first five read stale and the new six current" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | cut -f2 | LC_ALL=C sort | uniq -c | awk '{ print $2 "=" $1 }' | paste -sd, -)" \
+    "current=6,stale=5"
+rm -f "$CDR/routes/b"
+is  "with the count back, the second pass's row is the stale one" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | awk -F'\t' '$1 == "rerun_only" { print $2 }')" "stale"
+is  "and the first five are current again: nothing about staleness was stored" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | cut -f2 | grep -c '^current$')" "5"
+
+# An answer naming an epoch that is not this one is provenance, not a defect:
+# ingested with the epoch it named, and stale at once.
+{ printf '# topology %s\n# epoch %s\n' "$(_cdtopo)" "0000000000000000000000000000000000000000"
+  printf '%s\n' "$(_cdr foreign_epoch ADVISORY - true http_route said_elsewhere 'proposed under an epoch that is not this one')"
+  printf 'done\t1\n'; } > "$CDANS"
+is  "an answer naming an epoch that is not the current one is still ingested" \
+    "$(_cd felix_candidates_record "$CDP" "$CDR" | _cdcnt)" "1"
+is  "with the epoch it named, as provenance" \
+    "$(awk -F'\t' '$6 == "foreign_epoch" { print $3 }' "$CDTAB")" "0000000000000000000000000000000000000000"
+is  "and it reads stale at once" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | awk -F'\t' '$1 == "foreign_epoch" { print $2 }')" "stale"
+
+# A file that disagrees with itself, and one keyed to another topology: the
+# provider state's own words, and nothing recorded from either.
+_cdans 3 "$(_cdr partial_row ADVISORY - true http_route counted_wrong 'the done count says three and there are two')" \
+         "$(_cdr partial_row_two ADVISORY - true http_route counted_wrong 'the done count says three and there are two')"
+is  "a done count that disagrees with the rows reads partial"  "$(_cdps)" "partial"
+_cdn3="$(_cd felix_candidates_record "$CDP" "$CDR" | _cdcnt)"
+is  "and a partial answer records nothing"                     "${_cdn3:-0}" "0"
+is  "the table did not grow"                                   "$(grep -c . "$CDTAB")" "12"
+is  "and neither partial row is in it"                         "$(grep -c 'partial_row' "$CDTAB")" "0"
+{ printf '# topology 0000\n# epoch %s\n' "$(_cdepoch)"
+  printf '%s\n' "$(_cdr other_topology ADVISORY - true http_route keyed_elsewhere 'an answer for a topology this is not')"
+  printf 'done\t1\n'; } > "$CDANS"
+is  "an answer keyed to another topology reads stale"          "$(_cdps)" "stale"
+_cd felix_candidates_record "$CDP" "$CDR" >/dev/null
+is  "and records nothing either"                               "$(grep -c 'other_topology' "$CDTAB")" "0"
+
+# No probes, no epoch, and an epoch that cannot be computed now makes every
+# row stale rather than current by default.
+rm -f "$CDP/probes.tsv"
+is  "with no probes.tsv the epoch cannot be computed, and every recorded row is stale" \
+    "$(_cd felix_candidates_stale "$CDP" "$CDR" | cut -f2 | LC_ALL=C sort -u)" "stale"
+is  "still one line per recorded row"                          "$(_cd felix_candidates_stale "$CDP" "$CDR" | grep -c .)" "12"
+cp "$TMP/cand-probes.keep" "$CDP/probes.tsv"
+is  "obligations.tsv is byte-identical at the end of the block" "$(_cdsame "$CDP/obligations.tsv" "$TMP/cand-oblig.keep")" "same"
+[ ! -e "$TMP/ran-cand-applies" ] && [ ! -e "$TMP/ran-cand-evidence" ] \
+  && ok  "and still no candidate command has run" \
+  || bad "and still no candidate command has run" "a marker file appeared"
+
+# ---------------------------------------------------------------- the CLI ----
+# On the bound fixture. --request writes a request for a session, refuses
+# when the epoch cannot be computed, and touches no table; the report ingests
+# an answered file offline and shows it; the gate's copy shows none of it.
+WDP="$FROOT/projects/widget"
+WDANS="$MEM/widget/commission/obligations_surveyed.tsv"
+WDREQ="$MEM/widget/commission/requests/obligations_surveyed.md"
+WDTAB="$MEM/widget/candidates.tsv"
+mkdir -p "$MEM/widget/commission"
+rm -f "$WDANS" "$WDREQ" "$WDTAB" "$TMP/ran-cand-cli"
+cp "$WDP/obligations.tsv" "$TMP/cand-w-oblig.keep"; cp "$WDP/probes.tsv" "$TMP/cand-w-probes.keep"
+cp "$WDP/commissioning.tsv" "$TMP/cand-w-cm.keep"
+_wd()  { ( cd "$REPO" && PATH="$CMSTUB:$PATH" "$FELIX" obligations "$@" 2>&1 ); }
+_wde="$(_cdepoch "$WDP" "$REPO")"; _wdt="$(_cdtopo "$WDP" "$REPO")"
+is  "the widget's epoch is a hash" "$(printf '%s' "$_wde" | grep -c '^[0-9a-f]\{40\}$')" "1"
+[ -n "$_wdt" ] && ok "and the widget's topology is non-empty" || bad "and the widget's topology is non-empty"
+
+_wdo="$(_wd --request)"; _wdrc=$?
+is  "felix obligations --request exits 0 on a project whose epoch computes" "$_wdrc" "0"
+[ -f "$WDREQ" ] && ok  "and writes the request under the memory root" \
+                || bad "and writes the request under the memory root" "$_wdo"
+has "the request carries the epoch it was asked under"      "$(tr -d '`' < "$WDREQ" 2>/dev/null)" "Epoch $_wde"
+has "and the topology it is keyed to"                       "$(tr -d '`' < "$WDREQ" 2>/dev/null)" "Topology $_wdt"
+is  "and every placeholder in it was filled"                "$(grep -c '{{' "$WDREQ" 2>/dev/null)" "0"
+has "it names the candidate answer file to write"           "$(cat "$WDREQ" 2>/dev/null)" "$WDANS"
+has "it lists the probe predicate a candidate may ground on" "$(cat "$WDREQ" 2>/dev/null)" "marker"
+has "and the admitted row not to re-propose"                "$(cat "$WDREQ" 2>/dev/null)" "fixture"
+has "and states the reason ceiling a candidate is held to"  "$(cat "$WDREQ" 2>/dev/null)" "300"
+is  "--request writes no table: obligations.tsv is byte-identical" "$(_cdsame "$WDP/obligations.tsv" "$TMP/cand-w-oblig.keep")" "same"
+is  "nor probes.tsv"                                        "$(_cdsame "$WDP/probes.tsv" "$TMP/cand-w-probes.keep")" "same"
+is  "nor commissioning.tsv"                                 "$(_cdsame "$WDP/commissioning.tsv" "$TMP/cand-w-cm.keep")" "same"
+[ ! -s "$WDTAB" ] && ok  "nor candidates.tsv, with no answer to ingest" \
+                  || bad "nor candidates.tsv, with no answer to ingest" "$(cat "$WDTAB")"
+rm -f "$WDP/probes.tsv" "$WDREQ"
+_wdo="$(_wd --request)"; _wdrc=$?
+[ "$_wdrc" -ne 0 ] && ok  "--request refuses when the epoch cannot be computed" \
+                   || bad "--request refuses when the epoch cannot be computed" "exit 0: $_wdo"
+has "and says it is the epoch it lacks"     "$_wdo" "epoch"
+[ ! -e "$WDREQ" ] && ok  "and writes no request for a topology the probes could not read" \
+                  || bad "and writes no request for a topology the probes could not read" "$(cat "$WDREQ")"
+cp "$TMP/cand-w-probes.keep" "$WDP/probes.tsv"
+
+: > "$CMSTUB_LOG"
+{ printf '# topology %s\n# epoch %s\n' "$_wdt" "$_wde"
+  printf '%s\n' "$(_cdr route_behind_ceiling ADVISORY - "touch $TMP/ran-cand-cli" marker uncontrolled_cost "$CDNS_WHY")"
+  printf 'done\t1\n'; } > "$WDANS"
+_wdo="$(_wd)"; _wdrc=$?
+is  "felix obligations ingests an answered file and still exits 0"  "$_wdrc" "0"
+has "and prints a candidates section"                                "$_wdo" "candidates"
+has "with the row by name, current under this epoch"                 "$(printf '%s\n' "$_wdo" | grep 'route_behind_ceiling')" "current"
+has "and the footer: discovered one, admitted one"                   "$_wdo" "discovered 1, admitted 1"
+is  "the row is in candidates.tsv under the widget's memory" \
+    "$(awk -F'\t' '$6 == "route_behind_ceiling"' "$WDTAB" 2>/dev/null | grep -c .)" "1"
+is  "with no cli call at all"                                        "$(grep -c . "$CMSTUB_LOG")" "0"
+[ ! -e "$TMP/ran-cand-cli" ] && ok  "and the candidate's evidence did not run in the report" \
+                             || bad "and the candidate's evidence did not run in the report" "the marker appeared"
+is  "obligations.tsv is byte-identical after the report"             "$(_cdsame "$WDP/obligations.tsv" "$TMP/cand-w-oblig.keep")" "same"
+_wdg="$(_wd --gate)"; _wdgrc=$?
+is  "--gate still passes with an answer file present"                "$_wdgrc" "0"
+case "$_wdg" in
+  *candidates*) bad "and the gate's copy carries no candidates section" "$_wdg" ;;
+  *)            ok  "and the gate's copy carries no candidates section" ;;
+esac
+{ printf '# topology %s\n# epoch %s\n' "$_wdt" "$_wde"
+  printf '%s\n' "$(_cdr blocker RELEASE_BLOCKING - true marker overclaim 'a model proposing a blocking class is refused, not downgraded')"
+  printf 'done\t1\n'; } > "$WDANS"
+_wdo="$(_wd)"; _wdrc=$?
+is  "a refused candidate does not fail the report"                   "$_wdrc" "0"
+has "the refused row is shown with its reason"                       "$(printf '%s\n' "$_wdo" | grep 'blocker')" "may not block"
+is  "and recorded nowhere"                                           "$(awk -F'\t' '$6 == "blocker"' "$WDTAB" 2>/dev/null | grep -c .)" "0"
+is  "the store still holds the one row"                              "$(grep -c . "$WDTAB")" "1"
+has "and the footer still counts one discovered, one admitted"       "$_wdo" "discovered 1, admitted 1"
+rm -f "$WDANS" "$WDREQ" "$WDTAB" "$TMP/ran-cand-cli"
+
+
+printf '\nan answer that is neither yes nor no\n'
+# Three columns ask a command a yes/no question from the repo root: an
+# obligation's `applies`, a probe row's `when`, and its `witness`. Each read
+# every non-zero exit but 126/127 as "no" — so an ask that CRASHED (grep on a
+# bad regex exits 2, git in a directory that is not there exits 128) retired a
+# blocking obligation to DORMANT, switched a probe row off as not-applicable,
+# or let "nothing found" render as a clean `empty`. #236 closed the same hole
+# for qualification premises. The contract now, for all three: 0 is yes, 1 is
+# the ONLY no, and anything else is neither, says so with the code, and blocks.
+# Fresh fixture dirs: the obligation fixture above hardwires OBP/OBR and the
+# blocks after it depend on their state.
+ASKP="$TMP/askproj"; ASKQ="$TMP/askprobes"; ASKC="$TMP/askcheck"; ASKN="$TMP/askcheck-none"
+ASKR="$TMP/askrepo"
+mkdir -p "$ASKP" "$ASKQ" "$ASKC" "$ASKN" "$ASKR" "$MEM/askproj" "$MEM/askprobes" "$MEM/askcheck"
+( cd "$ASKR" && git init -q -b main && printf 'x\n' > x && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null 2>&1
+ASKR="$(cd "$ASKR" && pwd -P)"
+printf 'thing\t-\t-\tls -1 x\ttest -f x\n' > "$ASKP/probes.tsv"
+_ask()    { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+              . "$FROOT/harness/lib/obligations.sh"; "$@" ) 2>/dev/null; }
+_askrun() { _ask felix_obligations_run "$ASKP" "$ASKR"; }
+_askblk() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+              . "$FROOT/harness/lib/verify.sh"; . "$FROOT/harness/lib/evidence.sh"
+              . "$FROOT/harness/lib/escape.sh"; . "$FROOT/harness/lib/probes.sh"
+              . "$FROOT/harness/lib/facts.sh"; . "$FROOT/harness/lib/obligations.sh"
+              felix_merge_blockers "$ASKP" "" "$ASKR" "$FROOT" ) 2>/dev/null | grep '^obligations'; }
+# The detail must carry the phrase and the code it saw, in either order.
+_asksays() { case "$2" in *"neither yes nor no"*) case "$2" in *"exited $3"*) ok "$1"; return ;; esac ;; esac
+             bad "$1" "[$2] lacks [neither yes nor no] with [exited $3]"; }
+
+# The obligation. `applies` crashes with 2; the evidence would leave a mark.
+printf 'a\tRELEASE_BLOCKING\tdeterministic\tsh -c "exit 2"\ttouch ran2\tthing\t?\n' > "$ASKP/obligations.tsv"
+is  "an applies command that exits 2 is UNKNOWN on both axes, not DORMANT" \
+    "$(_askrun | cut -f4,5)" "UNKNOWN	UNKNOWN"
+_asksays "and says the answer was neither yes nor no, naming the code" "$(_askrun)" 2
+[ ! -f "$ASKR/ran2" ] && ok  "and its evidence is never run behind an applicability nobody established" \
+                      || bad "and its evidence is never run behind an applicability nobody established" \
+                             "the evidence ran on a row whose applies exited 2"
+has "and the row blocks a release rather than vanishing" "$(_askblk)" "obligations	a	UNKNOWN UNKNOWN"
+# 128 is git's own crash code and the one seen in the wild. It is not a second
+# kind of no, and the code reported is the one that happened, not 2 by habit.
+printf 'a\tRELEASE_BLOCKING\tdeterministic\tgit -C /nonexistent rev-parse --git-dir\ttouch ran128\tthing\t?\n' > "$ASKP/obligations.tsv"
+is  "an applies command that exits 128 is UNKNOWN too, not a second kind of no" \
+    "$(_askrun | cut -f4,5)" "UNKNOWN	UNKNOWN"
+_asksays "carrying the code that happened" "$(_askrun)" 128
+# And 1 is still the one honest no.
+printf 'a\tRELEASE_BLOCKING\tdeterministic\tsh -c "exit 1"\ttouch ran1\tthing\t?\n' > "$ASKP/obligations.tsv"
+is  "an applies command that exits 1 is the one honest no: DORMANT" "$(_askrun | cut -f4)" "DORMANT"
+
+# The probe row. Its `when` and its `witness` are asks of the same shape.
+{ printf '# predicate\tgrounds\twhen\tprobe\twitness\n'
+  # when crashes: the row is neither on nor off, and the probe must not run.
+  printf 'whencrash\t-\tsh -c "exit 2"\ttouch probed-whencrash; ls -1 x\ttest -f x\n'
+  # when says no: off, silently, as before.
+  printf 'whenno\t-\tsh -c "exit 1"\tls -1 x\ttest -f x\n'
+  # nothing came back and the witness crashed: nobody said the surface is absent.
+  printf 'witcrash\t-\t-\tgit ls-files "*.rs"\tsh -c "exit 2"\n'
+  # nothing came back and the witness said no: empty, as before.
+  printf 'witno\t-\t-\tgit ls-files "*.rs"\tsh -c "exit 1"\n'
+  # the probe itself failed AND the witness crashed: still nobody knows.
+  printf 'witcrashfail\t-\t-\tsh -c "exit 3"\tsh -c "exit 2"\n'
+} > "$ASKQ/probes.tsv"
+_askq()      { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+                 . "$FROOT/harness/lib/probes.sh"; . "$FROOT/harness/lib/facts.sh"; . "$FROOT/harness/lib/obligations.sh"
+                 felix_probes_run "$ASKQ" "$ASKR" ); }
+_askqstate() { _askq | awk -F'\t' -v p="$1" '$1 == p { print $3 }'; }
+_askqrow()   { _askq | awk -F'\t' -v p="$1" '$1 == p'; }
+_askqblk()   { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+                 . "$FROOT/harness/lib/probes.sh"; . "$FROOT/harness/lib/facts.sh"; . "$FROOT/harness/lib/obligations.sh"
+                 felix_probes_run "$ASKQ" "$ASKR" | felix_probes_blocking | cut -f1 | LC_ALL=C sort | tr '\n' ' ' ); }
+
+is  "a when test that exits 2 makes the row unknown, not not-applicable" "$(_askqstate whencrash)" "unknown"
+_asksays "and the row says the when test was neither yes nor no, with its code" "$(_askqrow whencrash)" 2
+[ ! -f "$ASKR/probed-whencrash" ] && ok  "and the probe is never run behind a when test nobody could answer" \
+                                  || bad "and the probe is never run behind a when test nobody could answer" \
+                                         "the probe ran on a row whose when test exited 2"
+is  "a when test that exits 1 still switches the row off as not-applicable" "$(_askqstate whenno)" "not-applicable"
+is  "a witness that exits 2 after a silent probe makes the row unknown, never empty" \
+    "$(_askqstate witcrash)" "unknown"
+_asksays "and the row says the witness was neither yes nor no, with its code" "$(_askqrow witcrash)" 2
+is  "a witness that exits 1 after a silent probe is still empty" "$(_askqstate witno)" "empty"
+is  "a witness that exits 2 after a probe that failed is unknown, not blind" \
+    "$(_askqstate witcrashfail)" "unknown"
+# Blocking follows the state, so the crashed asks block and the honest noes do not.
+is  "exactly the rows whose ask crashed block" "$(_askqblk)" "whencrash witcrash witcrashfail "
+# Stated, not fixed: `false | grep -q x` reports grep's 1, so a crash before
+# the last stage of a pipeline is invisible here. Nothing above expects the
+# engine to see one.
+
+# The command. A table of the three clean states passes; one row nobody could
+# establish fails and is named; no table at all fails and says so.
+_askctable() {
+  { printf '# predicate\tgrounds\twhen\tprobe\twitness\n'
+    printf 'tracked\t-\t-\tgit ls-files\tgit ls-tree -r HEAD --name-only 2>/dev/null | grep -q .\n'
+    printf 'rustcrate\t-\t-\tls -1 Cargo.toml 2>/dev/null\ttest -f Cargo.toml\n'
+    printf 'na\t-\ttest -f Cargo.toml\tls -1 x\ttest -f x\n'
+    [ -n "${1:-}" ] && printf '%s\n' "$1"
+    :
+  } > "$ASKC/probes.tsv"
+}
+_askchk() { ( cd "$ASKR" && "$FROOT/harness/bin/probes-check" "$1" 2>&1 ); }
+if [ -x "$FROOT/harness/bin/probes-check" ]; then
+  _askctable
+  out="$(_askchk "$ASKC")"; rc=$?
+  is  "probes-check passes a table of found, empty and not-applicable rows" "$rc" "0"
+  case "$out" in
+    *"probes for askcheck"*"3 probe(s):"*) ok  "and heads the report with the project and counts every row" ;;
+    *) bad "and heads the report with the project and counts every row" "$out" ;;
+  esac
+  _askctable 'blindrow	-	-	git ls-files "*.rs"	test -f x'
+  out="$(_askchk "$ASKC")"; rc=$?
+  is  "probes-check fails on a blind row" "$rc" "1"
+  has "naming the predicate that blocks" "$out" "blindrow"
+  _askctable 'nowit	-	-	git ls-files "*.rs"	-'
+  out="$(_askchk "$ASKC")"; rc=$?
+  is  "probes-check fails on an unknown row" "$rc" "1"
+  out="$(_askchk "$ASKN")"; rc=$?
+  is  "probes-check fails on a project with no probes.tsv" "$rc" "1"
+  has "and says the table is absent" "$out" "no probes.tsv"
+  _askctable
+else
+  for a in "probes-check passes a table of found, empty and not-applicable rows" \
+           "and heads the report with the project and counts every row" \
+           "probes-check fails on a blind row" "naming the predicate that blocks" \
+           "probes-check fails on an unknown row" \
+           "probes-check fails on a project with no probes.tsv" "and says the table is absent"; do
+    skip "$a" "no bin/probes-check beside this harness"; done
+fi
+
 # Refused rows, and the classes that do not block.
 printf 'a\tRELEASE_BLOCKING\tprobabilistic\t-\ttrue\tthing\tguess\n' > "$OBP/obligations.tsv"
 has "a probabilistic row with a blocking class is refused" \
@@ -7414,36 +7970,37 @@ _dckc() { ( cd "$DCKT" && HOME="$DCK/home"   PATH="$DCK/nobin:/usr/bin:/bin" eng
 # so every exit-1 assertion here was green for a script that could not start.
 _rc() { printf '%s' "${1##*rc=}"; }
 if [ -x "$DCKT/engine/harness/bin/deploy-check" ]; then
-  is  "deploy-check --applies holds where a deployment exists and the marketplace serves this tree" "$(_rc "$(_dck --applies)")" "0"
+  is  "deploy-check --applies holds where a deployment exists and main can be read" "$(_rc "$(_dck --applies)")" "0"
   out="$(_dck)"
   has "and a tree byte-identical to the deployed engine matches" "$out" "matches"
   is  "with exit 0" "$(_rc "$out")" "0"
+  # Committed on main: the question is main's engine against main's entry, so
+  # a library changed in the working tree is not drift and one merged is.
   printf '# drift\n' >> "$DCKT/engine/harness/lib/say.sh"
+  ( cd "$DCKT" && git -c user.name=t -c user.email=t@t commit -qam drift ) >/dev/null 2>&1
   out="$(_dck)"
   is  "a changed library is drift, exit 1" "$(_rc "$out")" "1"
   has "and the report names the path" "$out" "say.sh"
   has "and counts it" "$out" "1 path(s) differ"
-  ( cd "$DCKT" && git checkout -q -- engine/harness/lib/say.sh )
-  printf 'x\n' > "$DCKT/engine/harness/scratch.log"
+  ( cd "$DCKT" && git reset -q --hard HEAD~1 )
+  printf 'x\n' > "$DCK/home/.claude/plugins/cache/felix/felix/0.0.1/harness/scratch.log"
   is  "what git ignores is not drift" "$(_rc "$(_dck)")" "0"
-  rm -f "$DCKT/engine/harness/scratch.log"
+  rm -f "$DCK/home/.claude/plugins/cache/felix/felix/0.0.1/harness/scratch.log"
   printf '{\n  "felix": {\n    "installLocation": "/somewhere/else"\n  }\n}\n' > "$DCK/home/.claude/plugins/known_marketplaces.json"
-  is  "a tree the marketplace does not serve is not where this applies" "$(_rc "$(_dck --applies)")" "1"
+  is  "a tree the marketplace does not serve still applies, because the question is about main" "$(_rc "$(_dck --applies)")" "0"
   is  "while the evidence still answers on its own axis" "$(_rc "$(_dck)")" "0"
   is  "no plugin cache at all is not where this applies either" "$(_rc "$(_dckn --applies)")" "1"
   out="$(_dckn)"
   is  "and with no deployment to compare against the evidence cannot examine" "$(_rc "$out")" "2"
   has "saying so" "$out" "cannot examine"
-  # No CLI, but a cache. The fallback the commit named and nothing reached.
+  # No CLI, a cache, and a newer entry that differs: the CLI is not asked and
+  # the highest entry is not what main declares, so neither moves the verdict.
   printf '{\n  "felix": {\n    "installLocation": "%s"\n  }\n}\n' "$DCKT" > "$DCK/home/.claude/plugins/known_marketplaces.json"
-  out="$(_dckc)"
-  is  "with no CLI to ask, the highest cached version is what it compares against" "$(_rc "$out")" "0"
-  has "and it names the cache it found" "$out" "0.0.1"
   cp -R "$DCK/home/.claude/plugins/cache/felix/felix/0.0.1" "$DCK/home/.claude/plugins/cache/felix/felix/0.0.10"
   printf '# drift only in the newer cache\n' >> "$DCK/home/.claude/plugins/cache/felix/felix/0.0.10/harness/lib/say.sh"
   out="$(_dckc)"
-  is  "and it is the highest by version order, not the last by name" "$(_rc "$out")" "1"
-  has "which is the one that differs" "$out" "0.0.10"
+  is  "with no CLI to ask and a newer entry on disk, the entry main declares is still the one compared" "$(_rc "$out")" "0"
+  has "and it names that entry" "$out" "0.0.1"
   ( cd "$DCK/home/.claude/plugins/cache/felix/felix" && mv 0.0.10 ../../../../../0.0.10.aside ) 2>/dev/null
   # A script that cannot resolve its own library says so with 127, which the
   # obligations library reads as UNKNOWN. Exit 1 there would be DORMANT: a row
@@ -7460,17 +8017,226 @@ if [ -x "$DCKT/engine/harness/bin/deploy-check" ]; then
   is  "invoked by a relative path from a subdirectory it still finds its library" \
       "$(cd "$DCKT/engine/harness" && HOME="$DCK/home" PATH="$DCK/bin:$PATH" bin/deploy-check --applies >/dev/null 2>&1; echo $?)" "0"
 else
-  for a in "deploy-check --applies holds where a deployment exists and the marketplace serves this tree" \
+  for a in "deploy-check --applies holds where a deployment exists and main can be read" \
            "and a tree byte-identical to the deployed engine matches" "with exit 0" \
            "a changed library is drift, exit 1" "and the report names the path" "and counts it" \
-           "what git ignores is not drift" "a tree the marketplace does not serve is not where this applies" \
+           "what git ignores is not drift" "a tree the marketplace does not serve still applies, because the question is about main" \
            "while the evidence still answers on its own axis" "no plugin cache at all is not where this applies either" \
            "and with no deployment to compare against the evidence cannot examine" "saying so" \
-           "with no CLI to ask, the highest cached version is what it compares against" \
-           "and it names the cache it found" "and it is the highest by version order, not the last by name" \
-           "which is the one that differs" "a deploy-check with no library beside it is 127, never 1" \
+           "with no CLI to ask and a newer entry on disk, the entry main declares is still the one compared" \
+           "and it names that entry" "a deploy-check with no library beside it is 127, never 1" \
            "and its evidence mode says the same" \
            "invoked by a relative path from a subdirectory it still finds its library"; do
+    skip "$a" "no bin/deploy-check beside this harness"; done
+fi
+printf '\ndeploy-check asks what main accepted\n'
+# The block above pinned deploy-check to the tree standing here against the
+# LIVE plugin: the CLI's installPath, else the highest cache entry, applicable
+# only where the marketplace registry named this checkout. Only the served
+# checkout could ever be ACTIVE and satisfied, so the obligation was dormant in
+# every worktree and every CI runner, which is everywhere the gate runs. It now
+# asks what `installed` has asked since #239: is the cache entry for the
+# version MAIN declares byte-identical to MAIN's engine, both sides from the
+# base ref (origin/main, else main), never from the working tree.
+#
+# Written blind to the implementation. Every fixture here is built so the old
+# question and the new one give different answers: the live pointer names an
+# entry that does not exist, a higher entry than main's sits on disk and
+# differs, and the registry serves some other tree.
+DCM="$TMP/deploy-check-main"; DCMC="$DCM/home/.claude/plugins/cache/felix/felix"
+mkdir -p "$DCM/tree/engine/.claude-plugin" "$DCMC" "$DCM/bin" "$DCM/nohome"
+cp -R "$FROOT/harness" "$DCM/tree/engine/harness"
+cp -R "$REAL_HARNESS/../hooks" "$DCM/tree/engine/hooks"
+printf '{ "name": "felix", "version": "0.0.1" }\n' > "$DCM/tree/engine/.claude-plugin/plugin.json"
+printf '*.log\n' > "$DCM/tree/.gitignore"
+( cd "$DCM/tree" && git init -q -b main && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm seed ) >/dev/null 2>&1
+DCMT="$(cd "$DCM/tree" && pwd -P)"
+# Deploy a ref's engine at a version the way the cache holds it: from the
+# commit rather than the disk, and without engine/.claude-plugin. Into a
+# fresh entry only; a tampered file is put back below from the same commit.
+_dcm_deploy() {   # ref, version
+  mkdir -p "$DCMC/$2" "$DCM/x.$2"
+  git -C "$DCMT" archive "$1" engine | tar -x -C "$DCM/x.$2"
+  for _d in harness hooks commands; do
+    [ -d "$DCM/x.$2/engine/$_d" ] && cp -R "$DCM/x.$2/engine/$_d" "$DCMC/$2/$_d"
+  done
+}
+_dcm_deploy main 0.0.1
+# The decoy: the highest entry on disk, and it differs from main. The replaced
+# fallback compared against it; the new question never looks at it.
+_dcm_deploy main 0.0.10
+printf '# decoy\n' >> "$DCMC/0.0.10/harness/lib/say.sh"
+# The live pointer names an entry that does not exist, and the marketplace
+# serves some other tree. Neither may decide anything any more.
+cat > "$DCM/bin/claude" <<STUB
+#!/usr/bin/env bash
+case "\$*" in "plugin list --json") printf '{ "felix@felix": { "installPath": "%s" } }\n' "$DCMC/0.9.9" ;; esac
+exit 0
+STUB
+chmod +x "$DCM/bin/claude"
+printf '{\n  "felix": {\n    "installLocation": "/served/elsewhere"\n  }\n}\n' \
+  > "$DCM/home/.claude/plugins/known_marketplaces.json"
+_dcm()  { ( cd "$DCMT" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE \
+            && HOME="$DCM/home"   PATH="$DCM/bin:$PATH" engine/harness/bin/deploy-check "$@" 2>&1; echo "rc=$?" ); }
+_dcmn() { ( cd "$DCMT" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE \
+            && HOME="$DCM/nohome" PATH="$DCM/bin:$PATH" engine/harness/bin/deploy-check "$@" 2>&1; echo "rc=$?" ); }
+# Exact, for the reason the block above gives: "rc=1" as a substring is
+# satisfied by rc=126 and rc=127, which are a checker that never ran.
+_dcmrc() { printf '%s' "${1##*rc=}"; }
+_dcmci() { git -C "$DCMT" -c user.name=t -c user.email=t@t "$@" >/dev/null 2>&1; }
+if [ -x "$FROOT/harness/bin/deploy-check" ]; then
+  # Applicability: a cache and a main. Who the marketplace serves is not asked.
+  is  "deploy-check --applies holds in a worktree the marketplace does not serve" "$(_dcmrc "$(_dcm --applies)")" "0"
+  is  "and does not hold on a machine with no felix cache" "$(_dcmrc "$(_dcmn --applies)")" "1"
+  # Evidence: main's engine against the entry for main's version, whatever the
+  # live pointer says and whatever higher entry sits beside it.
+  out="$(_dcm)"
+  is  "main's engine byte-identical to the entry for main's version is exit 0" "$(_dcmrc "$out")" "0"
+  has "and it says matches" "$out" "matches"
+  case "$out" in
+    *"felix/felix/0.0.10"*) bad "and names the entry main's version selects, not the highest or the live one" "$out" ;;
+    *"felix/felix/0.0.1"*)  ok  "and names the entry main's version selects, not the highest or the live one" ;;
+    *)                      bad "and names the entry main's version selects, not the highest or the live one" "$out" ;;
+  esac
+  # The working tree is not main.
+  printf '# working tree\n' >> "$DCMT/engine/harness/lib/say.sh"
+  is  "a library changed in the working tree is not drift, because main did not change" "$(_dcmrc "$(_dcm)")" "0"
+  ( cd "$DCMT" && git checkout -q -- engine/harness/lib/say.sh )
+  printf 'x\n' > "$DCMT/engine/harness/lib/untracked.sh"
+  is  "nor is a file added to the working tree that git does not track" "$(_dcmrc "$(_dcm)")" "0"
+  rm -f "$DCMT/engine/harness/lib/untracked.sh"
+  # A branch is not main either, whatever engine or version it declares.
+  _dcmci checkout -q -b cand
+  printf '# candidate\n' >> "$DCMT/engine/harness/lib/say.sh"; _dcmci commit -qam cand
+  DCM_CAND="$(git -C "$DCMT" rev-parse HEAD)"
+  is  "a library changed and committed on a branch is not drift" "$(_dcmrc "$(_dcm)")" "0"
+  sed -i.bak 's/"0.0.1"/"0.0.2"/' "$DCMT/engine/.claude-plugin/plugin.json"; rm -f "$DCMT/engine/.claude-plugin/plugin.json.bak"
+  _dcmci commit -qam bump2
+  is  "nor is a version the branch declares that nothing installed" "$(_dcmrc "$(_dcm)")" "0"
+  _dcmci checkout -q main
+  # The control: the same change on main, with nothing deployed, is drift.
+  _dcmci merge -q --ff-only "$DCM_CAND"
+  out="$(_dcm)"
+  is  "the same change merged to main with no new deployment is drift, exit 1" "$(_dcmrc "$out")" "1"
+  has "and the report names the merged path" "$out" "say.sh"
+  has "and counts exactly that one" "$out" "1 path(s) differ"
+  _dcmci revert --no-edit HEAD
+  is  "and main put back matches again" "$(_dcmrc "$(_dcm)")" "0"
+  # A version main declares with no entry is unsatisfied, not unexaminable.
+  sed -i.bak 's/"0.0.1"/"0.0.9"/' "$DCMT/engine/.claude-plugin/plugin.json"; rm -f "$DCMT/engine/.claude-plugin/plugin.json.bak"
+  _dcmci commit -qam bump9
+  out="$(_dcm)"
+  is  "a version main declares with no cache entry is exit 1, not 2" "$(_dcmrc "$out")" "1"
+  has "and the output names the version nothing is installed at" "$out" "0.0.9"
+  case "$out" in
+    *"cannot examine"*) bad "and does not call that unexaminable" "$out" ;;
+    *)                  ok  "and does not call that unexaminable" ;;
+  esac
+  _dcm_deploy main 0.0.9
+  is  "deploying main's engine at that version satisfies it" "$(_dcmrc "$(_dcm)")" "0"
+  # The entry itself, tampered under either directory the engine ships.
+  printf '# tampered\n' >> "$DCMC/0.0.9/harness/lib/say.sh"
+  out="$(_dcm)"
+  is  "an entry for main's version tampered under harness is drift" "$(_dcmrc "$out")" "1"
+  has "and it names the tampered library" "$out" "say.sh"
+  git -C "$DCMT" show main:engine/harness/lib/say.sh > "$DCMC/0.0.9/harness/lib/say.sh"
+  printf '\n' >> "$DCMC/0.0.9/hooks/hooks.json"
+  out="$(_dcm)"
+  is  "and tampered under hooks it is drift as well" "$(_dcmrc "$out")" "1"
+  has "naming the hooks file" "$out" "hooks.json"
+  git -C "$DCMT" show main:engine/hooks/hooks.json > "$DCMC/0.0.9/hooks/hooks.json"
+  # A path git ignores is residue in the entry, not drift.
+  printf 'x\n' > "$DCMC/0.0.9/harness/scratch.log"
+  is  "a file git ignores dropped into the entry is residue, not drift" "$(_dcmrc "$(_dcm)")" "0"
+  rm -f "$DCMC/0.0.9/harness/scratch.log"
+  # A directory absent from both sides is skipped, which every assertion above
+  # already exercises: this tree ships no engine/commands. Present on main
+  # alone it is compared, and every file under it differs.
+  mkdir -p "$DCMT/engine/commands"; printf '# hello\n' > "$DCMT/engine/commands/hello.md"
+  _dcmci add -A; _dcmci commit -qm commands
+  out="$(_dcm)"
+  is  "a commands directory main ships that the entry lacks is drift" "$(_dcmrc "$out")" "1"
+  has "and it names the file under it" "$out" "hello.md"
+  _dcmci revert --no-edit HEAD
+  is  "and with commands absent from both sides again it matches" "$(_dcmrc "$(_dcm)")" "0"
+  # Nothing to examine: no cache on the machine.
+  out="$(_dcmn)"
+  is  "with no felix cache the evidence cannot examine, exit 2" "$(_dcmrc "$out")" "2"
+  has "and it prints cannot examine" "$out" "cannot examine"
+  # No main: a repository that cannot say what was accepted. The cache is
+  # present, so this is the base ref alone deciding.
+  DCMR="$DCM/trunk"; mkdir -p "$DCMR/engine/.claude-plugin"
+  cp -R "$FROOT/harness" "$DCMR/engine/harness"
+  cp -R "$REAL_HARNESS/../hooks" "$DCMR/engine/hooks"
+  printf '{ "name": "felix", "version": "0.0.1" }\n' > "$DCMR/engine/.claude-plugin/plugin.json"
+  ( cd "$DCMR" && git init -q -b trunk && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm seed ) >/dev/null 2>&1
+  _dcmr() { ( cd "$DCMR" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE \
+              && HOME="$DCM/home" PATH="$DCM/bin:$PATH" engine/harness/bin/deploy-check "$@" 2>&1; echo "rc=$?" ); }
+  is  "in a repository with no main and no origin, --applies does not hold even with a cache" "$(_dcmrc "$(_dcmr --applies)")" "1"
+  out="$(_dcmr)"
+  is  "and its evidence cannot examine there" "$(_dcmrc "$out")" "2"
+  has "saying cannot examine" "$out" "cannot examine"
+  # origin/main outranks main. A bare origin level with main changes nothing;
+  # an origin whose main is a bump ahead is what the check follows, while the
+  # local main still declares a version whose entry matches.
+  git init -q --bare "$DCM/origin.git" >/dev/null 2>&1
+  _dcmci remote add origin "$DCM/origin.git"
+  _dcmci push -q origin main; _dcmci fetch -q origin
+  is  "with origin/main level with main the verdict is unchanged" "$(_dcmrc "$(_dcm)")" "0"
+  _dcmci checkout -q -b ahead
+  sed -i.bak 's/"0.0.9"/"0.1.0"/' "$DCMT/engine/.claude-plugin/plugin.json"; rm -f "$DCMT/engine/.claude-plugin/plugin.json.bak"
+  _dcmci commit -qam ahead
+  _dcmci checkout -q main
+  _dcmci push -q origin ahead:main; _dcmci fetch -q origin
+  out="$(_dcm)"
+  is  "with origin/main a bump ahead of main, the check follows origin" "$(_dcmrc "$out")" "1"
+  has "and names origin's version as the one nothing is installed at" "$out" "0.1.0"
+  # A script that cannot resolve its own library still says so with 127. Under
+  # the new question a cache and a main are both present here, so a script
+  # that ran without its library would answer 0 to --applies.
+  DCMB="$DCM/broken"; mkdir -p "$DCMB/engine/harness/bin"
+  cp "$DCMT/engine/harness/bin/deploy-check" "$DCMB/engine/harness/bin/"
+  ( cd "$DCMB" && git init -q -b main && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm b ) >/dev/null 2>&1
+  is  "a deploy-check with no library beside it is still 127 under the new question" \
+      "$(cd "$DCMB" && HOME="$DCM/home" PATH="$DCM/bin:$PATH" engine/harness/bin/deploy-check --applies >/dev/null 2>&1; echo $?)" "127"
+  is  "and so is its evidence mode" \
+      "$(cd "$DCMB" && HOME="$DCM/home" PATH="$DCM/bin:$PATH" engine/harness/bin/deploy-check >/dev/null 2>&1; echo $?)" "127"
+else
+  for a in "deploy-check --applies holds in a worktree the marketplace does not serve" \
+           "and does not hold on a machine with no felix cache" \
+           "main's engine byte-identical to the entry for main's version is exit 0" \
+           "and it says matches" \
+           "and names the entry main's version selects, not the highest or the live one" \
+           "a library changed in the working tree is not drift, because main did not change" \
+           "nor is a file added to the working tree that git does not track" \
+           "a library changed and committed on a branch is not drift" \
+           "nor is a version the branch declares that nothing installed" \
+           "the same change merged to main with no new deployment is drift, exit 1" \
+           "and the report names the merged path" "and counts exactly that one" \
+           "and main put back matches again" \
+           "a version main declares with no cache entry is exit 1, not 2" \
+           "and the output names the version nothing is installed at" \
+           "and does not call that unexaminable" \
+           "deploying main's engine at that version satisfies it" \
+           "an entry for main's version tampered under harness is drift" \
+           "and it names the tampered library" \
+           "and tampered under hooks it is drift as well" "naming the hooks file" \
+           "a file git ignores dropped into the entry is residue, not drift" \
+           "a commands directory main ships that the entry lacks is drift" \
+           "and it names the file under it" \
+           "and with commands absent from both sides again it matches" \
+           "with no felix cache the evidence cannot examine, exit 2" \
+           "and it prints cannot examine" \
+           "in a repository with no main and no origin, --applies does not hold even with a cache" \
+           "and its evidence cannot examine there" "saying cannot examine" \
+           "with origin/main level with main the verdict is unchanged" \
+           "with origin/main a bump ahead of main, the check follows origin" \
+           "and names origin's version as the one nothing is installed at" \
+           "a deploy-check with no library beside it is still 127 under the new question" \
+           "and so is its evidence mode"; do
     skip "$a" "no bin/deploy-check beside this harness"; done
 fi
 # The gate's executable check, shown failing. It was widened from a list of
@@ -7505,8 +8271,8 @@ fi
 # whether anything is deployed, and never unknown on the tree the suite runs in.
 _DCKP="$(cd "$REAL_HARNESS/../.." && pwd)/projects/felix"
 if [ -f "$_DCKP/obligations.tsv" ] && [ -x "$REAL_HARNESS/bin/obligations-check" ]; then
-  is  "felix admits engine_deployed as task-blocking, grounded on both facts it rests on" \
-      "$(grep '^engine_deployed' "$_DCKP/obligations.tsv" | cut -f2,6)" "TASK_BLOCKING	deployed_engine,marketplace_root"
+  is  "felix admits engine_deployed as task-blocking, grounded on the one fact it rests on" \
+      "$(grep '^engine_deployed' "$_DCKP/obligations.tsv" | cut -f2,6)" "TASK_BLOCKING	deployed_engine"
   out="$(cd "$REAL_HARNESS/../.." && "$REAL_HARNESS/bin/obligations-check" projects/felix 2>&1 | grep '^  engine_deployed')"
   case "$out" in
     *UNKNOWN*) bad "and on this tree it is dormant, satisfied or unsatisfied, never unknown" "$out" ;;
@@ -7514,9 +8280,241 @@ if [ -f "$_DCKP/obligations.tsv" ] && [ -x "$REAL_HARNESS/bin/obligations-check"
     *)         ok  "and on this tree it is dormant, satisfied or unsatisfied, never unknown" ;;
   esac
 else
-  for a in "felix admits engine_deployed as task-blocking, grounded on both facts it rests on" \
+  for a in "felix admits engine_deployed as task-blocking, grounded on the one fact it rests on" \
            "and on this tree it is dormant, satisfied or unsatisfied, never unknown"; do
     skip "$a" "no projects/felix/obligations.tsv beside this harness"; done
+fi
+
+# ------------------------- installed asks what main accepted (#2, promotion spec) ---
+# docs/2026-08-18-promotion-spec.md, steps 2-4. `installed` asked whether the
+# engine in the tree standing here is the one deployed, which only the checkout
+# the marketplace serves can ever answer yes to — so `felix merge` existed in one
+# folder, and the only workflow that reached it deployed the candidate before it
+# was judged. It now asks whether the deployed cache entry for the version MAIN
+# declares is byte-identical to MAIN's engine: both sides from the base (§4),
+# which is the engine `felix merge` judges with, so the gate certifies the judge.
+#
+# §8's criteria, criterion 3 first because it is the one the replaced design
+# fails. Every fixture pins `git init -b main` (5) and none sets
+# FELIX_KERNEL_CACHE (6). The fixture's gate is cut at the `tests` marker so
+# each run is syntax, executable and installed and nothing else.
+printf '\ngate installed: the deployed engine is the one main accepted\n'
+GIN="$TMP/gate-installed"; GINC="$GIN/home/.claude/plugins/cache/felix/felix"
+mkdir -p "$GIN/tree/engine/.claude-plugin" "$GINC" "$GIN/bin" "$GIN/nohome"
+cp -R "$REAL_HARNESS" "$GIN/tree/engine/harness"
+cp -R "$REAL_HARNESS/../hooks" "$GIN/tree/engine/hooks"
+[ -d "$REAL_HARNESS/../commands" ] && cp -R "$REAL_HARNESS/../commands" "$GIN/tree/engine/commands"
+printf '{ "name": "felix", "version": "0.0.1" }\n' > "$GIN/tree/engine/.claude-plugin/plugin.json"
+printf '*.log\n' > "$GIN/tree/.gitignore"
+_GING="$(cd "$REAL_HARNESS/../.." && pwd)/projects/felix/gate.sh"
+if [ -f "$_GING" ] && grep -q '^# -* tests -*$' "$_GING"; then
+  sed '/^# -* tests -*$/,$d' "$_GING" > "$GIN/tree/gate.sh"
+  ( cd "$GIN/tree" && git init -q -b main && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm seed ) >/dev/null 2>&1
+  GINT="$(cd "$GIN/tree" && pwd -P)"
+  # Deploy a ref's engine at a version, the way the cache holds it: the
+  # directories felix install copies, from the commit rather than the disk.
+  _gin_deploy() {   # ref, version
+    rm -rf "$GINC/$2" "$GIN/x"; mkdir -p "$GINC/$2" "$GIN/x"
+    git -C "$GINT" archive "$1" engine | tar -x -C "$GIN/x"
+    for _d in harness hooks commands; do
+      [ -d "$GIN/x/engine/$_d" ] && cp -R "$GIN/x/engine/$_d" "$GINC/$2/$_d"
+    done
+    rm -rf "$GIN/x"
+  }
+  _gin_live() { printf '%s' "$GINC/$1" > "$GIN/live"; }
+  cat > "$GIN/bin/claude" <<STUB
+#!/usr/bin/env bash
+case "\$*" in "plugin list --json") printf '{ "felix@felix": { "installPath": "%s" } }\n' "\$(cat "$GIN/live")" ;; esac
+exit 0
+STUB
+  chmod +x "$GIN/bin/claude"
+  # The worktree shape by default: the marketplace serves a different checkout.
+  printf '{\n  "felix": {\n    "installLocation": "/served/elsewhere"\n  }\n}\n' \
+    > "$GIN/home/.claude/plugins/known_marketplaces.json"
+  _gin()  { ( cd "$GINT" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE
+              HOME="$GIN/home" PATH="$GIN/bin:$PATH" bash gate.sh --quick 2>&1 \
+              | awk '/^  installed/ { on = 1; print; next } on && /^  [a-z]/ { exit } on { print }' ); }
+  _ginv() { printf '%s\n' "$1" | awk '/^  installed/ { print $2; exit }'; }
+  _gin_deploy main 0.0.1; _gin_live 0.0.1
+
+  # Criterion 3. A branch that changed the engine, gated once with nothing
+  # installed and once after installing it at a bumped version: the verdict
+  # must not depend on having done the thing it would tell you to do.
+  ( cd "$GINT" && git checkout -q -b cand && printf '# candidate\n' >> engine/harness/lib/say.sh \
+    && git -c user.name=t -c user.email=t@t commit -qam cand ) >/dev/null 2>&1
+  _gino_skip="$(_gin)"
+  ( cd "$GINT" && sed -i.bak 's/"0.0.1"/"0.0.2"/' engine/.claude-plugin/plugin.json && rm -f engine/.claude-plugin/plugin.json.bak \
+    && git -c user.name=t -c user.email=t@t commit -qam bump ) >/dev/null 2>&1
+  _gin_deploy cand 0.0.2; _gin_live 0.0.2
+  _gino_inst="$(_gin)"
+  is  "installed gives the same verdict whether the branch's engine was installed or not" \
+      "$(_ginv "$_gino_skip") $(_ginv "$_gino_inst")" "ok ok"
+  # Criterion 1, the one #2 is about.
+  is  "a branch whose engine differs from the deployed one reads installed ok" "$(_ginv "$_gino_skip")" "ok"
+  # The phrases are the ok line's own: the replaced gate's FAIL output also
+  # carries the entry's path, and a bare path passed against it for that reason.
+  # §3: the check is the resolve.sh trust made a fact, so it must name the entry
+  # felix merge's judge would use, derived without sourcing the engine it judges.
+  _gin_kd="$( cd "$GINT" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE
+              HOME="$GIN/home" && . "$FROOT/harness/lib/resolve.sh" && felix_kernel_dir "$GINT" main )"
+  has "and it names the cache entry felix merge would judge with" "$_gino_skip" "${_gin_kd%/harness} is its engine"
+  ( cd "$GINT" && git checkout -q main ) >/dev/null 2>&1; _gin_live 0.0.1; rm -rf "$GINC/0.0.2"
+
+  # Criterion 2. Where "written is not installed" moves to: main has taken an
+  # engine change and nothing deployed it. If this cannot fail, the protection
+  # was dropped rather than relocated.
+  ( cd "$GINT" && printf '# merged, not deployed\n' >> engine/harness/lib/say.sh \
+    && git -c user.name=t -c user.email=t@t commit -qam merged ) >/dev/null 2>&1
+  _gino="$(_gin)"
+  is  "on main after an engine change nobody deployed, installed fails" "$(_ginv "$_gino")" "FAIL"
+  has "and names the path that differs" "$_gino" "say.sh"
+  ( cd "$GINT" && sed -i.bak 's/"0.0.1"/"0.0.9"/' engine/.claude-plugin/plugin.json && rm -f engine/.claude-plugin/plugin.json.bak \
+    && git -c user.name=t -c user.email=t@t commit -qam bump ) >/dev/null 2>&1
+  _gino="$(_gin)"
+  is  "a version main declares with no cache entry fails rather than skipping" "$(_ginv "$_gino")" "FAIL"
+  has "and says which version is not installed" "$_gino" "0.0.9"
+  _gin_deploy main 0.0.9; _gin_live 0.0.9
+  is  "and deploying main's engine at that version clears it" "$(_ginv "$(_gin)")" "ok"
+  # Criterion 4. Otherwise it asserts two things derived the same way are equal.
+  printf '# tampered\n' >> "$GINC/0.0.9/harness/lib/say.sh"
+  is  "a cache entry for main's version that was tampered with fails" "$(_ginv "$(_gin)")" "FAIL"
+  _gin_deploy main 0.0.9
+  # #86, kept: a path git ignores is residue in the cache, not drift.
+  printf 'x\n' > "$GINC/0.0.9/harness/tests/scratch.log"
+  is  "a file git ignores, left in the cache entry, is not drift" "$(_ginv "$(_gin)")" "ok"
+  rm -f "$GINC/0.0.9/harness/tests/scratch.log"
+  # §7: a green installed no longer says which engine is live, so it says so
+  # when the live one is not main's.
+  _gin_live 0.0.1
+  has "when the live engine is not main's, the ok says which one is live" "$(_gin)" "the live engine is 0.0.1"
+  _gin_live 0.0.9
+  # Where the remedy is: drift in the checkout the marketplace serves stays a
+  # plain FAIL with the command, and drift seen from anywhere else is marked
+  # structural so it is not written down as this checkout's mistake (#3).
+  printf '# again\n' >> "$GINC/0.0.9/harness/lib/say.sh"
+  _gino="$(_gin)"
+  has "drift seen from a checkout the marketplace does not serve is marked structural" "$_gino" "structural"
+  printf '{\n  "felix": {\n    "installLocation": "%s"\n  }\n}\n' "$GINT" > "$GIN/home/.claude/plugins/known_marketplaces.json"
+  _gino="$(_gin)"
+  case "$_gino" in
+    *structural*) bad "and drift in the served checkout is a plain FAIL" "$_gino" ;;
+    *FAIL*)       ok  "and drift in the served checkout is a plain FAIL" ;;
+    *)            bad "and drift in the served checkout is a plain FAIL" "$_gino" ;;
+  esac
+  has "that names the command" "$_gino" "felix install"
+  _gin_deploy main 0.0.9
+  # No felix cache at all is a runner, as before.
+  _gino="$( cd "$GINT" && unset FELIX_KERNEL FELIX_KERNEL_CACHE FELIX_PLUGIN_CACHE
+            HOME="$GIN/nohome" PATH="$GIN/bin:$PATH" bash gate.sh --quick 2>&1 | grep '^  installed' )"
+  has "with no felix cache on the machine, installed is skipped" "$_gino" "skipped"
+  # ---- the fold: the verdict is main's own resolve.sh, read from the commit.
+  # Written blind against the contract, not the code. The gate obtains
+  # `installed` by sourcing engine/harness/lib/resolve.sh at the base ref
+  # (origin/main, else main) in a subshell and calling
+  # felix_accepted_deploy_diff — never the working tree's copy, never the
+  # cache entry's. A one-line redefinition appended to a copy says which copy
+  # was sourced, because bash keeps the last definition; the marker in the
+  # output is the evidence, since once main's resolve.sh differs from the
+  # entry the verdict word alone is satisfied by ordinary drift.
+  _gin_sha="$(git -C "$GINT" rev-parse main)"
+  _gin_stub()    { printf '\nfelix_accepted_deploy_diff() { echo %s; return %s; }\n' "$1" "$2" >> "$3"; }  # marker, rc, file
+  _gin_commit()  { git -C "$GINT" -c user.name=t -c user.email=t@t commit -qam "$1" >/dev/null 2>&1; }
+  _gin_restore() {   # main back at the recorded sha, the entry re-cut from it
+    ( cd "$GINT" && git checkout -q main && git reset -q --hard "$_gin_sha" ) >/dev/null 2>&1
+    _gin_deploy main 0.0.9
+  }
+  # 1. Main's copy decides. Committed on main, so the working tree is main as
+  # well; what this isolates is the cache entry's copy, which carries no stub.
+  _gin_stub MARKER-FROM-MAIN 1 "$GINT/engine/harness/lib/resolve.sh"; _gin_commit stub-main
+  _gino="$(_gin)"
+  is  "main's resolve.sh decides the installed verdict" "$(_ginv "$_gino")" "FAIL"
+  has "and what main's copy printed reaches the output" "$_gino" "MARKER-FROM-MAIN"
+  _gin_restore
+  # The same the other way round: main's copy reports identical while the
+  # entry now genuinely differs from main (by this very stub), so a private
+  # comparison would say FAIL and only the sourced function says ok.
+  _gin_stub MARKER-FROM-MAIN 0 "$GINT/engine/harness/lib/resolve.sh"; _gin_commit stub-main-ok
+  is  "and a main copy that reports identical is believed over the cache entry" "$(_ginv "$(_gin)")" "ok"
+  _gin_restore
+  # Never the working tree's: uncommitted first, then committed on the branch
+  # being gated. Either stub would turn the verdict FAIL and print, if sourced.
+  _gin_stub MARKER-FROM-TREE 1 "$GINT/engine/harness/lib/resolve.sh"
+  _gino="$(_gin)"
+  is  "an uncommitted resolve.sh in the working tree does not change the verdict" "$(_ginv "$_gino")" "ok"
+  case "$_gino" in
+    *MARKER-FROM-TREE*) bad "and nothing the working tree's copy printed reaches the output" "$_gino" ;;
+    *)                  ok  "and nothing the working tree's copy printed reaches the output" ;;
+  esac
+  ( cd "$GINT" && git checkout -q -- engine/harness/lib/resolve.sh && git checkout -q -b side ) >/dev/null 2>&1
+  _gin_stub MARKER-FROM-SIDE 1 "$GINT/engine/harness/lib/resolve.sh"; _gin_commit stub-side
+  _gino="$(_gin)"
+  is  "a resolve.sh committed on the branch being gated does not change the verdict" "$(_ginv "$_gino")" "ok"
+  case "$_gino" in
+    *MARKER-FROM-SIDE*) bad "and nothing the branch's copy printed reaches the output" "$_gino" ;;
+    *)                  ok  "and nothing the branch's copy printed reaches the output" ;;
+  esac
+  ( cd "$GINT" && git checkout -q main && git branch -q -D side ) >/dev/null 2>&1
+  # Never the cache entry's: a stub there that reports identical is, to main's
+  # own function, one more path that differs.
+  _gin_stub MARKER-FROM-CACHE 0 "$GINC/0.0.9/harness/lib/resolve.sh"
+  is  "a resolve.sh stubbed in the cache entry is drift, not the judge" "$(_ginv "$(_gin)")" "FAIL"
+  _gin_deploy main 0.0.9
+  # 2. Nothing to call is FAIL, and named — never ok, never skipped. First
+  # main's copy without the definition; then main without the file at all,
+  # gated from a branch that still has it.
+  ( cd "$GINT" && sed -i.bak '/^felix_accepted_deploy_diff()/,/^}/d' engine/harness/lib/resolve.sh \
+    && rm -f engine/harness/lib/resolve.sh.bak ) >/dev/null 2>&1; _gin_commit no-definition
+  _gino="$(_gin)"
+  is  "when main's resolve.sh does not define the check, installed fails rather than skipping" "$(_ginv "$_gino")" "FAIL"
+  has "and names the function it could not find" "$_gino" "felix_accepted_deploy_diff"
+  _gin_restore
+  ( cd "$GINT" && git rm -q engine/harness/lib/resolve.sh ) >/dev/null 2>&1; _gin_commit no-file
+  ( cd "$GINT" && git checkout -q -b side "$_gin_sha" ) >/dev/null 2>&1
+  _gino="$(_gin)"
+  is  "when main has no resolve.sh to read, installed fails rather than skipping" "$(_ginv "$_gino")" "FAIL"
+  has "and names the function it could not source" "$_gino" "felix_accepted_deploy_diff"
+  _gin_restore; git -C "$GINT" branch -q -D side >/dev/null 2>&1
+  # Criterion 4 once more, after the fold.
+  printf '# tampered\n' >> "$GINC/0.0.9/harness/lib/say.sh"
+  is  "after the fold, a tampered cache entry still fails" "$(_ginv "$(_gin)")" "FAIL"
+  _gin_deploy main 0.0.9
+  # 4. Structural: the gate's private copy of the comparison is gone, the way
+  # the probes block asserts its own private copy is.
+  if grep -q 'diff -rq' "$_GING"; then
+    bad "felix's own gate no longer carries a private copy of the deploy comparison" \
+        "diff -rq is still in projects/felix/gate.sh"
+  else
+    ok  "felix's own gate no longer carries a private copy of the deploy comparison"
+  fi
+else
+  for a in "installed gives the same verdict whether the branch's engine was installed or not" \
+           "a branch whose engine differs from the deployed one reads installed ok" \
+           "and it names the cache entry felix merge would judge with" \
+           "on main after an engine change nobody deployed, installed fails" "and names the path that differs" \
+           "a version main declares with no cache entry fails rather than skipping" \
+           "and says which version is not installed" "and deploying main's engine at that version clears it" \
+           "a cache entry for main's version that was tampered with fails" \
+           "a file git ignores, left in the cache entry, is not drift" \
+           "when the live engine is not main's, the ok says which one is live" \
+           "drift seen from a checkout the marketplace does not serve is marked structural" \
+           "and drift in the served checkout is a plain FAIL" "that names the command" \
+           "with no felix cache on the machine, installed is skipped" \
+           "main's resolve.sh decides the installed verdict" \
+           "and what main's copy printed reaches the output" \
+           "and a main copy that reports identical is believed over the cache entry" \
+           "an uncommitted resolve.sh in the working tree does not change the verdict" \
+           "and nothing the working tree's copy printed reaches the output" \
+           "a resolve.sh committed on the branch being gated does not change the verdict" \
+           "and nothing the branch's copy printed reaches the output" \
+           "a resolve.sh stubbed in the cache entry is drift, not the judge" \
+           "when main's resolve.sh does not define the check, installed fails rather than skipping" \
+           "and names the function it could not find" \
+           "when main has no resolve.sh to read, installed fails rather than skipping" \
+           "and names the function it could not source" \
+           "after the fold, a tampered cache entry still fails" \
+           "felix's own gate no longer carries a private copy of the deploy comparison"; do
+    skip "$a" "no projects/felix/gate.sh with a tests marker beside this harness"; done
 fi
 
 # ---------------------------------------------- memory-scan, the fourth checker ---
@@ -8703,6 +9701,561 @@ rm -f "$FROOT/projects/widget/qualification.tsv"
 is "and the widget project is as this block found it" \
    "$([ -f "$FROOT/projects/widget/qualification.tsv" ] && echo present || echo absent)" "absent"
 
+printf '\nthe receipt carries the epoch, and a fact that moved outside the tree stales it\n'
+# A gate receipt was keyed on the tree id alone, and the tree id covers every
+# byte git can see and nothing else. A probe that counts an ignored file, a
+# probe that reads $HOME, a table in the Felix home for a governed product:
+# each can move without the tree id moving, and every reader took the old
+# green as current. The receipt now records the decision epoch it was stamped
+# under (fields 7 and 8), and one reader — felix_verify_current — says whether
+# that epoch still holds, with the reason when it does not.
+#
+# Authored blind to the implementation, from the behaviour in prose. Two
+# fixture choices carry the whole block. The project directory sits in the
+# Felix home, outside the repository, so a table can move where the tree id
+# cannot see it. And the one probe counts a file the repository IGNORES, so the
+# grounded facts can move where the tree id cannot see them either. Beside
+# every such movement the tree id is asserted unchanged, so no stale verdict
+# here can be the old tree check firing under a new name.
+ERP="$FROOT/projects/epochrcpt"; mkdir -p "$ERP" "$MEM/epochrcpt"
+cat > "$ERP/project.json" <<'EOF'
+{
+  "name": "epochrcpt",
+  "remote_match": "example.com/epochrcpt",
+  "gate": "true"
+}
+EOF
+# The probe exits 0 with nothing found, so the row reads `empty` with the
+# witness agreeing and `found` once a member exists — two known states, never
+# blind, so the topology hashes a fact either way and moves between them.
+_er_probes() {
+  { printf '# predicate\tgrounds\twhen\tprobe\twitness\n'
+    printf 'tmpfiles\t-\t-\tfind . -maxdepth 1 -name "*.tmp"\ttest -e .git\n'
+  } > "$ERP/probes.tsv"
+}
+# A second table in the policy set that is neither the subject nor the probes,
+# so the table set can move with nothing else moving. $1 is an extra row.
+_er_evidence() {
+  { printf 'unit\t^src/\t^tests?/\tcode changes need a test\n'
+    [ -n "${1:-}" ] && printf '%s\n' "$1"
+  } > "$ERP/evidence.tsv"
+}
+# And the admitted obligation every merge fixture carries, so the merge
+# boundary below is measuring the receipt and not the empty ledger.
+printf 'fixture\tRELEASE_BLOCKING\tdeterministic\t-\ttrue\t-\ta fixture owes one thing, and it holds\n' \
+  > "$ERP/obligations.tsv"
+_er_probes; _er_evidence
+
+# Two commits, so the merge boundary has a base to diff against; `*.tmp`
+# ignored and committed, so the file the probe counts is invisible to git.
+ERR="$TMP/epochrcpt-repo"; mkdir -p "$ERR"
+( cd "$ERR" && git init -q -b main
+  printf 'epochrcpt\n' > .felix
+  printf '*.tmp\n'     > .gitignore
+  printf 'code\n'      > code.txt
+  git add -A >/dev/null 2>&1
+  git -c user.name=t -c user.email=t@t commit -qm base >/dev/null 2>&1
+  printf 'notes\n'     > README.md
+  git add -A >/dev/null 2>&1
+  git -c user.name=t -c user.email=t@t commit -qm notes >/dev/null 2>&1 ) >/dev/null 2>&1
+ERR="$(cd "$ERR" && pwd -P)"
+
+# The sourcing shape the reader is specified under: resolve, verify, probes,
+# epoch; epoch.sh brings commission.sh and everything that carries.
+_er_lib()   { . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/verify.sh"
+              . "$FROOT/harness/lib/probes.sh";  . "$FROOT/harness/lib/epoch.sh"; }
+_er_tid()   { ( cd "$ERR" && _er_lib; felix_tree_id "$ERR" "$FROOT" ); }
+_er_epoch() { ( cd "$ERR" && _er_lib; felix_epoch "${1:-$ERP}" "$ERR" ); }
+_er_comps() { ( cd "$ERR" && _er_lib
+                felix_epoch_components "${1:-$ERP}" "$ERR" | cut -f2 | paste -sd, - ); }
+# $1 the gate's exit status; $2 and $3 the epoch and the comma-joined
+# components, computed now unless given (`-` is given verbatim). Nine
+# positional arguments: the seven the writer already took, then these two.
+_er_rec() { ( cd "$ERR" && _er_lib
+              felix_verify_record "$ERR" "$FROOT" "$1" "gate.sh" "$(felix_tree_id "$ERR" "$FROOT")" "" "" \
+                "${2:-$(felix_epoch "$ERP" "$ERR")}" \
+                "${3:-$(felix_epoch_components "$ERP" "$ERR" | cut -f2 | paste -sd, -)}" \
+                >/dev/null 2>&1 ); }
+# The writer called the way every caller before this section called it: seven
+# arguments, no epoch. This is the receipt an older engine leaves behind.
+_er_rec_old() { ( cd "$ERR" && _er_lib
+                  felix_verify_record "$ERR" "$FROOT" 0 "gate.sh" "$(felix_tree_id "$ERR" "$FROOT")" "" "" \
+                    >/dev/null 2>&1 ); }
+_er_rcpt() { ( _er_lib; felix_verify_receipt "$ERR" "$FROOT" ); }
+_er_cur()  { ( cd "$ERR" && _er_lib; felix_verify_current "$ERR" "$FROOT" "${1:-$ERP}" ) 2>/dev/null; }
+
+# ------------------------------------------------------------ the writer ------
+out="$(_er_cur)"; rc=$?
+is "a root nothing has stamped reads as none" "$out" "none"
+[ "$rc" -ne 0 ] && ok  "and none is not a passing answer" \
+                || bad "and none is not a passing answer" "exited 0 on a root with no receipt"
+
+er_tid0="$(_er_tid)"; er_epoch0="$(_er_epoch)"; er_comps0="$(_er_comps)"
+is "the fixture has an epoch before anything is stamped" "$(printf '%s' "$er_epoch0" | grep -c .)" "1"
+_er_rec 0
+er_line="$(_er_rcpt)"
+is "a receipt written with an epoch reads back with eight fields" \
+   "$(printf '%s\n' "$er_line" | awk -F'\t' '{ print NF }')" "8"
+is "and field 1 is still the tree id"   "$(printf '%s' "$er_line" | cut -f1)" "$er_tid0"
+is "and field 2 is still the verdict"   "$(printf '%s' "$er_line" | cut -f2)" "green"
+is "and field 4 is still the gate"      "$(printf '%s' "$er_line" | cut -f4)" "gate.sh"
+is "and fields 5 and 6 still say nothing skipped and no roster, as dashes" \
+   "$(printf '%s' "$er_line" | cut -f5,6 | tr '\t' ' ')" "- -"
+is "field 7 is the epoch the receipt was stamped under" "$(printf '%s' "$er_line" | cut -f7)" "$er_epoch0"
+is "field 8 is the four components, comma-joined in the order the spec lists them" \
+   "$(printf '%s' "$er_line" | cut -f8)" "$er_comps0"
+is "and that field holds four members" \
+   "$(printf '%s' "$er_line" | cut -f8 | tr ',' '\n' | grep -c .)" "4"
+
+# ------------------------------------------------------------ the reader ------
+out="$(_er_cur)"; rc=$?
+is "a green receipt for this tree under this epoch is current" "$out" "current"
+is "and current returns 0"                                      "$rc"  "0"
+is "and the reader prints exactly one line"                     "$(_er_cur | grep -c .)" "1"
+
+# The fact that moves is a file the repository ignores. Both halves are
+# asserted: the tree id did not move, and the epoch did. Without the first,
+# the stale verdict could be the tree check firing; without the second, the
+# verdict could be right for a reason the fixture never produced.
+: > "$ERR/a.tmp"
+is "an ignored file the probe counts leaves the tree id where it was" "$(_er_tid)" "$er_tid0"
+[ "$(_er_epoch)" != "$er_epoch0" ] \
+  && ok  "and moves the epoch, because the probe counts it" \
+  || bad "and moves the epoch, because the probe counts it" "the epoch is still $er_epoch0"
+out="$(_er_cur)"; rc=$?
+is  "so the receipt is stale with the tree unchanged"          "$(printf '%s' "$out" | cut -f1)" "stale"
+has "and the reason is that the grounded facts moved"           "$(printf '%s' "$out" | cut -f2)" "the grounded facts moved"
+[ "$rc" -ne 0 ] && ok  "and stale returns non-zero" \
+                || bad "and stale returns non-zero" "exited 0 while stale"
+is  "and stale is one line as well"                             "$(_er_cur | grep -c .)" "1"
+
+# A tree that changed is the first thing said, whatever else moved: the
+# receipt is about a tree that no longer exists, and a moved fact beside it
+# is a detail about a verdict that already does not apply.
+printf 'edited\n' >> "$ERR/code.txt"
+out="$(_er_cur)"
+has "a tree that changed is named before a fact that moved" "$out" "the tree changed"
+case "$out" in
+  *"the grounded facts moved"*) bad "and the moved fact is not what it blames" "$out" ;;
+  *)                            ok  "and the moved fact is not what it blames" ;;
+esac
+( cd "$ERR" && git checkout -q -- code.txt )
+is "and with the edit undone the tree id is back" "$(_er_tid)" "$er_tid0"
+
+# Topology before policy, when both moved.
+_er_evidence 'docs	^docs/	^docs/	a second rule'
+has "with a fact and a table both moved, the fact is named first" "$(_er_cur)" "the grounded facts moved"
+rm -f "$ERR/a.tmp"
+# The topology component alone is back — the table is still edited, so the
+# epoch as a whole is not, and that is the point of the next assertion.
+is  "the topology is back once the ignored file is gone" \
+    "$(_er_comps | cut -d, -f2)" "$(printf '%s' "$er_comps0" | cut -d, -f2)"
+out="$(_er_cur)"
+has "a table edited in the project directory stales the receipt because the table set moved" \
+    "$out" "the table set moved"
+is  "and that is stale, reason in the second field"   "$(printf '%s' "$out" | cut -f1)" "stale"
+is  "while the tree id never saw the table"           "$(_er_tid)" "$er_tid0"
+_er_evidence
+is  "and putting the table back makes the same receipt current again" "$(_er_cur)" "current"
+
+# The subject is the project's name and remote, and project.json is a member
+# of the table set too — so the one way to move the subject alone is to move
+# the directory. The receipt is keyed on the root, so it is still the receipt
+# under the new name; what changed is who the root is said to belong to.
+mv "$ERP" "$ERP.moved"
+has "the same receipt read for a renamed project is stale because the subject moved" \
+    "$(_er_cur "$ERP.moved")" "the subject moved"
+mv "$ERP.moved" "$ERP"
+is  "and under its own name it is current" "$(_er_cur)" "current"
+
+# The release target, moved by the environment the reader runs under.
+has "a receipt read under a different release target is stale for that reason" \
+    "$( ( export FELIX_RELEASE_TARGET=release-9; _er_cur ) )" "the release target moved"
+is  "and with the target back the receipt is current" "$(_er_cur)" "current"
+
+# A receipt that carries no epoch cannot be compared with anything, and is
+# never current: the old engine's receipts, and a gate that could not read
+# the facts when it stamped, both land here.
+_er_rec 0 - -
+is  "a dash in the seventh field is written as a dash" "$(_er_rcpt | cut -f7)" "-"
+out="$(_er_cur)"; rc=$?
+is  "and a receipt with a dash for an epoch is stale"  "$(printf '%s' "$out" | cut -f1)" "stale"
+has "because it carries no epoch"                       "$out" "carries no epoch"
+[ "$rc" -ne 0 ] && ok  "and a receipt with no epoch never returns 0" \
+                || bad "and a receipt with no epoch never returns 0" "exited 0"
+# No epoch outranks a fact that moved: there is nothing to compare the moved
+# fact against, so the moved fact is not what is wrong.
+: > "$ERR/a.tmp"
+has "and with a fact moved as well, no epoch is still the reason given" "$(_er_cur)" "carries no epoch"
+rm -f "$ERR/a.tmp"
+# The tree changing outranks even that.
+printf 'edited\n' >> "$ERR/code.txt"
+has "a tree that changed is named before a receipt with no epoch" "$(_er_cur)" "the tree changed"
+( cd "$ERR" && git checkout -q -- code.txt )
+# The receipt the writer leaves when called the way every earlier caller
+# calls it, with no eighth and ninth argument at all. The blind author of
+# this block expected it to carry no epoch and read stale; the writer went
+# the stricter way instead — it computes the epoch from the checkout's own
+# binding, so a caller that forgot the arguments cannot leave a receipt that
+# rests on nothing. Only a checkout with no binding gets `-`, and that one
+# reads stale.
+_er_rec_old
+is  "a receipt written without the two epoch arguments still has eight fields" \
+    "$(_er_rcpt | awk -F'\t' '{ print NF }')" "8"
+case "$(_er_rcpt | cut -f7)" in
+  -|"") bad "and carries the epoch of the checkout's binding, not a dash" "$(_er_rcpt | cut -f7)" ;;
+  *)    ok  "and carries the epoch of the checkout's binding, not a dash" ;;
+esac
+is  "and reads current, because it rests on the same facts a gate would have recorded" "$(_er_cur | cut -f1)" "current"
+ERN="$TMP/epochrcpt-nomark"; mkdir -p "$ERN"
+( cd "$ERN" && git init -q -b main && printf 'x\n' > x && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null 2>&1
+ERN="$(cd "$ERN" && pwd -P)"
+( cd "$ERN" && _er_lib; felix_verify_record "$ERN" "$FROOT" 0 "gate.sh" "$(felix_tree_id "$ERN" "$FROOT")" "" "" >/dev/null 2>&1 )
+is  "a checkout with no binding gets a dash for its epoch" \
+    "$( _er_lib; felix_verify_receipt "$ERN" "$FROOT" | cut -f7 )" "-"
+has "and that receipt reads stale, never current" \
+    "$( cd "$ERN" && _er_lib; felix_verify_current "$ERN" "$FROOT" "$ERP" 2>/dev/null )" "carries no epoch"
+
+# A receipt that has an epoch, read at a moment the epoch cannot be
+# recomputed: the probe table has gone since. Not `the grounded facts moved`,
+# because nothing can say whether they did; the honest answer is that the
+# receipt cannot be read now.
+_er_rec 0
+is "the control: with the probe table in place the receipt is current" "$(_er_cur)" "current"
+rm -f "$ERP/probes.tsv"
+out="$(_er_epoch)"; rc=$?
+is "with the probe table gone the epoch cannot be computed" "${#out}" "0"
+out="$(_er_cur)"; rc=$?
+has "so the receipt cannot be read now"                "$out" "cannot be read now"
+is  "and cannot-be-read-now is stale, not current"     "$(printf '%s' "$out" | cut -f1)" "stale"
+[ "$rc" -ne 0 ] && ok  "and an epoch that cannot be read returns non-zero" \
+                || bad "and an epoch that cannot be read returns non-zero" "exited 0 with the facts unreadable"
+case "$out" in
+  *"the grounded facts moved"*|*"the table set moved"*)
+    bad "and does not claim to know which way the facts went" "$out" ;;
+  *) ok  "and does not claim to know which way the facts went" ;;
+esac
+# A dash on the receipt is named before facts that cannot be read now.
+_er_rec 0 - -
+has "a receipt with no epoch is said to have none before the facts are said to be unreadable" \
+    "$(_er_cur)" "carries no epoch"
+_er_probes
+_er_rec 0
+is "and with the table back a fresh receipt is current" "$(_er_cur)" "current"
+
+# A red receipt is red, whatever the epoch did.
+_er_rec 1
+out="$(_er_cur)"; rc=$?
+is "a red receipt reads as red" "$out" "red"
+[ "$rc" -ne 0 ] && ok  "and red returns non-zero" \
+                || bad "and red returns non-zero" "exited 0 on a red receipt"
+: > "$ERR/a.tmp"
+is "and red is named before any fact that moved" "$(_er_cur)" "red"
+rm -f "$ERR/a.tmp"
+_er_rec 0
+
+# ---------------------------------------------------------- the Stop hook ------
+# Driven the way the completion-gate section drives it: real JSON on stdin, a
+# real repository, FELIX_HOME pinned to the fixture. The dirt is an untracked
+# file, which the tree id covers, so it is made BEFORE the receipt is stamped;
+# the ignored file, which the tree id does not cover, after.
+_er_stop()    { ( cd "$ERR" && printf '%s' '{"hook_event_name":"Stop","stop_hook_active":false}' \
+                  | "$FROOT/harness/hooks/stop" 2>&1 ); }
+_er_blocked() { case "$1" in *'"decision"'*'"block"'*) return 0 ;; *) return 1 ;; esac; }
+printf 'session work\n' > "$ERR/dirt.txt"
+[ "$(_er_tid)" != "$er_tid0" ] \
+  && ok  "an untracked file is in the tree id, so the session's dirt is seen" \
+  || bad "an untracked file is in the tree id, so the session's dirt is seen" "the tree id did not move"
+_er_rec 0
+out="$(_er_stop)"
+_er_blocked "$out" \
+  && bad "a dirty tree with a green receipt under the current epoch may stop" "$out" \
+  || ok  "a dirty tree with a green receipt under the current epoch may stop"
+er_tid1="$(_er_tid)"
+: > "$ERR/a.tmp"
+is "the ignored file leaves the tree id the receipt was stamped for" "$(_er_tid)" "$er_tid1"
+out="$(_er_stop)"
+_er_blocked "$out" \
+  && ok  "but once the grounded facts move under that receipt, the hook blocks" \
+  || bad "but once the grounded facts move under that receipt, the hook blocks" "expected a block, got [$out]"
+has "and tells the session which fact moved" "$out" "the grounded facts moved"
+rm -f "$ERR/a.tmp"
+out="$(_er_stop)"
+_er_blocked "$out" \
+  && bad "and with the fact back where it was, the same receipt allows again" "$out" \
+  || ok  "and with the fact back where it was, the same receipt allows again"
+rm -f "$ERR/dirt.txt"
+
+# ------------------------------------------------------ the merge boundary ------
+# felix_merge_blockers sourced the way the obligation and probe sections
+# source it, plus the epoch library the reader is specified beside. Only the
+# `unverified` line is read: the fixture project has commissioned nothing, and
+# whatever else the boundary says about that is not what this measures.
+_er_blk() { ( cd "$ERR" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+              . "$FROOT/harness/lib/verify.sh";  . "$FROOT/harness/lib/evidence.sh"
+              . "$FROOT/harness/lib/escape.sh";  . "$FROOT/harness/lib/obligations.sh"
+              . "$FROOT/harness/lib/probes.sh";  . "$FROOT/harness/lib/facts.sh"
+              . "$FROOT/harness/lib/epoch.sh"
+              felix_merge_blockers "$ERP" HEAD~1 "$ERR" "$FROOT" ) 2>/dev/null \
+            | awk -F'\t' '$1 == "unverified"'; }
+_er_rec 0
+is "a current receipt raises no unverified line at the merge boundary" "$(_er_blk)" ""
+: > "$ERR/a.tmp"
+is  "the tree id is still the one the receipt names" "$(_er_tid)" "$er_tid0"
+out="$(_er_blk)"
+is  "a fact that moved under the receipt raises exactly one" "$(printf '%s\n' "$out" | grep -c .)" "1"
+has "with the reason in its third field" "$(printf '%s\n' "$out" | cut -f3)" "the grounded facts moved"
+rm -f "$ERR/a.tmp"
+is  "and it is gone again once the fact is back" "$(_er_blk)" ""
+
+rm -rf "$ERP" "$ERP.moved"
+
+printf '\nqualification: a control whose premise is absent\n'
+# A control that plants a governed project's name cannot be met in a checkout
+# that governs only itself: there is nothing there for the mutation to break.
+# Counting it held turns a correct engine red, and counting it met would be a
+# lie about a check that never ran. So a row may carry a premise, evaluated in
+# the worktree of HEAD before the mutation, and a premise that does not hold
+# makes the control inapplicable.
+#
+# The trap in a third verdict is that it stops a control failing without fixing
+# anything: a premise that always fails silences its control forever. That is
+# why a premise that errors is unrunnable rather than inapplicable, and why a
+# checker whose every fail control was inapplicable is named as never shown
+# failing and refuses the gate. Writing a fail control is the claim that the
+# checker catches something, and anything that claims to verify is shown
+# failing before it is believed; a gate reading ok over a checker nobody has
+# seen fail breaks that. The remedy is a control that stages its own premise.
+#
+# Authored by a subagent given this behaviour in prose and forbidden the
+# runner's source. That records the method; it is not a property anyone can
+# check from here.
+QPP="$TMP/premproj"; QPR="$TMP/premrepo"; mkdir -p "$QPP" "$QPR" "$MEM/premproj"
+( cd "$QPR" && git init -q -b main && printf 'clean\n' > a.txt && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm base ) >/dev/null 2>&1
+QPR="$(cd "$QPR" && pwd -P)"
+# Present in the checkout and absent from HEAD, so a premise that finds it was
+# not evaluated where the spec says.
+printf 'loose\n' > "$QPR/loose.txt"
+# Marks a skipped step must not leave, written outside every worktree. The path
+# goes into the table already expanded, so it does not matter how the runner
+# evaluates a row.
+QPS="$TMP/premside"; mkdir -p "$QPS"
+_qpc='! grep -rqI FORBIDDEN . 2>/dev/null'
+_qp5() { printf '%s\t%s\t%s\t%s\t%s\n' "$@"; }
+_qp6() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+{ _qp5 five      "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+  _qp6 dashed    "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' '-'
+  _qp6 blanked   "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' ''
+  _qp6 affirmed  "printf x >> '$QPS/checker-applied'; $_qpc" violation fail \
+                 "printf x >> '$QPS/mutation-applied'; printf FORBIDDEN > bad.txt" true
+  _qp6 affirmed  "$_qpc" alternate fail 'printf harmless > other.txt' true
+  _qp6 denied    "printf x >> '$QPS/checker-inapplicable'; $_qpc" violation fail \
+                 "printf x >> '$QPS/mutation-inapplicable'; printf FORBIDDEN > bad.txt" false
+  _qp6 headtree  "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' 'test -f a.txt'
+  _qp6 mutated   "$_qpc" violation fail 'printf FORBIDDEN > made.txt' 'test -f made.txt'
+  _qp6 loosefile "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' 'test -f loose.txt'
+  _qp6 errtwo    "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' "sh -c 'exit 2'"
+  _qp6 nocommand "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' 'felix-no-such-premise-command'
+  # For the never-shown-failing report. lonely has a pass control that applied,
+  # so "every control inapplicable" and "every fail control inapplicable" give
+  # different answers; mixed puts its inapplicable row last, so a last-row-wins
+  # reading names it.
+  _qp5 lonely    "$_qpc" restoration pass true
+  _qp6 lonely    "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' false
+  _qp6 passonly  "$_qpc" restoration pass true false
+  _qp5 mixed     "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+  _qp6 mixed     "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' false
+  _qp5 heldfail  "$_qpc" alternate fail 'printf harmless > other.txt'
+  _qp6 heldfail  "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' false
+} > "$QPP/qualification.tsv"
+_qpo="$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+         felix_qualify_run "$QPP" "$QPR" 2>/dev/null )"
+# Column $3 of the row for checker $1, control $2. awk, because read collapses
+# empty fields.
+_qpv() { printf '%s\n' "$_qpo" | awk -F'\t' -v c="$1" -v k="$2" -v f="$3" '$1 == c && $2 == k { print $f }'; }
+_qpe() { [ -e "$1" ] && echo ran || echo absent; }
+
+is  "a qualification row of five columns has no premise and is met as before" \
+    "$(_qpv five violation 5)" "met"
+is  "a premise of a single dash is no premise"            "$(_qpv dashed violation 5)"   "met"
+is  "and neither is an empty premise column"              "$(_qpv blanked violation 5)"  "met"
+is  "a premise that holds lets its control run and be met" "$(_qpv affirmed violation 5)" "met"
+is  "and leaves a control its checker passes over held"   "$(_qpv affirmed alternate 5)" "held"
+is  "a premise that exits 1 makes its control inapplicable" "$(_qpv denied violation 5)" "inapplicable"
+is  "and an inapplicable control reports no result, not a pass or a fail" \
+    "$(_qpv denied violation 4)" "-"
+is  "an inapplicable control never applies its mutation" \
+    "$(_qpe "$QPS/mutation-inapplicable")" "absent"
+is  "nor runs the checker the control was written against" \
+    "$(_qpe "$QPS/checker-inapplicable")" "absent"
+# Absence is evidence only if the same technique shows presence.
+is  "while an applicable control runs both, so that absence is measured" \
+    "$(_qpe "$QPS/mutation-applied") $(_qpe "$QPS/checker-applied")" "ran ran"
+is  "a premise can see the files HEAD has"                "$(_qpv headtree violation 5)" "met"
+is  "and is evaluated before the mutation, so a file only the mutation makes is not there" \
+    "$(_qpv mutated violation 5)" "inapplicable"
+is  "and reads HEAD, not the checkout's uncommitted files" \
+    "$(_qpv loosefile violation 5)" "inapplicable"
+# A premise that errors is not a premise that is false. Read as inapplicable, a
+# typo in a premise would retire its control without anyone deciding to.
+is  "a premise that exits 2 is unrunnable, not inapplicable" \
+    "$(_qpv errtwo violation 4) $(_qpv errtwo violation 5)" "unrunnable unrunnable"
+is  "and so is a premise whose command does not exist" \
+    "$(_qpv nocommand violation 4) $(_qpv nocommand violation 5)" "unrunnable unrunnable"
+
+_qpu="$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+         felix_qualify_unshown "$QPP" "$_qpo" )"
+_qpn() { printf '%s\n' "$_qpu" | awk -v n="$1" '$0 == n { f = 1 } END { print (f ? "named" : "not named") }'; }
+# The positive case comes first and shares the output with every negative
+# below, so an empty report cannot pass them.
+is  "a checker whose every fail control did not apply is named as never shown failing" \
+    "$(_qpn lonely)" "named"
+is  "a checker whose fail control was met is not named"    "$(_qpn five)"     "not named"
+is  "nor one whose fail control applied and was held"      "$(_qpn heldfail)" "not named"
+# A checker with no fail control at all is a missing control, which another
+# report names. "Every fail control inapplicable" is vacuously true of it.
+is  "nor one that declares no fail control at all"         "$(_qpn passonly)" "not named"
+is  "nor one with two fail controls of which one applied"  "$(_qpn mixed)"    "not named"
+is  "nor one whose fail control could not run"             "$(_qpn errtwo)"   "not named"
+
+# A sixth column is allowed, so a row carrying one is not short or long. The
+# short row is there so that silence from the malformed report is measured.
+printf 'short\tonly-two\n' >> "$QPP/qualification.tsv"
+_qpm="$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+         felix_qualify_malformed "$QPP" )"
+case "$_qpm" in
+  *short*)
+    case "$_qpm" in
+      *dashed*|*blanked*|*affirmed*|*denied*) bad "a row carrying a premise is not reported malformed" "$_qpm" ;;
+      *) ok "a row carrying a premise is not reported malformed" ;;
+    esac ;;
+  *) bad "a row carrying a premise is not reported malformed" "the short row was not reported either, so nothing was measured: [$_qpm]" ;;
+esac
+
+# The CLI, against the fixture project. What the table was is recorded before
+# anything touches it, and compared at the end.
+_qpw="$FROOT/projects/widget/qualification.tsv"
+_qpwas="$(cat "$_qpw" 2>/dev/null || printf '<absent>')"
+cp "$_qpw" "$TMP/qualprem.keep" 2>/dev/null || true
+# The part of any line from the phrase on, so a name is only counted when it
+# follows the phrase.
+_qpshown() { printf '%s\n' "$1" | awk '{ i = index($0, "never shown failing in this checkout"); if (i) print substr($0, i) }'; }
+# The number nearest phrase $2 in $1: the last one in the clause before it, or
+# else the first one after it. Not merely the right digit somewhere on the line,
+# which a report folding the count into another would also print.
+_qpnear() { printf '%s\n' "$1" | awk -v p="$2" '{
+  i = index($0, p); if (!i) next
+  n = split(substr($0, 1, i - 1), part, /[;,.]/); s = (n ? part[n] : "")
+  if (match(s, /[0-9]+[^0-9]*$/)) { s = substr(s, RSTART); sub(/[^0-9].*$/, "", s); print s; exit }
+  t = substr($0, i); if (match(t, /[0-9]+/)) { print substr(t, RSTART, RLENGTH); exit }
+}'; }
+# Controls did not apply, and every checker that declares a fail control has
+# one that applied and was met. passer declares only a pass control, and it did
+# not apply: a checker with no fail control is a missing control, which another
+# report names, not one never shown failing. Three inapplicable, a number no
+# other count can take (two met, two checkers, none held, none unrunnable).
+_qptab_shown() {
+  _qp5 demo   "$_qpc" violation           fail 'printf FORBIDDEN > bad.txt'
+  _qp6 demo   "$_qpc" restoration         pass true '-'
+  _qp6 demo   "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' false
+  _qp6 demo   "$_qpc" alternate           fail 'printf FORBIDDEN > alt.txt' false
+  _qp6 passer "$_qpc" restoration         pass true false
+}
+# Nothing held and nothing unrunnable; the one thing wrong is ghost, whose every
+# control did not apply, two fail and one pass. demo shows failing once and has
+# a fail control that did not apply. Four inapplicable in all (two met, two
+# checkers).
+_qptab_ghost() {
+  _qp5 demo  "$_qpc" violation           fail 'printf FORBIDDEN > bad.txt'
+  _qp6 demo  "$_qpc" restoration         pass true '-'
+  _qp6 demo  "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' false
+  _qp6 ghost "$_qpc" alternate           fail 'printf FORBIDDEN > alt.txt' false
+  _qp6 ghost "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' false
+  _qp6 ghost "$_qpc" irrelevant          pass true false
+}
+_qptab_shown > "$_qpw"
+( cd "$REPO" && "$FELIX" qualify --gate >/dev/null 2>&1 ); _qprc=$?
+is  "inapplicable controls do not refuse the gate while every checker is shown failing" "$_qprc" "0"
+_qptab_ghost > "$_qpw"
+_qpg="$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)"; _qprc=$?
+is  "a checker never shown failing refuses the gate with nothing held or unrunnable" "$_qprc" "1"
+has "--gate names the checker never shown failing in this checkout" "$(_qpshown "$_qpg")" "ghost"
+_qpr="$(cd "$REPO" && "$FELIX" qualify 2>&1)"
+has "and felix qualify names it as well" "$(_qpshown "$_qpr")" "ghost"
+case "$(_qpshown "$_qpg") $(_qpshown "$_qpr")" in
+  *demo*) bad "but neither names a checker shown failing beside a control that did not apply" \
+              "$(_qpshown "$_qpg") $(_qpshown "$_qpr")" ;;
+  *)      ok  "but neither names a checker shown failing beside a control that did not apply" ;;
+esac
+has "the qualify report says a control did not apply in this checkout" "$_qpr" "did not apply in this checkout"
+is  "and counts every control that did not apply, pass or fail" \
+    "$(_qpnear "$_qpr" "did not apply in this checkout")" "4"
+is  "an inapplicable row is rendered n/a, never ok, HELD or UNRUNNABLE" \
+    "$(printf '%s\n' "$_qpr" | awk '$NF == "n/a"' | wc -l | tr -d ' ')" "4"
+# The remedy the refusal points to: a fail control for ghost with no premise,
+# whose mutation stages the violation itself.
+_qp5 ghost "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' >> "$_qpw"
+_qpg="$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)"; _qprc=$?
+is  "a control that stages its own violation lifts the refusal" "$_qprc" "0"
+# The line was printed for this table one row ago, so its absence is measured.
+case "$(_qpshown "$_qpg")" in
+  *ghost*) bad "and the checker it shows failing is no longer named" "$(_qpshown "$_qpg")" ;;
+  *)       ok  "and the checker it shows failing is no longer named" ;;
+esac
+# The held row comes before the inapplicable ones, so a runner that lets a later
+# inapplicable verdict reset the refusal is caught. Every checker here is shown
+# failing, so the refusal can only be the held row's.
+{ _qp5 demo  "$_qpc" violation           fail 'printf FORBIDDEN > bad.txt'
+  _qp5 demo  "$_qpc" alternate           fail 'printf harmless > other.txt'
+  _qp6 demo  "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' false
+  _qp6 demo  "$_qpc" irrelevant          pass true false
+} > "$_qpw"
+( cd "$REPO" && "$FELIX" qualify --gate >/dev/null 2>&1 ); _qprc=$?
+is  "a held control still refuses the gate when inapplicable rows follow it" "$_qprc" "1"
+# broken also has a fail control that was met. Read as inapplicable, its
+# erroring premise would leave it shown failing and the gate would pass; so only
+# an unrunnable verdict refuses here.
+{ _qp6 broken "$_qpc" decoupled_violation fail 'printf FORBIDDEN > deep.txt' "sh -c 'exit 2'"
+  _qp5 broken "$_qpc" violation           fail 'printf FORBIDDEN > bad.txt'
+  _qp6 broken "$_qpc" irrelevant          pass true false
+} > "$_qpw"
+( cd "$REPO" && "$FELIX" qualify --gate >/dev/null 2>&1 ); _qprc=$?
+is  "a premise that errors refuses the gate rather than reading as absent" "$_qprc" "1"
+rm -f "$_qpw"
+[ -f "$TMP/qualprem.keep" ] && mv "$TMP/qualprem.keep" "$_qpw"
+is  "and the widget table is as the premise block found it" \
+    "$(cat "$_qpw" 2>/dev/null || printf '<absent>')" "$_qpwas"
+
+# felix gate carries the same verdict. It runs in a home of its own, built the
+# way the self-governed fixture is, because a gate run writes a receipt and a
+# red one writes mistakes.log, and the widget checkout is read by everything
+# after this block.
+QGH="$TMP/premgatehome"; QGR="$TMP/premgaterepo"
+mkdir -p "$QGH/projects/premgate" "$QGH/harness" "$MEM/premgate" "$QGR"
+cp -R "$FROOT/harness/." "$QGH/harness/"
+printf '{ "name": "premgate", "gate": "true" }\n' > "$QGH/projects/premgate/project.json"
+printf '# premgate\n' > "$QGH/projects/premgate/CLAUDE.md"
+( cd "$QGR" && git init -q -b main && printf 'clean\n' > a.txt && printf 'premgate\n' > .felix \
+  && git add -A && git -c user.name=t -c user.email=t@t commit -qm base ) >/dev/null 2>&1
+QGR="$(cd "$QGR" && pwd -P)"
+_qpgate() { ( cd "$QGR" && FELIX_HOME="$QGH" "$QGH/harness/felix" gate 2>&1 ); }
+# The qualified check's own line with status $2, and the lines under it up to
+# the next check's line (two spaces, a name, a status).
+_qpunder() { printf '%s\n' "$1" | awk -v s="$2" '
+  on && /^  [a-z][a-z_-]* +(ok|FAIL|skipped|stale)/ { on = 0 }
+  $0 ~ ("^ *qualified +" s) { on = 1 }
+  on { print }'; }
+_qptab_ghost > "$QGH/projects/premgate/qualification.tsv"
+_qpgo="$(_qpgate)"
+has "felix gate fails qualification over a checker never shown failing" "$(_qpunder "$_qpgo" FAIL)" "qualified"
+has "and prints the line naming it under qualified FAIL" "$(_qpshown "$(_qpunder "$_qpgo" FAIL)")" "ghost"
+_qptab_shown > "$QGH/projects/premgate/qualification.tsv"
+_qpgo="$(_qpgate)"
+has "felix gate reads qualified ok over controls that did not apply" "$(_qpunder "$_qpgo" ok)" "qualified"
+is  "and says under it how many did not apply here" \
+    "$(_qpnear "$(_qpunder "$_qpgo" ok)" "did not apply here")" "3"
 printf '\nautonomy is opted into, never assumed\n'
 AUP="$TMP/autoproj"; mkdir -p "$AUP"
 a() { ( . "$FROOT/harness/lib/autonomy.sh"; felix_autonomy_allows "$AUP" "$1" && echo yes || echo no ); }
@@ -9595,6 +11148,11 @@ printf '\nwhat to do next\n'
 NX="$TMP/nextproj"; mkdir -p "$NX" "$MEM/nextproj"
 printf '{"name":"nextproj","gate":"true"}\n' > "$NX/project.json"
 : > "$NX/routes.tsv"; : > "$NX/stack.tsv"
+# One probe, so a receipt written for this project carries an epoch, and the
+# receipt below is written for THIS project rather than for the one the
+# repo's marker names: the reader is handed $NX, and a receipt stamped under
+# another project's epoch reads as the facts having moved.
+printf 'marker\t-\t-\tls -1 .felix\ttest -f .felix\n' > "$NX/probes.tsv"
 
 # Sourced the way the CLI sources them. A short list here passed a `dormant`
 # maintenance row for a fixture that was plainly due, because the capability
@@ -9775,8 +11333,10 @@ esac
 
 # Due upkeep appears, and below the blocking rows.
 printf 'ordinary again\n' > "$REPO/README.md"; _stage
-( . "$FROOT/harness/lib/verify.sh"
-  felix_verify_record "$REPO" "$FROOT" 0 "true" "$(felix_tree_id "$REPO" "$FROOT")" )
+( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/verify.sh"
+  _ef="$(felix_verify_epoch_fields "$NX" "$REPO")"
+  felix_verify_record "$REPO" "$FROOT" 0 "true" "$(felix_tree_id "$REPO" "$FROOT")" "" "" \
+    "$(printf '%s' "$_ef" | cut -f1)" "$(printf '%s' "$_ef" | cut -f2)" )
 n="$(_next)"
 has "maintenance that is due is named" "$n" "deployed"
 rm -f "$NX/maintenance.tsv"
@@ -10352,45 +11912,64 @@ _ddiff "$RSD/engine" "$RSD/cache" && bad "a file facing a directory is a drift, 
                                   || ok  "a file facing a directory is a drift, whatever diff exits"
 rm -rf "$RSD/cache/harness/mixed" "$RSD/engine/harness/mixed"
 
-# The gate keeps its own inline copy — a verifier that sources the code it
-# judges can be switched off by editing that code — so the copies are asserted
-# in step the same way the independence paths are: the counted tokens ARE the
-# mechanism. Non-comment lines only.
+# 5. A directory only the cache holds, with nothing in it but residue, is
+#    residue: what git ignores is subtracted before the question is asked, so
+#    a whole directory of it is empty. The gate's inline copy read the missing
+#    diff operand as drift; when the gate was folded onto this function
+#    (2026-09-17) it took this reading, which deploy-check had answered for
+#    the same fact all along, and it is pinned here so the two cannot part
+#    again in silence. A real file in that directory is still drift.
+mkdir -p "$RSD/cache/commands/.claude-flow"
+printf 'x\n' > "$RSD/cache/commands/.claude-flow/state"
+_ddiff "$RSD/engine" "$RSD/cache" && ok  "a directory only the cache holds, with nothing in it but residue, is residue" \
+                                  || bad "a directory only the cache holds, with nothing in it but residue, is residue" "reported drift"
+printf 'real\n' > "$RSD/cache/commands/felix.md"
+_ddiff "$RSD/engine" "$RSD/cache" && bad "and with a real file in it, it is drift" "reported clean" \
+                                  || ok  "and with a real file in it, it is drift"
+rm -rf "$RSD/cache/commands"
+
+# The gate kept its own inline copy of this comparison until 2026-09-17, on the
+# argument that a verifier which sources the code it judges can be switched off
+# by editing that code, and four assertions here held the two copies in step by
+# counting the copy's tokens. The fold answered the argument without the copy:
+# the installed block sources felix_accepted_deploy_diff from the BASE REF's
+# resolve.sh — `git show`, never this tree, never the cache entry — and asks
+# it, so the code that judges is the code main accepted. The premise the four
+# rested on is gone, and what is counted now is the new mechanism's tokens, the
+# same way: the function is asked, it is read from the base, that copy is the
+# only thing sourced, and the residue rule (#86) is the library's alone.
+# Non-comment lines only.
 _REALG2="$(cd "$REAL_HARNESS/../.." && pwd)/projects/felix/gate.sh"
 if [ -f "$_REALG2" ]; then
   _gate_inst="$(sed -n '/^# -.*installed/,/^# -.*tests/p' "$_REALG2" | grep -vE '^[[:space:]]*#')"
   case "$_gate_inst" in
-    *"harness hooks commands"*) ok "the gate's installed check covers the same three directories" ;;
-    *) bad "the gate's installed check covers the same three directories" \
-           "no three-directory loop in the installed block" ;;
-  esac
-  # The copies stay in step on the residue rule too (#86): the gate's inline
-  # block filters through git check-ignore like the library does, and the
-  # structural worktree verdict prints the drift evidence instead of
-  # suppressing it — the wrong-diagnosis half of the issue was exactly a
-  # failure message that hid the one line naming the stray.
-  case "$_gate_inst" in
-    *check-ignore*) ok "and filters residue through the same ignore rule" ;;
-    *) bad "and filters residue through the same ignore rule" \
-           "no check-ignore in the installed block" ;;
-  esac
-  # Arm presence, so a half-revert cannot survive: the review constructed a
-  # gate filtering only its own side that passed the token check above.
-  case "$_gate_inst" in
-    *'Only in $PLUG'*) ok "the cache-side arm is present in the gate's copy" ;;
-    *) bad "the cache-side arm is present in the gate's copy" "no Only in \$PLUG arm" ;;
+    *'felix_accepted_deploy_diff "$ROOT"'*) ok "the gate's installed check asks the one reader, felix_accepted_deploy_diff" ;;
+    *) bad "the gate's installed check asks the one reader, felix_accepted_deploy_diff" \
+           "no call to felix_accepted_deploy_diff in the installed block" ;;
   esac
   case "$_gate_inst" in
-    *'Files engine/'*) ok "and so is the content-drift arm" ;;
-    *) bad "and so is the content-drift arm" "no Files engine/ arm" ;;
+    *'git show "$GBASE:engine/harness/lib/resolve.sh"'*) ok "and reads it from the base ref's resolve.sh" ;;
+    *) bad "and reads it from the base ref's resolve.sh" "no git show of the base's resolve.sh" ;;
+  esac
+  # Every `. file` in the block — a dot, a space and then a path — and there
+  # must be exactly the one, on the copy just read: a second source line is a
+  # library from somewhere else. `grep .` is not a source statement.
+  _gate_src="$(printf '%s\n' "$_gate_inst" | grep -E '(^|[[:space:]]|\()\. ["$/.~]' )"
+  case "$(printf '%s\n' "$_gate_src" | grep -c .)|$_gate_src" in
+    '1|'*'"$GLIB/resolve.sh"'*) ok "and that copy is the only library the block sources" ;;
+    *) bad "and that copy is the only library the block sources" "source lines: $_gate_src" ;;
+  esac
+  case "$_gate_inst" in
+    *check-ignore*) bad "and the residue rule is the library's alone" "check-ignore is still in the installed block" ;;
+    *) ok "and the residue rule is the library's alone" ;;
   esac
   is "the structural verdict shows its evidence too" \
      "$(grep -c 'head -5 /tmp/felix-install-drift.log' "$_REALG2")" "2"
 else
-  skip "the gate's installed check covers the same three directories" "no shipped gate"
-  skip "and filters residue through the same ignore rule" "no shipped gate"
-  skip "the cache-side arm is present in the gate's copy" "no shipped gate"
-  skip "and so is the content-drift arm" "no shipped gate"
+  skip "the gate's installed check asks the one reader, felix_accepted_deploy_diff" "no shipped gate"
+  skip "and reads it from the base ref's resolve.sh" "no shipped gate"
+  skip "and that copy is the only library the block sources" "no shipped gate"
+  skip "and the residue rule is the library's alone" "no shipped gate"
   skip "the structural verdict shows its evidence too" "no shipped gate"
 fi
 
@@ -10560,17 +12139,17 @@ printf '# real\n' >> "$_IR/engine/harness/lib/a.sh"
 has "while a declared one is caught" "$(_iscan "$_IR")" "real"
 
 # Matches a project name as a literal. -F, not -E: the name is interpolated
-# straight into the search, so a project called `vel.ra` searched for a pattern
-# and matched `velXra`, which names nothing.
+# straight into the search, so a project called `thi.rd` searched for a pattern
+# and matched `thiXrd`, which names nothing.
 _IR="$(_indep_repo literal)"
-mkdir -p "$_IR/projects/vel.ra"; printf '{"name":"vel.ra"}\n' > "$_IR/projects/vel.ra/project.json"
-printf '# velXra is not that project\n' >> "$_IR/engine/harness/lib/a.sh"
+mkdir -p "$_IR/projects/thi.rd"; printf '{"name":"thi.rd"}\n' > "$_IR/projects/thi.rd/project.json"
+printf '# thiXrd is not that project\n' >> "$_IR/engine/harness/lib/a.sh"
 ( cd "$_IR" && git add -A && git -c user.name=t -c user.email=t@t commit -qm lit ) >/dev/null 2>&1
 ( cd "$_IR" && "$_ISCAN" >/dev/null 2>&1 ) && ok "it matches a project name as a literal" \
   || bad "it matches a project name as a literal" "$(_iscan "$_IR")"
-printf '# vel.ra itself\n' >> "$_IR/engine/harness/lib/a.sh"
+printf '# thi.rd itself\n' >> "$_IR/engine/harness/lib/a.sh"
 ( cd "$_IR" && git add -A && git -c user.name=t -c user.email=t@t commit -qm dot ) >/dev/null 2>&1
-has "and the literal name is caught" "$(_iscan "$_IR")" "vel.ra"
+has "and the literal name is caught" "$(_iscan "$_IR")" "thi.rd"
 
 # All four engine directories are searched. Planted in each in turn, because
 # a path list is the kind of constant that gets shortened by accident and a
@@ -12855,6 +14434,606 @@ out="$(_grbg "$GRB" "$GRH" 2>&1)"; rc=$?
 is "and a graphify that fails outright does not reach the session" "$rc"  "0"
 is "nor print at it"                                               "$out" ""
 
+# ------------------------------------------------- red, the recorded red run ---
+# tests/red runs the calling tree's assertions against the engine a base commit
+# holds and writes down which of them fail, so a red assertion is a claim on
+# file rather than a surprise on CI. Written blind from the contract, against a
+# fixture repository rather than this checkout: its committed engine carries an
+# old marker and a run that announces itself if anything executes it; its
+# working tree moves the marker on, uncommitted, and brings a run that reads
+# its lib relative to its own path the way the real suite does. Against the
+# base's lib that run must go red on exactly the lib-derived assertions, and
+# against the tree's it would not — which is the whole point of the script.
+printf '\nred: the recorded red run\n'
+RED="$TMP/red"; mkdir -p "$RED/tmpdir"
+# The base's own run. It is never to be executed, and if it is, it leaves a
+# name behind that red.tsv would have to carry.
+_red_base_run() { cat <<'EOF'
+#!/usr/bin/env bash
+printf '  FAIL  the base run was executed\n'
+printf '0 passed, 1 failed\n'
+EOF
+}
+# The tree's run, suite-shaped: a header, a detail line under a failure that
+# must not read as a name, one name that fails twice, one upper-case name to
+# pin the C collation, a skip, and a totals line with or without a skipped
+# clause. It reports a manifest-shaped failure only when the variable red must
+# set is absent, so a red that forgot it shows one failure too many. It exits
+# 1 on any failure, as a real suite would, which red must not mistake for a
+# run that could not happen.
+_red_tree_run() { cat <<'EOF'
+#!/usr/bin/env bash
+HERE="$(cd "$(dirname "$0")" && pwd)"
+P=0; F=0; S=0
+printf 'marker suite\n\n'
+if grep -q new "$HERE/../lib/marker.sh"; then printf '  ok    a marker exists\n'; P=$((P+1))
+else printf '  FAIL  a marker exists\n        expected [new] got [old]\n'; F=$((F+1)); fi
+for i in 1 2; do
+  if grep -q new "$HERE/../lib/marker.sh"; then printf '  ok    Each pass sees the new marker\n'; P=$((P+1))
+  else printf '  FAIL  Each pass sees the new marker\n'; F=$((F+1)); fi
+done
+printf '  ok    always fine\n'; P=$((P+1))
+printf '  ok    a new assertion the tree added\n'; P=$((P+1))
+[ -z "${FELIX_TEST_NO_MANIFEST:-}" ] && { printf '  FAIL  assertion did not run: x\n'; F=$((F+1)); }
+printf '  skip  needs claude (no cli)\n'; S=$((S+1)) # SKIPLINE
+if [ "$S" -gt 0 ]; then printf '%d passed, %d failed, %d skipped\n' "$P" "$F" "$S"
+else printf '%d passed, %d failed\n' "$P" "$F"; fi
+[ "$F" -eq 0 ]
+EOF
+}
+# dir branch version: a repository whose one commit holds the old marker, the
+# base's run, the red under test, and a red.tsv making a claim that is stale.
+_red_seed() {
+  mkdir -p "$1/engine/.claude-plugin" "$1/engine/harness/lib" "$1/engine/harness/tests"
+  printf '{\n  "name": "felix",\n  "description": "fixture",\n  "version": "%s"\n}\n' "$3" > "$1/engine/.claude-plugin/plugin.json"
+  printf 'marker=old\n' > "$1/engine/harness/lib/marker.sh"
+  _red_base_run > "$1/engine/harness/tests/run"; chmod +x "$1/engine/harness/tests/run"
+  cp "$FROOT/harness/tests/red" "$1/engine/harness/tests/red"
+  printf '# stale\nbase\tmain\tdeadbeef\t0.0.0\nrun\t1\t0\t0\nstale claim\t9\n' > "$1/engine/harness/tests/red.tsv"
+  ( cd "$1" && git init -q -b "$2" && git add -A && git -c user.name=t -c user.email=t@t commit -qm seed ) >/dev/null 2>&1
+}
+# dir [skips]: the working tree moves on without a commit — a new marker, the
+# tree's run, and a version the base does not declare.
+_red_dirty() {
+  printf 'marker=new\n' > "$1/engine/harness/lib/marker.sh"
+  if [ "${2:-}" = skips ]; then _red_tree_run; else _red_tree_run | grep -v SKIPLINE; fi > "$1/engine/harness/tests/run"
+  printf '{\n  "name": "felix",\n  "description": "fixture",\n  "version": "9.9.9"\n}\n' > "$1/engine/.claude-plugin/plugin.json"
+}
+# dir cmd...: stdout to $RED/out, exit status to $RED/rc. The manifest variable
+# is unset on the way in, because the suite running this block may carry it,
+# and the run under test must set it itself. TMPDIR is a directory of this
+# block's own, so what red leaves behind can be counted.
+_red()      { ( cd "$1" && shift && env -u FELIX_TEST_NO_MANIFEST TMPDIR="$RED/tmpdir" "$@" >"$RED/out" 2>"$RED/err"; echo $? >"$RED/rc" ); }
+_red_rc()   { cat "$RED/rc"; }
+_red_sum()  { grep '^red: ' "$RED/out" | head -1 | sed 's/ ([0-9a-f]*) / (SHA) /'; }
+_red_sha()  { grep '^red: ' "$RED/out" | head -1 | sed -n 's/.* (\([0-9a-f]*\)) at engine.*/\1/p'; }
+_red_body() { grep -v '^#' "$1/engine/harness/tests/red.tsv" 2>/dev/null; }
+_red_stat() { ( cd "$1" && git status --porcelain | grep -v 'red\.tsv' ); }
+# full short: yes when short is a non-empty prefix of full at least 7 long.
+_red_abbr() { case "$1" in "$2"*) [ "${#2}" -ge 7 ] && echo yes ;; esac; }
+if [ -x "$FROOT/harness/tests/red" ]; then
+  _red_seed "$RED/repo" main 0.0.7; _red_dirty "$RED/repo" skips
+  RSHA="$(cd "$RED/repo" && git rev-parse main)"
+  before="$(_red_stat "$RED/repo")"
+  _red "$RED/repo" engine/harness/tests/red
+  is  "a red run against main exits 0 once the suite has run" "$(_red_rc)" "0"
+  is  "and stdout is the one summary line" "$(awk 'END{print NR}' "$RED/out")" "1"
+  is  "and the summary counts three of six assertions failing against main at the engine version main declares" \
+      "$(_red_sum)" "red: 3 of 6 assertions fail against main (SHA) at engine 0.0.7"
+  is  "and the sha it parenthesises abbreviates main's commit" "$(_red_abbr "$RSHA" "$(_red_sha)")" "yes"
+  is  "the base row names main, its full sha and the version at that commit, not the tree's" \
+      "$(_red_body "$RED/repo" | sed -n 1p)" "$(printf 'base\tmain\t%s\t0.0.7' "$RSHA")"
+  is  "the run row counts three failed, two passed, one skipped" "$(_red_body "$RED/repo" | sed -n 2p)" "$(printf 'run\t3\t2\t1')"
+  is  "the failed names follow in c order, once each, with the times they failed" \
+      "$(_red_body "$RED/repo" | sed -n '3,$p')" "$(printf 'Each pass sees the new marker\t2\na marker exists\t1')"
+  is  "the tree's run executed against main's lib, never the base's own run" \
+      "$(grep -c 'the base run was executed' "$RED/repo/engine/harness/tests/red.tsv")" "0"
+  is  "the manifest variable reached the run" "$(grep -c 'assertion did not run' "$RED/repo/engine/harness/tests/red.tsv")" "0"
+  is  "a stale red.tsv is overwritten, not appended to" "$(grep -c 'stale claim' "$RED/repo/engine/harness/tests/red.tsv")" "0"
+  is  "nothing in the tree but red.tsv changed" "$(_red_stat "$RED/repo")" "$before"
+  is  "and no temporary directory is left under the tmpdir it was given" "$(ls -A "$RED/tmpdir" | wc -l | tr -d ' ')" "0"
+  # A second repository with no main and no origin: standing inside it while
+  # calling the first's red by absolute path, a red that read $PWD would find
+  # no base and retract; and red.tsv is removed first so a stale row cannot
+  # answer for a run that wrote elsewhere.
+  _red_seed "$RED/trunk" trunk 0.0.9; _red_dirty "$RED/trunk"
+  rm -f "$RED/repo/engine/harness/tests/red.tsv"
+  _red "$RED/trunk" "$RED/repo/engine/harness/tests/red"
+  is  "invoked from inside another repository it still reads its own" \
+      "$(_red_body "$RED/repo" | sed -n 1p)" "$(printf 'base\tmain\t%s\t0.0.7' "$RSHA")"
+  _red "$RED/repo/engine/harness/lib" ../tests/red
+  is  "invoked by a relative path from a subdirectory it still finds its root" \
+      "$(_red_sum)" "red: 3 of 6 assertions fail against main (SHA) at engine 0.0.7"
+  # The trunk repository: an explicit ref works where the defaults would not,
+  # its run prints no skipped clause, and then the defaults are tried.
+  _red "$RED/trunk" engine/harness/tests/red trunk
+  is  "an explicit base argument names the ref to run against" "$(_red_sum)" "red: 3 of 5 assertions fail against trunk (SHA) at engine 0.0.9"
+  is  "and a totals line without a skipped clause records skipped as 0" "$(_red_body "$RED/trunk" | sed -n 2p)" "$(printf 'run\t3\t2\t0')"
+  _red "$RED/trunk" engine/harness/tests/red
+  is  "with neither origin/main nor main to fall back on the red run cannot run, exit 2" "$(_red_rc)" "2"
+  has "and says so on stdout" "$(cat "$RED/out")" "red: not run: "
+  is  "and red.tsv retracts the earlier claim rather than keeping it" "$(_red_body "$RED/trunk")" "$(printf 'base\t-\t-\t-\nrun\t-\t-\t-')"
+  # No run beside red: main resolves, so the only thing missing is the suite.
+  _red_seed "$RED/norun" main 0.0.7; rm -f "$RED/norun/engine/harness/tests/run"
+  _red "$RED/norun" engine/harness/tests/red
+  is  "with no run beside it the red run cannot run, exit 2" "$(_red_rc)" "2"
+  is  "and the file then states that no red run was possible" "$(_red_body "$RED/norun")" "$(printf 'base\t-\t-\t-\nrun\t-\t-\t-')"
+  # A clone of the first repository, so origin/main exists, then a commit on
+  # its main that moves the marker and the version: the two refs now disagree,
+  # and only one of them makes the tree's run pass.
+  git clone -q "$RED/repo" "$RED/clone" >/dev/null 2>&1
+  printf '{\n  "name": "felix",\n  "description": "fixture",\n  "version": "0.0.8"\n}\n' > "$RED/clone/engine/.claude-plugin/plugin.json"
+  printf 'marker=new\n' > "$RED/clone/engine/harness/lib/marker.sh"
+  ( cd "$RED/clone" && git -c user.name=t -c user.email=t@t commit -qam bump ) >/dev/null 2>&1
+  CSHA="$(cd "$RED/clone" && git rev-parse main)"
+  _red_dirty "$RED/clone" skips
+  _red "$RED/clone" engine/harness/tests/red
+  is  "with both refs present origin/main is the default base" \
+      "$(_red_body "$RED/clone" | sed -n 1p)" "$(printf 'base\torigin/main\t%s\t0.0.7' "$RSHA")"
+  _red "$RED/clone" engine/harness/tests/red main
+  is  "naming main explicitly runs against the local branch, whose lib the tree's run passes" \
+      "$(_red_body "$RED/clone")" "$(printf 'base\tmain\t%s\t0.0.8\nrun\t0\t5\t1' "$CSHA")"
+  is  "and zero failures is still exit 0" "$(_red_rc)" "0"
+  is  "and the summary then counts zero of six" "$(_red_sum)" "red: 0 of 6 assertions fail against main (SHA) at engine 0.0.8"
+else
+  for a in "a red run against main exits 0 once the suite has run" "and stdout is the one summary line" \
+           "and the summary counts three of six assertions failing against main at the engine version main declares" \
+           "and the sha it parenthesises abbreviates main's commit" \
+           "the base row names main, its full sha and the version at that commit, not the tree's" \
+           "the run row counts three failed, two passed, one skipped" \
+           "the failed names follow in c order, once each, with the times they failed" \
+           "the tree's run executed against main's lib, never the base's own run" \
+           "the manifest variable reached the run" "a stale red.tsv is overwritten, not appended to" \
+           "nothing in the tree but red.tsv changed" "and no temporary directory is left under the tmpdir it was given" \
+           "invoked from inside another repository it still reads its own" \
+           "invoked by a relative path from a subdirectory it still finds its root" \
+           "an explicit base argument names the ref to run against" \
+           "and a totals line without a skipped clause records skipped as 0" \
+           "with neither origin/main nor main to fall back on the red run cannot run, exit 2" \
+           "and says so on stdout" "and red.tsv retracts the earlier claim rather than keeping it" \
+           "with no run beside it the red run cannot run, exit 2" "and the file then states that no red run was possible" \
+           "with both refs present origin/main is the default base" \
+           "naming main explicitly runs against the local branch, whose lib the tree's run passes" \
+           "and zero failures is still exit 0" "and the summary then counts zero of six"; do
+    skip "$a" "no tests/red beside this harness"; done
+fi
+
+# ---------------------------------------------------------------------------
+# exceptions: the scoped exception channel (amendments §3). A grant is a row in
+# projects/<name>/exceptions.tsv, read ONLY from refs/remotes/origin/main of
+# the repository that holds the project directory — never the working tree,
+# never a local branch a session could move — and only when that repository
+# is the governed root itself. It clears one TASK_BLOCKING row at the task
+# moment, keyed to the hash of the exact ledger line, bounded by an expiry
+# that is ahead of now and inside a one-year horizon. Nothing here can clear
+# a release, an authority hold, or a row nobody admitted.
+#
+# Written blind against the contract, before the implementation was read.
+printf '\nexceptions: the scoped exception channel\n'
+
+_xc_row()    { local IFS=$'\t'; printf '%s\n' "$*"; }
+_xc_hash()   { local l; l="$(awk -F'\t' -v n="$2" '$1==n{print; exit}' "$1")"
+               printf '%s\n' "$l" | git hash-object --stdin; }
+_xc_h12()    { _xc_hash "$1" "$2" | cut -c1-12; }
+_xc_ci()     { ( cd "$1" && git add -A >/dev/null 2>&1 \
+                 && git -c user.name=t -c user.email=t@t commit -qm "$2" >/dev/null 2>&1 ); }
+_xc_origin() { git init -q --bare "$1.git" >/dev/null 2>&1 \
+               && ( cd "$1" && git remote add origin "$1.git" && git push -q origin main \
+                    && git fetch -q origin ) >/dev/null 2>&1; }
+_xc_lib()    { . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+               . "$FROOT/harness/lib/obligations.sh"; }
+_xc_run()    { ( _xc_lib; felix_obligations_run "$@" ) 2>/dev/null; }
+_xc_blk()    { ( _xc_lib; felix_obligations_blocking "$@" ) 2>/dev/null; }
+_xc_ob()     { ( _xc_lib; "$@" ) 2>/dev/null; }
+_xc_col()    { printf '%s\n' "$1" | awk -F'\t' -v n="$2" -v c="$3" '$1==n{print $c; exit}'; }
+_xc_in()     { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
+_xc_skip()   { local why="$1"; shift; local a; for a in "$@"; do skip "$a" "$why"; done; }
+# A self-governed home: the marker binds the home to its own project, the way
+# $TMP/selfgoverned does. Written by a helper so the binding is built once,
+# for a fixture, and not rewritten by hand anywhere below.
+_xc_home()   { mkdir -p "$1/projects/$2" "$MEM/$2" "$1/harness"; cp -R "$REAL_HARNESS/." "$1/harness/"
+               printf '{ "name": "%s", "gate": "true" }\n' "$2" > "$1/projects/$2/project.json"
+               printf '# %s\n' "$2" > "$1/projects/$2/CLAUDE.md"
+               printf 'code\t-\t-\tgit ls-files\ttest -e .git\n' > "$1/projects/$2/probes.tsv"
+               printf '%s\n' "$2" > "$1/${_XC_MARK}"; }
+_XC_MARK=".felix"
+
+# Stamps relative to the clock, so the fixture does not rot: inside the
+# horizon and ahead of now, an earlier one still ahead of now, one past the
+# horizon, and one long gone.
+_XC_Y="$(date -u +%Y)"
+XC_LIVE="$((_XC_Y+1))-06-01T00:00:00Z"
+XC_SOON="$((_XC_Y+1))-03-01T00:00:00Z"
+XC_FAR="$((_XC_Y+2))-01-01T00:00:00Z"
+XC_OLD='2000-01-01T00:00:00Z'
+
+# ------------------------------------------------ the self-governed home ----
+# A Felix home that is itself a git repository with projects/x/ inside it and
+# a real origin: the reader takes origin/main, so a home with no remote is
+# the first negative case and the same home after push+fetch the positive one.
+XH="$TMP/exc-home"; mkdir -p "$XH"; XH="$(cd "$XH" && pwd -P)"; _xc_home "$XH" x
+XHL="$XH/projects/x/obligations.tsv"; XHX="$XH/projects/x/exceptions.tsv"
+{
+  printf '# the ledger the grants are keyed to\n'
+  _xc_row t_clear   TASK_BLOCKING    deterministic -              false - 'the row a grant clears'
+  _xc_row t_whole   TASK_BLOCKING    deterministic -              false - 'granted by the whole hash'
+  _xc_row t_lapsed  TASK_BLOCKING    deterministic -              false - 'its grant has lapsed'
+  _xc_row t_far     TASK_BLOCKING    deterministic -              false - 'its grant expires past the horizon'
+  _xc_row t_stale   TASK_BLOCKING    deterministic -              false - 'its grant is keyed to another line'
+  _xc_row t_nonl    TASK_BLOCKING    deterministic -              false - 'its grant is keyed to the line without its newline'
+  _xc_row t_shout   TASK_BLOCKING    deterministic -              false - 'its grant carries an upper-case hash'
+  _xc_row t_garbled TASK_BLOCKING    deterministic -              false - 'its grants do not parse'
+  _xc_row t_tree    TASK_BLOCKING    deterministic -              false - 'its grant is written only in this tree'
+  _xc_row t_asleep  TASK_BLOCKING    deterministic 'test -f nope' false - 'dormant, with a grant waiting'
+  _xc_row t_hold    TASK_BLOCKING    unknown       -              false - 'an authority hold'
+  _xc_row t_alone   TASK_BLOCKING    deterministic -              false - 'nothing names it'
+  _xc_row t_inject  TASK_BLOCKING    deterministic - "printf 'A\\tB\\r\\texcepted|$XC_LIVE|x\\n'; exit 1" - 'its evidence prints tabs and a carriage return'
+  _xc_row r_fails   RELEASE_BLOCKING deterministic -              false - 'release-blocking, and no grant may clear it'
+} > "$XHL"
+H12_CLEAR="$(_xc_h12 "$XHL" t_clear)"
+{
+  printf '# obligation\trow_hash\texpires\tgranted_by\treason\n\n'
+  _xc_row t_clear   "$H12_CLEAR"                          "$XC_LIVE"          founder 'accepted for this epoch'
+  _xc_row t_clear   "$H12_CLEAR"                          "$XC_SOON"          earlier 'a later row with an earlier expiry narrows the first'
+  _xc_row t_whole   "$(_xc_h12 "$XHL" t_whole)"           "$XC_OLD"           lapsed  'an expired row above the live one'
+  _xc_row t_whole   "$(_xc_hash "$XHL" t_whole)"          "$XC_LIVE"          whole   'the whole forty-character hash'
+  _xc_row t_lapsed  "$(_xc_h12 "$XHL" t_lapsed)"          "$XC_OLD"           founder 'lapsed'
+  _xc_row t_far     "$(_xc_h12 "$XHL" t_far)"             "$XC_FAR"           founder 'past the horizon'
+  _xc_row t_stale   deadbeefdeadbeef                      "$XC_LIVE"          founder 'keyed to another line'
+  _xc_row t_nonl    "$(awk -F'\t' '$1=="t_nonl"{print; exit}' "$XHL" | tr -d '\n' | git hash-object --stdin | cut -c1-12)" \
+                                                          "$XC_LIVE"          founder 'hashed without the newline'
+  _xc_row t_shout   "$(_xc_hash "$XHL" t_shout | tr 'a-f' 'A-F')" "$XC_LIVE"  founder 'upper-case hex'
+  _xc_row t_garbled xyz                                   "$XC_LIVE"          founder 'a hash that is not hex'
+  _xc_row t_garbled "$(_xc_h12 "$XHL" t_garbled)"         "${XC_LIVE%T*}"     founder 'a date without a time'
+  _xc_row t_garbled "$(_xc_h12 "$XHL" t_garbled)"         9999-99-99T99:99:99Z founder 'the right shape, impossible values'
+  _xc_row t_garbled "$(_xc_h12 "$XHL" t_garbled)"         "$XC_LIVE"          ''      'no grantor'
+  _xc_row t_asleep  "$(_xc_h12 "$XHL" t_asleep)"          "$XC_LIVE"          founder 'granted while dormant'
+  _xc_row t_hold    "$(_xc_h12 "$XHL" t_hold)"            "$XC_LIVE"          founder 'names an authority hold'
+  _xc_row r_fails   "$(_xc_h12 "$XHL" r_fails)"           "$XC_LIVE"          founder 'names a release-blocking row'
+  _xc_row ghost     abcdefabcdef                          "$XC_LIVE"          founder 'names nothing the ledger admits'
+} > "$XHX"
+( cd "$XH" && git init -q -b main ) >/dev/null 2>&1; _xc_ci "$XH" ledger
+XRUN0="$(_xc_run "$XH/projects/x" "$XH")"
+_xc_origin "$XH"
+
+_XC_HOME_NAMES=(
+  "every obligations run row carries eight columns"
+  "a grant committed on local main with no remote clears nothing"
+  "the same repository after push and fetch clears it, and among valid rows the earliest expiry wins"
+  "the whole forty-character hash grants too, and an expired row above it does not shadow it"
+  "a grant committed locally on top of the fetched main but not pushed clears nothing"
+  "an expired grant clears nothing"
+  "a grant expiring past the horizon clears nothing"
+  "a grant keyed to another line's hash clears nothing"
+  "a grant hashed over the line without its newline clears nothing"
+  "an upper-case hash, a bad stamp or an empty grantor is no grant"
+  "a grant naming a release-blocking obligation clears nothing"
+  "a grant naming an unknown-pathway obligation clears nothing"
+  "a grant on a dormant row is not applied"
+  "a grant written only in the working tree clears nothing"
+  "a grant that expired before the base commit is expired whatever the clock says"
+  "an evidence line carrying tabs and a carriage return cannot forge the eighth column nor break the row"
+  "at the task moment an excepted row does not block"
+  "while the rows whose grants were refused or absent still do"
+  "an authority hold on the unknown pathway blocks whatever the table says"
+  "at release a task-blocking row is dropped and a release-blocking one blocks, grant or no grant"
+  "a release-mode run carries no clearance in any row"
+  "without lib/exceptions.sh every eighth column is a dash and every row is still reported"
+  "felix obligations prints a row column carrying the ledger line's twelve-character hash"
+  "an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied"
+  "the summary counts the excepted rows"
+  "the report heads the grants with the base ref and its commit date"
+  "a live grant is listed live and a grant on a dormant row is listed armed"
+  "each refused grant is listed with its reason"
+  "rows written in this tree and not at origin/main are listed as not yet grants"
+  "the admitted sentence now counts the grants"
+  "felix obligations --gate still fails while unexcepted blocking rows remain"
+  "deleting the table from the working tree does not revoke a grant at origin/main"
+)
+if git -C "$XH" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 && [ -n "$H12_CLEAR" ]; then
+  XRUN="$(_xc_run "$XH/projects/x" "$XH")"
+  XBLK="$(printf '%s\n' "$XRUN" | _xc_blk | cut -f1 | tr '\n' ' ')"
+  XREL="$(printf '%s\n' "$XRUN" | _xc_blk release | cut -f1 | tr '\n' ' ')"
+
+  is  "every obligations run row carries eight columns" \
+      "$(printf '%s\n' "$XRUN" | awk -F'\t' '{print NF}' | sort -u | tr '\n' ' ')" "8 "
+  is  "a grant committed on local main with no remote clears nothing" "$(_xc_col "$XRUN0" t_clear 8)" "-"
+  is  "the same repository after push and fetch clears it, and among valid rows the earliest expiry wins" \
+      "$(printf '%s\n' "$XRUN" | awk -F'\t' '$1=="t_clear"{print $5 "|" $8; exit}')" "UNSATISFIED|excepted|$XC_SOON|earlier"
+  is  "the whole forty-character hash grants too, and an expired row above it does not shadow it" \
+      "$(_xc_col "$XRUN" t_whole 8)" "excepted|$XC_LIVE|whole"
+  is  "an expired grant clears nothing"                          "$(_xc_col "$XRUN" t_lapsed 8)"  "-"
+  is  "a grant expiring past the horizon clears nothing"         "$(_xc_col "$XRUN" t_far 8)"     "-"
+  is  "a grant keyed to another line's hash clears nothing"      "$(_xc_col "$XRUN" t_stale 8)"   "-"
+  is  "a grant hashed over the line without its newline clears nothing" "$(_xc_col "$XRUN" t_nonl 8)" "-"
+  is  "an upper-case hash, a bad stamp or an empty grantor is no grant" \
+      "$(_xc_col "$XRUN" t_shout 8)|$(_xc_col "$XRUN" t_garbled 8)" "-|-"
+  is  "a grant naming a release-blocking obligation clears nothing" "$(_xc_col "$XRUN" r_fails 8)" "-"
+  is  "a grant naming an unknown-pathway obligation clears nothing" "$(_xc_col "$XRUN" t_hold 8)"  "-"
+  is  "a grant on a dormant row is not applied"                  "$(_xc_col "$XRUN" t_asleep 8)"  "-"
+
+  # `now` is the later of the clock and the base commit's date. A date shim
+  # that answers 1999 to the stamp question cannot revive a grant that
+  # expired in 2000, because origin/main was committed today.
+  XSHIM="$TMP/exc-shim"; mkdir -p "$XSHIM"
+  printf '#!/bin/sh\ncase "$*" in *"%%Y-%%m-%%dT%%H:%%M:%%SZ"*) printf "1999-01-01T00:00:00Z\\n" ;; *) exec /bin/date "$@" ;; esac\n' > "$XSHIM/date"
+  chmod +x "$XSHIM/date"
+  is  "a grant that expired before the base commit is expired whatever the clock says" \
+      "$(_xc_col "$(PATH="$XSHIM:$PATH" _xc_run "$XH/projects/x" "$XH")" t_lapsed 8)" "-"
+
+  # The detail column is what an evidence command last printed. Tabs in it
+  # would shift the columns and let the command write its own clearance.
+  is  "an evidence line carrying tabs and a carriage return cannot forge the eighth column nor break the row" \
+      "$(printf '%s\n' "$XRUN" | awk -F'\t' '$1=="t_inject"{print NF "|" $8; exit}')|$(printf '%s' "$XRUN" | tr -dc '\r' | wc -c | tr -d ' ')" "8|-|0"
+
+  if ! _xc_in "$XBLK" t_clear && ! _xc_in "$XBLK" t_whole; then ok "at the task moment an excepted row does not block"
+  else bad "at the task moment an excepted row does not block" "blocking: [$XBLK]"; fi
+  _m=""; for _n in t_alone t_lapsed t_far t_stale t_nonl t_tree t_inject; do _xc_in "$XBLK" "$_n" || _m="$_m $_n"; done
+  [ -z "$_m" ] && ok  "while the rows whose grants were refused or absent still do" \
+               || bad "while the rows whose grants were refused or absent still do" "not emitted:$_m in [$XBLK]"
+  _xc_in "$XBLK" t_hold && ok  "an authority hold on the unknown pathway blocks whatever the table says" \
+                        || bad "an authority hold on the unknown pathway blocks whatever the table says" "blocking: [$XBLK]"
+  if ! _xc_in "$XREL" t_clear && ! _xc_in "$XREL" t_alone && _xc_in "$XREL" r_fails; then
+    ok  "at release a task-blocking row is dropped and a release-blocking one blocks, grant or no grant"
+  else
+    bad "at release a task-blocking row is dropped and a release-blocking one blocks, grant or no grant" "release: [$XREL]"
+  fi
+  is  "a release-mode run carries no clearance in any row" \
+      "$(_xc_run "$XH/projects/x" "$XH" release | cut -f8 | sort -u | tr '\n' ' ')" "- "
+
+  # A harness copy without the library withholds every clearance and does
+  # not crash: fourteen rows, fourteen dashes.
+  XL="$TMP/exc-nolib"; mkdir -p "$XL"; cp -R "$FROOT/harness" "$XL/harness"
+  rm -f "$XL/harness/lib/exceptions.sh"
+  is  "without lib/exceptions.sh every eighth column is a dash and every row is still reported" \
+      "$( ( export FELIX_HOME="$XL"; . "$XL/harness/lib/resolve.sh"; . "$XL/harness/lib/probes.sh"
+            . "$XL/harness/lib/obligations.sh"; felix_obligations_run "$XH/projects/x" "$XH" ) 2>/dev/null \
+          | awk -F'\t' '{print $8}' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')" " 14 - "
+
+  # Grants written after the fetch: one committed on local main and not
+  # pushed, one not even committed. Neither is at origin/main.
+  _xc_row t_alone "$(_xc_h12 "$XHL" t_alone)" "$XC_LIVE" founder 'committed locally, never pushed' >> "$XHX"
+  _xc_ci "$XH" local
+  _xc_row t_tree  "$(_xc_h12 "$XHL" t_tree)"  "$XC_LIVE" founder 'written in the tree, never committed' >> "$XHX"
+  XRUN3="$(_xc_run "$XH/projects/x" "$XH")"
+  is  "a grant committed locally on top of the fetched main but not pushed clears nothing" "$(_xc_col "$XRUN3" t_alone 8)" "-"
+  is  "a grant written only in the working tree clears nothing" "$(_xc_col "$XRUN3" t_tree 8)" "-"
+
+  # The CLI, inside the governed home.
+  XOUT="$(cd "$XH" && FELIX_HOME="$XH" "$XH/harness/felix" obligations 2>&1)"
+  case "$XOUT" in
+    *ROW*"$H12_CLEAR"*|*"$H12_CLEAR"*ROW*) ok "felix obligations prints a row column carrying the ledger line's twelve-character hash" ;;
+    *) bad "felix obligations prints a row column carrying the ledger line's twelve-character hash" "$XOUT" ;;
+  esac
+  if printf '%s\n' "$XOUT" | grep -F 't_clear' | grep -Fq 'UNSATISFIED' \
+     && printf '%s\n' "$XOUT" | grep -Fq "excepted until $XC_SOON by earlier"; then
+    ok  "an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied"
+  else
+    bad "an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied" "$XOUT"
+  fi
+  case "$XOUT" in
+    *"14 obligation(s): "*", 2 excepted"*) ok "the summary counts the excepted rows" ;;
+    *) bad "the summary counts the excepted rows" "$(printf '%s\n' "$XOUT" | grep 'obligation(s)')" ;;
+  esac
+  case "$XOUT" in
+    *"exceptions at origin/main ("*"): 12 granted"*) ok "the report heads the grants with the base ref and its commit date" ;;
+    *) bad "the report heads the grants with the base ref and its commit date" "$(printf '%s\n' "$XOUT" | grep 'exceptions at')" ;;
+  esac
+  if printf '%s\n' "$XOUT" | grep -F 't_clear' | grep -Fq 'live' \
+     && printf '%s\n' "$XOUT" | grep -F 't_asleep' | grep -Fq 'armed'; then
+    ok  "a live grant is listed live and a grant on a dormant row is listed armed"
+  else
+    bad "a live grant is listed live and a grant on a dormant row is listed armed" "$XOUT"
+  fi
+  _m=""
+  while IFS='|' read -r _n _r; do
+    printf '%s\n' "$XOUT" | grep -F "$_n" | grep -F 'refused' | grep -Fq "$_r" || _m="$_m $_n"
+  done <<'REASONS'
+t_lapsed|expired
+t_far|expires past the horizon
+t_stale|keyed to a row that has since changed
+t_nonl|keyed to a row that has since changed
+r_fails|names a RELEASE_BLOCKING obligation, which no exception may clear
+t_hold|names an authority hold, which no exception may clear
+ghost|names an obligation the ledger does not admit
+REASONS
+  [ -z "$_m" ] && ok  "each refused grant is listed with its reason" \
+               || bad "each refused grant is listed with its reason" "not refused as stated:$_m"
+  _t="$(printf '%s\n' "$XOUT" | sed -n '/written in this tree and not at origin\/main, so not yet a grant:/,$p')"
+  case "$_t" in
+    *t_alone*t_tree*|*t_tree*t_alone*) ok "rows written in this tree and not at origin/main are listed as not yet grants" ;;
+    *) bad "rows written in this tree and not at origin/main are listed as not yet grants" "$XOUT" ;;
+  esac
+  # The discovered/admitted sentence is the candidates section's footer and
+  # prints only when a surveyed answer file exists under the memory root
+  # (tests/run 7525–7560 builds one for the widget). This fixture has none,
+  # so the claim is decided only when the sentence is there to read.
+  if printf '%s\n' "$XOUT" | grep -q 'discovered [0-9]'; then
+    printf '%s\n' "$XOUT" | grep -Eq 'discovered [0-9]+, admitted [0-9]+, granted 12' \
+      && ok  "the admitted sentence now counts the grants" \
+      || bad "the admitted sentence now counts the grants" "$(printf '%s\n' "$XOUT" | grep 'discovered')"
+  else
+    skip "the admitted sentence now counts the grants" "the sentence prints only with a candidates section, which this fixture does not build"
+  fi
+  ( cd "$XH" && FELIX_HOME="$XH" "$XH/harness/felix" obligations --gate >/dev/null 2>&1 ); _rc=$?
+  [ "$_rc" -ne 0 ] && ok  "felix obligations --gate still fails while unexcepted blocking rows remain" \
+                   || bad "felix obligations --gate still fails while unexcepted blocking rows remain" "exit 0"
+
+  rm -f "$XHX"
+  is  "deleting the table from the working tree does not revoke a grant at origin/main" \
+      "$(_xc_col "$(_xc_run "$XH/projects/x" "$XH")" t_clear 8)" "excepted|$XC_SOON|earlier"
+else
+  _xc_skip "the self-governed home with an origin could not be built" "${_XC_HOME_NAMES[@]}"
+fi
+
+# ---------------------------------------------- where the reader will not look
+# A side branch, even one pushed to the origin; a project directory outside
+# any repository; a project directory that is the repository root; a home that
+# is a repository other than the governed root.
+XB="$TMP/exc-branch"; mkdir -p "$XB/projects/b"; XB="$(cd "$XB" && pwd -P)"
+_xc_row b_task TASK_BLOCKING deterministic - false - 'granted on a side branch only' > "$XB/projects/b/obligations.tsv"
+( cd "$XB" && git init -q -b main ) >/dev/null 2>&1; _xc_ci "$XB" base; _xc_origin "$XB"
+( cd "$XB" && git checkout -q -b side ) >/dev/null 2>&1
+_xc_row b_task "$(_xc_h12 "$XB/projects/b/obligations.tsv" b_task)" "$XC_LIVE" founder 'side' > "$XB/projects/b/exceptions.tsv"
+_xc_ci "$XB" side; ( cd "$XB" && git push -q origin side ) >/dev/null 2>&1
+if git -C "$XB" rev-parse --verify -q refs/remotes/origin/side >/dev/null 2>&1; then
+  is  "a grant committed only on a side branch clears nothing even once the origin holds that branch" \
+      "$(_xc_col "$(_xc_run "$XB/projects/b" "$XB")" b_task 8)" "-"
+else
+  skip "a grant committed only on a side branch clears nothing even once the origin holds that branch" "the branch fixture could not be built"
+fi
+
+XN="$TMP/exc-nogit"; mkdir -p "$XN/projects/n"
+_xc_row n_task TASK_BLOCKING deterministic - false - 'granted outside any repository' > "$XN/projects/n/obligations.tsv"
+_xc_row n_task "$(_xc_h12 "$XN/projects/n/obligations.tsv" n_task)" "$XC_LIVE" founder 'no repository' > "$XN/projects/n/exceptions.tsv"
+XR="$TMP/exc-rootproj"; mkdir -p "$XR"; XR="$(cd "$XR" && pwd -P)"
+_xc_row r_task TASK_BLOCKING deterministic - false - 'the project is the repository root' > "$XR/obligations.tsv"
+_xc_row r_task "$(_xc_h12 "$XR/obligations.tsv" r_task)" "$XC_LIVE" founder 'at the root' > "$XR/exceptions.tsv"
+( cd "$XR" && git init -q -b main ) >/dev/null 2>&1; _xc_ci "$XR" root; _xc_origin "$XR"
+if git -C "$XR" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+  is  "a project directory outside any repository, or one that is itself the repository root, grants nothing" \
+      "$(_xc_col "$(_xc_run "$XN/projects/n" "$XN")" n_task 8)|$(_xc_col "$(_xc_run "$XR" "$XR")" r_task 8)" "-|-"
+else
+  skip "a project directory outside any repository, or one that is itself the repository root, grants nothing" "the root fixture could not be built"
+fi
+
+XK="$TMP/exc-otherhome"; mkdir -p "$XK/projects/k"; XK="$(cd "$XK" && pwd -P)"
+XKR="$TMP/exc-otherroot"; mkdir -p "$XKR"; XKR="$(cd "$XKR" && pwd -P)"
+_xc_row k_task TASK_BLOCKING deterministic - false - 'granted in a home that is not the root' > "$XK/projects/k/obligations.tsv"
+_xc_row k_task "$(_xc_h12 "$XK/projects/k/obligations.tsv" k_task)" "$XC_LIVE" founder 'another repository' > "$XK/projects/k/exceptions.tsv"
+( cd "$XK" && git init -q -b main ) >/dev/null 2>&1; _xc_ci "$XK" home; _xc_origin "$XK"
+( cd "$XKR" && git init -q -b main && printf 'x\n' > x ) >/dev/null 2>&1; _xc_ci "$XKR" root
+if git -C "$XK" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+  is  "a grant under a home that is a different repository from the governed root clears nothing" \
+      "$(_xc_col "$(_xc_run "$XK/projects/k" "$XKR")" k_task 8)" "-"
+else
+  skip "a grant under a home that is a different repository from the governed root clears nothing" "the other-home fixture could not be built"
+fi
+
+# The widget's home is $FROOT, no repository at all, so a row written there is
+# not read and the report says so. Restored afterwards, because every later
+# assertion reads that project.
+if [ -f "$FROOT/projects/widget/exceptions.tsv" ]; then cp "$FROOT/projects/widget/exceptions.tsv" "$TMP/exceptions.keep"; fi
+_xc_row fixture "$(_xc_h12 "$FROOT/projects/widget/obligations.tsv" fixture)" "$XC_LIVE" founder 'not in any repository' \
+  > "$FROOT/projects/widget/exceptions.tsv"
+out="$(cd "$REPO" && "$FELIX" obligations 2>&1)"
+if printf '%s\n' "$out" | grep -Fq 'exceptions: not read for this project.' \
+   && printf '%s\n' "$out" | grep -Eq '[0-9]+ obligation\(s\): [0-9]+ active, [0-9]+ dormant, [0-9]+ unknown; [0-9]+ blocking, [0-9]+ excepted'; then
+  ok  "a home that is no repository has its grants unread, and the widget report says so under the new summary"
+else
+  bad "a home that is no repository has its grants unread, and the widget report says so under the new summary" "$out"
+fi
+if [ -f "$TMP/exceptions.keep" ]; then mv "$TMP/exceptions.keep" "$FROOT/projects/widget/exceptions.tsv"
+else rm -f "$FROOT/projects/widget/exceptions.tsv"; fi
+
+# ------------------------------------------------------- the ledger scan ----
+XD="$TMP/exc-dup"; mkdir -p "$XD"
+{ _xc_row twice TASK_BLOCKING deterministic - false - first
+  _xc_row twice TASK_BLOCKING deterministic - false - second; } > "$XD/obligations.tsv"
+is  "a name admitted twice is refused the second time and admitted once" \
+    "$(_xc_ob felix_obligation_rows "$XD" | cut -f7 | tr '\n' ' ')|$(_xc_ob felix_obligation_malformed "$XD" | grep -c 'admitted twice')" "first |1"
+
+# ------------------------------------------- the gate, on a clean fixture ----
+# One row, excepted at origin/main, and nothing else owed: the gate passes,
+# says so in its own line shape, and the exception is written down.
+XC="$TMP/exc-clean"; mkdir -p "$XC"; XC="$(cd "$XC" && pwd -P)"; _xc_home "$XC" c
+_xc_row c_task TASK_BLOCKING deterministic - false - 'the one row, excepted' > "$XC/projects/c/obligations.tsv"
+_xc_row c_task "$(_xc_h12 "$XC/projects/c/obligations.tsv" c_task)" "$XC_LIVE" founder 'accepted' > "$XC/projects/c/exceptions.tsv"
+( cd "$XC" && git init -q -b main ) >/dev/null 2>&1; _xc_ci "$XC" clean; _xc_origin "$XC"
+if git -C "$XC" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+  out="$(cd "$XC" && FELIX_HOME="$XC" "$XC/harness/felix" obligations --gate 2>&1)"; _rc=$?
+  if [ "$_rc" -eq 0 ] && grep -F "$(printf '\texcepted\t')" "$MEM/c/says.log" 2>/dev/null \
+       | grep -Fq "c_task: excepted until $XC_LIVE by founder"; then
+    ok  "felix obligations --gate passes when its only blocking row is excepted, and writes the exception to says.log"
+  else
+    bad "felix obligations --gate passes when its only blocking row is excepted, and writes the exception to says.log" \
+        "exit $_rc; says.log: $(cat "$MEM/c/says.log" 2>/dev/null); out: $out"
+  fi
+  out="$(cd "$XC" && FELIX_HOME="$XC" "$XC/harness/felix" gate 2>&1)"; _rc=$?
+  case "$_rc:$out" in
+    0:*"  obligations        excepted"*) ok "the gate's obligations line reads excepted and the gate passes" ;;
+    *) bad "the gate's obligations line reads excepted and the gate passes" "exit $_rc: $out" ;;
+  esac
+else
+  _xc_skip "the clean home with an origin could not be built" \
+    "felix obligations --gate passes when its only blocking row is excepted, and writes the exception to says.log" \
+    "the gate's obligations line reads excepted and the gate passes"
+fi
+
+# --------------------------------------------------------------- escape ----
+# The table IS the grant, so any change to it between base and head goes to
+# a person: the same shape as the authority channel one file over.
+XE="$TMP/exc-escape"; mkdir -p "$XE"; XE="$(cd "$XE" && pwd -P)"
+( cd "$XE" && git init -q -b main && printf 'notes\n' > README.md ) >/dev/null 2>&1; _xc_ci "$XE" base
+_xc_esc()   { ( cd "$XE" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/escape.sh"
+                . "$FROOT/harness/lib/obligations.sh"; felix_escapes "$FROOT/projects/widget" HEAD~1 "$XE" ) 2>/dev/null; }
+_xc_fired() { _xc_esc | grep -q "^exception$(printf '\t')$1"; }
+_xc_quiet() { ! _xc_esc | grep -q "^exception$(printf '\t')"; }
+if git -C "$XE" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  mkdir -p "$XE/projects/x"; printf '# seeded\n' > "$XE/projects/x/exceptions.tsv"; _xc_ci "$XE" create
+  _xc_fired projects/x/exceptions.tsv && ok  "creating a project's exceptions table escapes on the exception channel" \
+                                      || bad "creating a project's exceptions table escapes on the exception channel" "$(_xc_esc)"
+  _m=""
+  _xc_row a deadbeefdead "$XC_LIVE" founder r >> "$XE/projects/x/exceptions.tsv"; _xc_ci "$XE" row
+  _xc_fired projects/x/exceptions.tsv || _m="$_m added-row"
+  printf '# another comment\n' >> "$XE/projects/x/exceptions.tsv"; _xc_ci "$XE" comment
+  _xc_fired projects/x/exceptions.tsv || _m="$_m comment-edit"
+  rm -f "$XE/projects/x/exceptions.tsv"; _xc_ci "$XE" delete
+  _xc_fired projects/x/exceptions.tsv || _m="$_m deletion"
+  [ -z "$_m" ] && ok  "so do an added row, a comment edit and a deletion" \
+               || bad "so do an added row, a comment edit and a deletion" "silent on:$_m"
+  _m=""
+  mkdir -p "$XE/notes"; printf 'a\tb\n' > "$XE/notes/exceptions.tsv"; _xc_ci "$XE" elsewhere
+  _xc_quiet || _m="$_m notes/exceptions.tsv"
+  mkdir -p "$XE/projects/x/sub"; printf '#\n' > "$XE/projects/x/sub/exceptions.tsv"; _xc_ci "$XE" deeper
+  _xc_quiet || _m="$_m projects/x/sub/exceptions.tsv"
+  [ -z "$_m" ] && ok  "a file named exceptions.tsv elsewhere or deeper than projects/<p>/ does not fire it" \
+               || bad "a file named exceptions.tsv elsewhere or deeper than projects/<p>/ does not fire it" "fired on:$_m"
+else
+  _xc_skip "the escape fixture could not be built" \
+    "creating a project's exceptions table escapes on the exception channel" \
+    "so do an added row, a comment edit and a deletion" \
+    "a file named exceptions.tsv elsewhere or deeper than projects/<p>/ does not fire it"
+fi
+
+# ------------------------------------------------------------ the hold ----
+# The Stop hook's hold on an unverified tree now says where the exception
+# lives and that the session cannot write itself one. The checkout is bound
+# to the widget the way $GREPO is, by the marker alone.
+XS="$TMP/exc-stop"; mkdir -p "$XS"; XS="$(cd "$XS" && pwd -P)"
+( cd "$XS" && git init -q -b main && printf 'contents\n' > WIDGET.txt && printf 'widget\n' > "${_XC_MARK}" ) >/dev/null 2>&1
+_xc_ci "$XS" init
+if [ -x "$FROOT/harness/hooks/stop" ] && git -C "$XS" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  printf 'unverified\n' >> "$XS/WIDGET.txt"
+  out="$(cd "$XS" && printf '%s' '{"hook_event_name":"Stop","stop_hook_active":false}' | "$FROOT/harness/hooks/stop" 2>&1)"
+  case "$out" in
+    *'"decision"'*'"block"'*"a row in the project's exceptions.tsv"*"a session cannot grant itself one"*|\
+    *'"decision"'*'"block"'*"a session cannot grant itself one"*"a row in the project's exceptions.tsv"*)
+      ok  "a hold on an unverified tree names the exceptions table and says a session cannot grant itself one" ;;
+    *) bad "a hold on an unverified tree names the exceptions table and says a session cannot grant itself one" "$out" ;;
+  esac
+else
+  skip "a hold on an unverified tree names the exceptions table and says a session cannot grant itself one" "no stop hook beside this harness"
+fi
+
+# ---------------------------------------------------------- the seed ----
+_xc_rows() { grep -cv '^[[:space:]]*\(#\|$\)' "$1" 2>/dev/null | tr -d ' '; }
+if [ -f "$FROOT/harness/templates/exceptions.tsv" ] && grep -q 'row_hash' "$FROOT/harness/templates/exceptions.tsv" \
+   && [ "$(_xc_rows "$FROOT/harness/templates/exceptions.tsv")" = "0" ]; then
+  ok  "the exceptions template names the row hash column and holds no rows"
+else
+  bad "the exceptions template names the row hash column and holds no rows" "$(cat "$FROOT/harness/templates/exceptions.tsv" 2>/dev/null)"
+fi
+if [ -d "$FROOT/projects/stranger" ]; then
+  if [ -f "$FROOT/projects/stranger/exceptions.tsv" ] && [ "$(_xc_rows "$FROOT/projects/stranger/exceptions.tsv")" = "0" ]; then
+    ok  "felix new seeds an exceptions table of comment lines only"
+  else
+    bad "felix new seeds an exceptions table of comment lines only" "$(cat "$FROOT/projects/stranger/exceptions.tsv" 2>/dev/null)"
+  fi
+else
+  skip "felix new seeds an exceptions table of comment lines only" "no stranger project seeded by felix new before this point"
+fi
+
 printf '\nreached\n'
 # What ran, against what is supposed to run. #67.
 #
@@ -12874,6 +15053,22 @@ if [ "$FELIX_TEST_RECORD" -eq 1 ]; then
   cp "$_ran_counts" "$FELIX_TEST_MANIFEST"
   printf '  recorded %s assertions to %s\n' \
     "$(awk -F'\t' '{s+=$1} END {print s+0}' "$_ran_counts")" "$FELIX_TEST_MANIFEST"
+  # And the red run, so the manifest and the count it was shown red with are
+  # written by one command and travel in one diff. Its exit status is its own:
+  # a red run that could not be made is said in red.tsv and does not turn a
+  # green suite red.
+  if [ -x "$HERE/red" ]; then
+    "$HERE/red" 2>&1 | sed 's/^/  /'
+  else
+    printf '  no tests/red beside this suite: red.tsv not written\n'
+  fi
+elif [ "${FELIX_TEST_NO_MANIFEST:-0}" = "1" ]; then
+  # The red run: this suite is executing inside the base's tree, whose
+  # manifest describes the base's assertions. Comparing against it would
+  # report every assertion this tree added as one the base never reached,
+  # through bad(), and that would be counted as red. Nothing is compared, and
+  # the line says so rather than reading as a manifest that matched.
+  printf '  manifest comparison off (FELIX_TEST_NO_MANIFEST): this is a red run\n'
 elif [ -f "$FELIX_TEST_MANIFEST" ]; then
   # Emitted through bad(), so these are `  FAIL` lines. That matters: the gate
   # prints only the last line of a passing suite, and greps for `^  FAIL` when

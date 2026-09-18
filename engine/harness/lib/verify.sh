@@ -214,17 +214,135 @@ _felix_receipt_path() {
 # field to say which reported checks no qualification row covers. Same source
 # and same limit as the fifth field: a check that runs without printing a line
 # is not here.
+#
+# A seventh and eighth field: the decision epoch (epoch.sh) the gate ran under,
+# and its four component hashes comma-joined in the spec's order — subject,
+# topology, policy, target. v3.2 §5 binds a receipt to what its verdict rests
+# on and invalidates it when a dependency moves; the tree id covers the tree
+# and nothing else, so an ignored file a probe counts, a `$HOME`-dependent
+# probe, or a table in the Felix home for a governed product could all move
+# while an old green rode on. Supplied by the gate, and computed here from the
+# checkout's own binding when a caller does not supply them, so a receipt
+# without an epoch cannot be written by accident: the first draft let a
+# six-field receipt stay current "until the next gate run", and the blind
+# author of the assertions refused it as the old engine's receipts riding on.
+# A gate with no epoch to record writes `-`, which on a green receipt means
+# the project declares no probes, and the reader says what to write.
 felix_verify_record() {
   local root="$1" home="$2" rc="$3" gate="$4" tid="$5" skipped="${6:-}" reported="${7:-}" path result
+  local epoch="${8:-}" comps="${9:-}"
   [ -n "$tid" ] || return 0
   path="$(_felix_receipt_path "$root" "$home")"
   mkdir -p "$(dirname "$path")" 2>/dev/null || return 0
   result=green; [ "$rc" -eq 0 ] || result=red
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tid" "$result" "$(_felix_now)" "$gate" \
-    "${skipped:--}" "${reported:--}" > "$path" 2>/dev/null || true
+  if [ $# -lt 8 ]; then
+    local name proj fields
+    name="$(head -1 "$root/.felix" 2>/dev/null | tr -d '[:space:]')"
+    proj="$home/projects/$name"
+    if [ -n "$name" ] && [ -d "$proj" ]; then
+      fields="$(felix_verify_epoch_fields "$proj" "$root")"
+      epoch="$(printf '%s' "$fields" | cut -f1)"; comps="$(printf '%s' "$fields" | cut -f2)"
+    fi
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tid" "$result" "$(_felix_now)" "$gate" \
+    "${skipped:--}" "${reported:--}" "${epoch:--}" "${comps:--}" > "$path" 2>/dev/null || true
 }
 
 felix_verify_receipt() { cat "$(_felix_receipt_path "$1" "$2")" 2>/dev/null; }
+
+# Is the receipt for this root a current green? One line, and 0 only for
+# `current`:
+#
+#   none                    no receipt
+#   red                     the receipt is not green
+#   stale <TAB> reason      the tree changed; the receipt predates the epoch or
+#                           carries none; the epoch cannot be read now; or a
+#                           component moved — the grounded facts, the table
+#                           set, the subject, the release target, in that
+#                           order of precedence
+#   current
+#
+# Every reader that used to compare field 1 to the tree id and field 2 to
+# `green` reads this instead, so the five of them cannot disagree about what
+# current means. The epoch is recomputed here, which runs the project's
+# probes: a third of a second on the engine's own project, and only on the
+# path that would otherwise have said verified.
+#
+# epoch.sh is sourced at call time rather than at load, because it pulls
+# commission.sh in behind it and commission.sh sources this file: a load-time
+# source from here would be a cycle, and at call time this file is complete.
+felix_verify_current() {
+  local root="$1" home="$2" proj="$3" tid receipt r_tid r_res r_epoch r_comps comps now_epoch
+  receipt="$(felix_verify_receipt "$root" "$home" 2>/dev/null)"
+  [ -n "$receipt" ] || { printf 'none\n'; return 1; }
+  r_res="$(printf '%s' "$receipt" | cut -f2)"
+  [ "$r_res" = "green" ] || { printf 'red\n'; return 1; }
+  tid="$(felix_tree_id "$root" "$home" 2>/dev/null)" || tid=""
+  r_tid="$(printf '%s' "$receipt" | cut -f1)"
+  if [ -z "$tid" ] || [ "$r_tid" != "$tid" ]; then
+    printf 'stale\tthe tree changed since the receipt\n'; return 1
+  fi
+  # Six fields: written before the epoch existed, by an engine that could not
+  # say what its verdict rested on. Not current; one gate run rewrites it.
+  if [ "$(printf '%s' "$receipt" | awk -F'\t' '{ print NF }')" -lt 7 ]; then
+    printf 'stale\tthe receipt predates the epoch, so what it rests on is not recorded; run felix gate\n'; return 1
+  fi
+  r_epoch="$(printf '%s' "$receipt" | cut -f7)"
+  r_comps="$(printf '%s' "$receipt" | cut -f8)"
+  # `-`: the gate had no epoch to record, which with a green result means the
+  # project declares no probes — a probe that could not run turns the gate
+  # red, and a red receipt never reaches this line. A verdict resting on
+  # nothing Felix reads from reality cannot be confirmed, and running the gate
+  # again would write the same `-`, so the remedy named is the table.
+  if [ -z "$r_epoch" ] || [ "$r_epoch" = "-" ]; then
+    printf 'stale\tthe receipt carries no epoch: this project declares no probes, so nothing here can be confirmed; write %s/probes.tsv\n' "$proj"; return 1
+  fi
+  if ! command -v felix_epoch_components >/dev/null 2>&1; then
+    . "$(dirname "${BASH_SOURCE[0]:-$0}")/epoch.sh" 2>/dev/null || true
+  fi
+  if ! command -v felix_epoch_components >/dev/null 2>&1; then
+    printf 'stale\tthe epoch cannot be read now: epoch.sh is not loaded\n'; return 1
+  fi
+  comps="$(felix_epoch_components "$proj" "$root" 2>/dev/null)"
+  if printf '%s\n' "$comps" | cut -f2 | grep -qx -- '-'; then
+    printf 'stale\tthe grounded facts cannot be read now, so the receipt cannot be confirmed; run felix gate\n'; return 1
+  fi
+  now_epoch="$(printf '%s\n' "$comps" | _felix_hash)"
+  if [ "$now_epoch" = "$r_epoch" ]; then printf 'current\n'; return 0; fi
+  # Which component moved, in the order a reader can act on: the world first,
+  # then the tables, then the two that almost never move.
+  local s t p r
+  s="$(printf '%s' "$r_comps" | cut -d, -f1)"; t="$(printf '%s' "$r_comps" | cut -d, -f2)"
+  p="$(printf '%s' "$r_comps" | cut -d, -f3)"; r="$(printf '%s' "$r_comps" | cut -d, -f4)"
+  if [ "$(printf '%s\n' "$comps" | awk -F'\t' '$1 == "topology_version" { print $2 }')" != "$t" ]; then
+    printf 'stale\tthe grounded facts moved since the receipt; run felix gate\n'
+  elif [ "$(printf '%s\n' "$comps" | awk -F'\t' '$1 == "policy_version" { print $2 }')" != "$p" ]; then
+    printf 'stale\tthe table set moved since the receipt; run felix gate\n'
+  elif [ "$(printf '%s\n' "$comps" | awk -F'\t' '$1 == "subject_identity" { print $2 }')" != "$s" ]; then
+    printf 'stale\tthe subject moved since the receipt; run felix gate\n'
+  elif [ "$(printf '%s\n' "$comps" | awk -F'\t' '$1 == "release_target" { print $2 }')" != "$r" ]; then
+    printf 'stale\tthe release target moved since the receipt; run felix gate\n'
+  else
+    printf 'stale\tthe epoch moved since the receipt and no component says why; run felix gate\n'
+  fi
+  return 1
+}
+
+# The two receipt fields the gate records, from one computation: the epoch and
+# its components, or `-` and `-` when a component is unknown.
+felix_verify_epoch_fields() {
+  local proj="$1" root="$2" comps
+  if ! command -v felix_epoch_components >/dev/null 2>&1; then
+    . "$(dirname "${BASH_SOURCE[0]:-$0}")/epoch.sh" 2>/dev/null || true
+  fi
+  command -v felix_epoch_components >/dev/null 2>&1 || { printf -- '-\t-\n'; return 0; }
+  comps="$(felix_epoch_components "$proj" "$root" 2>/dev/null)"
+  if [ -z "$comps" ] || printf '%s\n' "$comps" | cut -f2 | grep -qx -- '-'; then
+    printf -- '-\t-\n'; return 0
+  fi
+  printf '%s\t%s\n' "$(printf '%s\n' "$comps" | _felix_hash)" \
+    "$(printf '%s\n' "$comps" | cut -f2 | paste -sd, -)"
+}
 
 # Every decision, allowed or refused, appended and committed. Nothing else in
 # Claude Code records whether verification passed: transcripts carry is_error on

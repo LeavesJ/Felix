@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# Is the engine this tree ships the one deployed on this machine?
+# Is the engine main accepted the one deployed on this machine?
 #
 #   deploy-check            the evidence contract
 #   deploy-check --applies  the applicability test
 #
-#   exit 0  the deployed engine is byte-identical to this tree's — harness,
-#           hooks and commands, ignoring what git ignores
+#   exit 0  the cache entry for the version main declares is byte-identical
+#           to main's engine — harness, hooks and commands, ignoring what
+#           git ignores
 #   exit 1  it is not; every path that differs is on stdout, one per line,
-#           which is the coverage report: what was examined and its verdict
-#   exit 2  cannot examine: no deployed engine could be found. Never read
-#           as matching.
+#           which is the coverage report: what was examined and its verdict.
+#           Or nothing is installed at the version main declares, which is
+#           said in one line naming the version.
+#   exit 2  cannot examine: no cache on this machine, no main to read, or a
+#           version that cannot be read from it. Never read as matching.
 #
 #   --applies exits 0 when this obligation applies to this tree — a felix
-#   deployment exists on this machine and this tree is the one the marketplace
-#   serves — and 1 otherwise. A CI runner has no plugin cache; a worktree is
-#   never what a directory marketplace serves. Both are DORMANT, reported and
-#   never waived, rather than a failure nobody standing there could fix.
+#   cache exists on this machine and this repository has a main to read —
+#   and 1 otherwise. A CI runner has no plugin cache; a repository with no
+#   main cannot say what was accepted. Both are DORMANT, reported and never
+#   waived, rather than a failure nobody standing there could fix.
 #
-# This is the second admitted obligation's contract, and the detector is not
-# new: the project gate's `installed` check has compared the tree against the
-# deployed cache since #55, and `felix install` since before that. What the
-# ledger adds is that the requirement is admitted — written is not installed,
-# and an engine change that is not deployed governs nothing — so it cannot
-# quietly leave the gate the way a check can. TASK_BLOCKING and not
-# RELEASE_BLOCKING, deliberately: at the merge boundary the tree being judged
-# is a branch main has not yet taken, so it never matches the deployment and
-# never could; the thing owed is that the SESSION does not end with the two
-# apart, and that is the task moment.
+# THE QUESTION CHANGED with #239 and this followed it. This asked whether the
+# engine in the tree standing here was the deployed one, and only the checkout
+# the marketplace serves could ever answer yes — so the obligation was dormant
+# in every worktree and every runner, and the gate's `installed` check, which
+# had moved to asking about MAIN's engine against MAIN's entry, disagreed with
+# the ledger in every checkout that was not the served one. Both ask the same
+# question now, through felix_accepted_deploy_diff, and the live pointer — the
+# CLI's installPath, the marketplace registry — decides nothing. Installing a
+# candidate adds a different entry and moves that pointer; it does not touch
+# the entry main names, which is the one `felix merge` judges with.
 #
-# The live engine is asked of the CLI, as felix_deployed_engine asks, and
-# falls back to the highest cached version the way the project gate does —
-# the cache keeps every version it ever installed and the newest on disk is
-# not necessarily the one that loads, so the CLI is asked first.
+# TASK_BLOCKING and not RELEASE_BLOCKING, still: what is owed is that a
+# session does not end with main's engine and its deployment apart, and the
+# remedy — `felix install` in the served checkout — is one command.
 #
 # Every way this script can fail to look is 126 or 127, never 1. On the
 # applicability axis obligations.sh reads 1 as "does not apply here", which is
 # DORMANT — a row that stops blocking — so a script that could not resolve its
-# own library used to answer "this does not apply" instead of "I could not
-# say". 126 and 127 are the two codes that library reserves for UNKNOWN, and
-# UNKNOWN blocks.
+# own library must answer "I could not say", which those two codes are.
 set -u
 # Before the cd, not after. `$0` is the path as invoked, so resolving it once
 # the working directory has already moved to the repository toplevel made HERE
@@ -47,34 +47,29 @@ set -u
 # permissive direction.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)" || exit 127
 [ -n "$HERE" ] || exit 127
-SRC="$(cd "$HERE/.." 2>/dev/null && pwd)" || exit 127
-cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 126
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 126
+cd "$ROOT" || exit 126
 
 # shellcheck source=../lib/resolve.sh
 . "$HERE/lib/resolve.sh" 2>/dev/null || exit 127
-command -v felix_deployable_from >/dev/null 2>&1 || exit 127
-command -v felix_deployed_engine >/dev/null 2>&1 || exit 127
-command -v felix_deploy_diff     >/dev/null 2>&1 || exit 127
+command -v felix_base_ref             >/dev/null 2>&1 || exit 127
+command -v felix_accepted_deploy_diff >/dev/null 2>&1 || exit 127
 
 if [ "${1:-}" = "--applies" ]; then
-  [ -d "$HOME/.claude/plugins/cache/felix/felix" ] || exit 1
-  felix_deployable_from "$SRC" >/dev/null 2>&1 || exit 1
+  [ -d "${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-$HOME/.claude/plugins/cache}/felix/felix}" ] || exit 1
+  felix_base_ref "$ROOT" >/dev/null 2>&1 || exit 1
   exit 0
 fi
 
-live="$(felix_deployed_engine 2>/dev/null)" || live=""
-[ -n "$live" ] || live="$(ls -d "$HOME"/.claude/plugins/cache/felix/felix/* 2>/dev/null | sort -V | tail -1)"
-if [ -z "$live" ] || [ ! -d "$live/harness" ]; then
-  printf 'deploy-check: cannot examine: no deployed engine found on this machine\n'
-  exit 2
-fi
-
-out="$(felix_deploy_diff "$SRC" "$live" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ]; then
-  printf '  matches       %s\n' "$live"
-  exit 0
-fi
+out="$(felix_accepted_deploy_diff "$ROOT" 2>/dev/null)"; rc=$?
+case "$rc" in
+  0) printf '  matches       %s\n' "$out"; exit 0 ;;
+  2) printf 'deploy-check: %s\n' "$out"; exit 2 ;;
+esac
 printf '%s\n' "$out" | grep . | sed 's/^/  /'
-printf 'deploy-check: %s path(s) differ between this tree and %s\n' \
-  "$(printf '%s\n' "$out" | grep -c .)" "$live"
+case "$out" in
+  *"nothing is installed at that version"*) ;;
+  *) printf 'deploy-check: %s path(s) differ between the engine main declares and its entry\n' \
+       "$(printf '%s\n' "$out" | grep -c .)" ;;
+esac
 exit 1

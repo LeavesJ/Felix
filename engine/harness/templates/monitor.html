@@ -270,7 +270,7 @@ const isToday=t=>{const d=_d(t);if(!d)return false;const n=new Date();
   return d.toDateString()===n.toDateString();};
 const unesc=s=>String(s||'').replace(/\\n/g,'\n').replace(/\\\\/g,'\\');
 
-const LABEL={brief:'routed',held:'held',skipped:'flagged','plugin-blocked':'alarm',unrecorded:'note'};
+const LABEL={brief:'routed',held:'held',skipped:'flagged','plugin-blocked':'alarm',unrecorded:'note',excepted:'excepted'};
 
 /* A prompt can arrive carrying an attached file path and escaped quotes. Shown
    raw it is unreadable and, before the min-width fixes above, it also pushed a

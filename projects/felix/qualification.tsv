@@ -1,10 +1,18 @@
 # Checker qualification. Does a check fail when the thing it protects is broken?
 #
-# checker <TAB> command <TAB> control <TAB> expect <TAB> mutation
+# checker <TAB> command <TAB> control <TAB> expect <TAB> mutation [<TAB> premise]
 #
 # The command is the checker, run in a throwaway worktree of HEAD after the
 # mutation has been applied to it. `expect` is what a checker worth having must
 # say.
+#
+# The premise is optional and is run first, in the same worktree. Exit 1 means
+# the control cannot be staged in this checkout — reported as not applying,
+# never as held and never as met. Any other failure is unrunnable, so a premise
+# that errors is loud. A checker whose every fail-expecting control is not
+# applying is named as never shown failing here and refuses the gate (#233),
+# so a checker whose teeth all need a premise also needs one control that
+# stages its own.
 #
 # The six controls come from v3.2 conformance amendments 2.1. The first four
 # all move the marker and the property together, so a checker keyed on a
@@ -54,14 +62,34 @@ secret	engine/harness/bin/secret-scan	decoupled_satisfaction	pass	printf '# what
 # They are here as rows-in-waiting so declaring one is one edit, and so
 # `felix qualify` reports the gap by name instead of the table looking complete.
 #
+# PREMISES. The violation plants one governed project's name and the alternate
+# another's, and the checker can only find a name that is governed. In a
+# checkout that governs no project but the engine's own — which is what anybody
+# who clones the public engine has — both premises answer 1 and neither control
+# applies, rather than holding over an engine with nothing wrong with it. The
+# premises were derived from the mutations' own text, not from the checker: each
+# names the project its mutation writes.
+#
+# SELF-STAGED. With only those two, such a checkout never sees the checker fail,
+# and that refuses the gate — correctly. So the last two rows create a governed
+# project HEAD does not have and leak its name, and apply everywhere: the
+# violation plainly, in a lib comment; the alternate uppercase inside an
+# identifier in a hook's code. Authored 2026-09-13 by a subagent given the
+# property in prose and forbidden bin/. It reported one lapse itself: a shell
+# slip printed the first ten lines of a different checker, none of this one.
+#
 # UNDECLARED, the name is assembled from fragments at run time; no contiguous string exists for grep to find:
-# independence	engine/harness/bin/independence-scan	decoupled_violation	fail	echo '# When nothing binds, fall back to the project this checkout was built for.' >> engine/harness/lib/resolve.sh && echo 'felix_fallback_project() { printf "%s/projects/%s%s" "$1" vel dra; }' >> engine/harness/lib/resolve.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+# independence	engine/harness/bin/independence-scan	decoupled_violation	fail	echo '# When nothing binds, fall back to the project this checkout was built for.' >> engine/harness/lib/resolve.sh && echo 'felix_fallback_project() { printf "%s/projects/%s%s" "$1" thi rd; }' >> engine/harness/lib/resolve.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
 # UNDECLARED, a governed project named for a word the engine already uses 98 times; -F substring match rejects the word, not the project:
 # independence	engine/harness/bin/independence-scan	decoupled_satisfaction	pass	mkdir -p projects/ledger && printf '{"name":"ledger","remote_match":"example.com/ledger","gate":"true"}\n' > projects/ledger/project.json && printf '# A zero row is a ledger entry like any other; it is written down, not inferred.\n' >> engine/harness/lib/ledger.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"
-independence	engine/harness/bin/independence-scan	violation	fail	printf '# another governed project reads says.log too; keep the column order stable for it.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+independence	engine/harness/bin/independence-scan	violation	fail	printf '# another governed project reads says.log too; keep the column order stable for it.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"	test -f projects/another/project.json
 independence	engine/harness/bin/independence-scan	restoration	pass	printf '# another governed project reads says.log too; keep the column order stable for it.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (introduce)" && git checkout HEAD~1 -- engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
 independence	engine/harness/bin/independence-scan	irrelevant	pass	sed 's/leaves the decision where it belongs\./leaves the decision with the founder./' engine/harness/lib/unattended.sh > engine/harness/lib/unattended.sh.tmp && mv engine/harness/lib/unattended.sh.tmp engine/harness/lib/unattended.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
-independence	engine/harness/bin/independence-scan	alternate	fail	{ head -n 1 engine/harness/bin/secret-scan; printf 'VELDRA_ALLOWLIST="${VELDRA_ALLOWLIST:-}"\n'; tail -n +2 engine/harness/bin/secret-scan; } > engine/harness/bin/secret-scan.tmp && mv engine/harness/bin/secret-scan.tmp engine/harness/bin/secret-scan && chmod +x engine/harness/bin/secret-scan && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+independence	engine/harness/bin/independence-scan	alternate	fail	{ head -n 1 engine/harness/bin/secret-scan; printf 'THIRD_PROJECT_ALLOWLIST="${THIRD_PROJECT_ALLOWLIST:-}"\n'; tail -n +2 engine/harness/bin/secret-scan; } > engine/harness/bin/secret-scan.tmp && mv engine/harness/bin/secret-scan.tmp engine/harness/bin/secret-scan && chmod +x engine/harness/bin/secret-scan && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"	test -f projects/third/project.json
+# violation, self-staged: creates governed project qovimarth (absent from HEAD) and names it, lowercase, as a whole word in a comment appended to engine/harness/lib/say.sh; applies in a checkout whose only project is felix.
+independence	engine/harness/bin/independence-scan	violation	fail	mkdir -p projects/qovimarth && printf '{\n  "name": "qovimarth",\n  "remote_match": "example/qovimarth",\n  "gate": "gate.sh"\n}\n' > projects/qovimarth/project.json && printf '\n# qovimarth runs its gate from its own checkout, so the engine copy is skipped there.\n' >> engine/harness/lib/say.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation self-staged"
+# alternate, self-staged: creates governed project zelthoranix (absent from HEAD) and names it UPPERCASE inside a longer identifier (FELIX_ZELTHORANIX_LEDGER) in executable code appended to engine/harness/hooks/session-end; applies in a checkout whose only project is felix.
+independence	engine/harness/bin/independence-scan	alternate	fail	mkdir -p projects/zelthoranix && printf '{\n  "name": "zelthoranix",\n  "remote_match": "example/zelthoranix",\n  "gate": "gate"\n}\n' > projects/zelthoranix/project.json && printf '%s\n' '' 'FELIX_ZELTHORANIX_LEDGER="${FELIX_HOME_DIR:-}/ledger.tsv"' >> engine/harness/hooks/session-end && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate self-staged"
 
 # obligations: the first admitted obligation's checker, judged over the two
 # files its evidence contract reads. The six mutations were authored blind
@@ -126,3 +154,41 @@ executable	engine/harness/bin/executable-check	irrelevant	pass	printf '%s\n' '' 
 executable	engine/harness/bin/executable-check	alternate	fail	git show HEAD:engine/harness/tests/run > engine/harness/tests/run.tmp && rm engine/harness/tests/run && mv engine/harness/tests/run.tmp engine/harness/tests/run && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
 executable	engine/harness/bin/executable-check	decoupled_violation	fail	printf '%s\n' '#!/usr/bin/env bash' '# Reports checkouts whose deployed engine has drifted. The gate shells out to it.' 'set -eu' 'exit 0' > engine/harness/bin/drift-scan && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
 executable	engine/harness/bin/executable-check	decoupled_satisfaction	pass	printf '%s\n' '# Scanners' '' 'Every extensionless file here is an executable the gate shells out to. This note is documentation; nothing runs it.' > engine/harness/bin/README.md && mkdir -p docs/hooks && printf '%s\n' '#!/usr/bin/env bash' '# Quoted in the hooks guide as an example. Nothing invokes this file.' 'exit 0' > docs/hooks/session-start.sh && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"
+
+# Qualification controls for obligations-check (the applies column) and for
+# probes-check. Authored 2026-09-16 blind to both checkers (amendments §2.2):
+# written from the two properties given in prose, with engine/harness/bin/,
+# lib/obligations.sh, lib/probes.sh, lib/qualify.sh, projects/felix/gate.sh and
+# the existing obligations rows of qualification.tsv forbidden, and no checker
+# run. Every mutation is one line of shell evaluated from the root of a clean
+# worktree of HEAD and ends with its change committed. The obligations rows
+# rewrite only the `applies` field of lifecycle_wired, the release-blocking
+# row, with python3 keyed on the row name, and leave every other field and
+# line alone. The probes rows append one five-column row under a `qualctl_`
+# predicate that collides with nothing, and every command in it names a path
+# that either exists at HEAD (engine/hooks/hooks.json, a file) or cannot
+# (engine/hooks/qualctl-none).
+#
+# ---- obligations-check: the applies column decides applicability, and only exit 1 means "does not apply" ----
+#
+# violation: lifecycle_wired's applies becomes a grep with an unbalanced regex, exit 2 on the real hooks.json. Neither 0 nor 1: UNKNOWN on both axes, the evidence never runs, and a RELEASE_BLOCKING row nobody can classify blocks the release. Written from the property in prose.
+obligations	engine/harness/bin/obligations-check projects/felix release	violation	fail	python3 -c 'import sys;p,k,v=sys.argv[1:4];r=[l if not l.startswith(k+"\t") else "\t".join(l.split("\t")[:3]+[v]+l.split("\t")[4:]) for l in open(p).read().split("\n")];open(p,"w").write("\n".join(r))' projects/felix/obligations.tsv lifecycle_wired "grep -qE '(' engine/hooks/hooks.json" && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+# alternate: the same row's applies becomes `git -C` into hooks.json, which is a file, so git dies with 128 instead of grep's 2. A different crash under the same rule must block the same way. Written from the property in prose.
+obligations	engine/harness/bin/obligations-check projects/felix release	alternate	fail	python3 -c 'import sys;p,k,v=sys.argv[1:4];r=[l if not l.startswith(k+"\t") else "\t".join(l.split("\t")[:3]+[v]+l.split("\t")[4:]) for l in open(p).read().split("\n")];open(p,"w").write("\n".join(r))' projects/felix/obligations.tsv lifecycle_wired "git -C engine/hooks/hooks.json rev-parse --is-inside-work-tree" && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+# irrelevant: the same row's applies becomes a test on a path that does not exist and exits a clean 1: DORMANT, the evidence never runs, nothing blocks. Exit 1 is the one non-zero answer that retires the row, and it must keep doing so. Written from the property in prose.
+obligations	engine/harness/bin/obligations-check projects/felix release	irrelevant	pass	python3 -c 'import sys;p,k,v=sys.argv[1:4];r=[l if not l.startswith(k+"\t") else "\t".join(l.split("\t")[:3]+[v]+l.split("\t")[4:]) for l in open(p).read().split("\n")];open(p,"w").write("\n".join(r))' projects/felix/obligations.tsv lifecycle_wired "test -s engine/hooks/qualctl-none/hooks.json" && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+#
+# ---- probes-check: each row is found, empty, not-applicable, unknown or blind, and only unknown and blind block ----
+#
+# violation: a row whose probe enumerates nothing (git ls-files on a pathspec nothing matches, exit 0) and whose witness crashes with exit 2 (grep on a missing file). Nothing printed hands the question to the witness, and a witness that answers neither 0 nor 1 leaves the row unknown. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	violation	fail	printf 'qualctl_witness_crash\t-\t-\tgit ls-files engine/hooks/qualctl-none\tgrep -q . engine/hooks/qualctl-none/hooks.json\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: violation"
+# alternate: a row whose `when` exits 128 (`git -C` into a file) while its probe and witness are both sound and would read found. Applicability could not be decided, so the row is unknown before the probe is consulted at all. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	alternate	fail	printf 'qualctl_when_crash\t-\tgit -C engine/hooks/hooks.json rev-parse --is-inside-work-tree\tgit ls-files engine/hooks\ttest -s engine/hooks/hooks.json\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: alternate"
+# decoupled_violation: a row in which every command exits 0 and every column is well-formed, and the probe still saw none of a surface the witness says exists: probe `git ls-files` on a pathspec nothing matches, witness `test -s engine/hooks/hooks.json`. That is blind, the state this table exists to catch, with no non-zero exit anywhere for a checker to key on. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	decoupled_violation	fail	printf 'qualctl_hook_stance\t-\t-\tgit ls-files engine/hooks/qualctl-none\ttest -s engine/hooks/hooks.json\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_violation"
+# irrelevant: a row whose `when` exits a clean 1 (test -d on a path that does not exist) and whose probe and witness would read blind if they were ever consulted. Not-applicable claims nothing and never blocks, so the verdict must not move; if it does, the checker examined a row that does not apply here. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	irrelevant	pass	printf 'qualctl_dormant_surface\t-\ttest -d engine/hooks/qualctl-none\tgit ls-files engine/hooks/qualctl-none\ttest -s engine/hooks/hooks.json\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: irrelevant"
+# restoration: the decoupled_violation row is appended and committed, then probes.tsv is checked out from the commit before and committed again, byte-identical to HEAD's. The history holds a blind row; the tree does not. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	restoration	pass	printf 'qualctl_hook_stance\t-\t-\tgit ls-files engine/hooks/qualctl-none\ttest -s engine/hooks/hooks.json\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration (break)" && git checkout -q HEAD~1 -- projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: restoration"
+# decoupled_satisfaction: a row that reads empty, the one clean nothing, with a witness that proves absence through `stat` on the same path (exit 1 on a missing inode, output discarded) and shares no syntax with the `test -d`, `test -s` and `grep -q .` witnesses every existing row uses. Written from the property in prose.
+probes	engine/harness/bin/probes-check projects/felix	decoupled_satisfaction	pass	printf 'qualctl_absent_surface\t-\t-\tgit ls-files engine/hooks/qualctl-none\tstat engine/hooks/qualctl-none >/dev/null 2>&1\n' >> projects/felix/probes.tsv && git add -A && git -c user.name=mut -c user.email=mut@example.invalid commit -q -m "mutation: decoupled_satisfaction"

@@ -1,4 +1,8 @@
-# Default risk rules, from the guidebook's merge policy (p8).
+# Default risk rules, first sorted by the guidebook's merge policy (p8).
+#
+# A tier is advice about how carefully to look, not about who merges. felix
+# merge stops only on a channel (the fifth column) or an engine channel, and a
+# row with no channel stops nothing.
 #
 # Anything matching no rule is yellow. Green must be earned by an explicit
 # pattern, so an unfamiliar file can never auto-merge by being unrecognised.
@@ -36,3 +40,4 @@ green	path	\.(md|markdown|rst|txt)$	documentation
 green	path	^(docs|documentation)/.*\.(md|markdown|rst|txt)$	documentation
 green	path	^tests?/	test-only change
 green	path	(^|/)(LICENSE|CHANGELOG|CODEOWNERS)$	repository metadata
+red	path	^projects/[^/]+/exceptions\.tsv$	a row here clears an obligation at the task moment; merging one is a person's act, and the exception channel escapes on any change

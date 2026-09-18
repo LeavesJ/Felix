@@ -364,8 +364,14 @@ _felix_route_red() {
   [ -n "$paths" ] || return 0
   sev="$(felix_incident_severity "$proj" "$paths")"
   [ "$sev" = "red" ] || return 0
-  printf '\nThis working tree touches a path the project calls red. A person\n'
-  printf 'decides here: show the change and its reversal before touching it.\n'
+  # Injected into the session on a routed turn, so its wording is direction.
+  # It said "a person decides here", keyed on tier alone, in every session that
+  # touched the engine's own libraries — the loudest of the sentences that left
+  # merges for the founder after he had said Felix merges.
+  printf '\nThis working tree touches a path the project calls red: a mistake here is\n'
+  printf 'silent and reaches every session, so look hard and show the change and its\n'
+  printf 'reversal in the pull request. The tier is advice, not a stop; a person\n'
+  printf 'decides only where felix merge names an escape channel.\n'
 }
 
 # Has a play step actually been used in this session?

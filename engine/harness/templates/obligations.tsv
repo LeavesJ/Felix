@@ -5,8 +5,10 @@
 # epoch. Whether a row APPLIES is recomputed on every run from its `applies`
 # command and never stored, so an obligation goes dormant when the grounded
 # state stops making it applicable, and comes back when it does — nothing here
-# can waive it. Whether it is DISCHARGED is the evidence command's verdict:
-# exit 0 holds, 1 fails, 2 cannot examine. Its output is the coverage report.
+# can waive it. `applies` exits 0 to apply and 1 to not; any other exit is
+# unknown and blocks, so a check that crashes cannot retire what it guards.
+# Whether it is DISCHARGED is the evidence command's verdict: exit 0 holds, 1
+# fails, 2 cannot examine. Its output is the coverage report.
 #
 # obligation	class	pathway	applies	evidence	grounds	reason
 #

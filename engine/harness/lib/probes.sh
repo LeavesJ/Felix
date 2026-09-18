@@ -154,14 +154,29 @@ felix_probe_malformed() {
 # typo switched its row off as not-applicable. 127 says nothing about the
 # surface; it says the question could not be asked. A root that cannot be
 # entered is a third thing again, and was being reported as a missing
-# command. Callers read the code: 0 yes, 1 no, 126 unenterable, 127 unaskable.
+# command. Callers read the code: 0 yes, 1 no, 126 unenterable, 127 unaskable,
+# and anything else neither yes nor no.
+#
+# Four answers, then. The fold that turned every other exit into 1 — a grep
+# with a bad regex exits 2, `git -C /no/such/dir` exits 128, a crash exits 3
+# — read each of those as a clean "no", so a witness that could not run made
+# "nothing found" into `empty`, a `when` that crashed switched its row off, and
+# an obligation whose `applies` crashed went DORMANT and stopped blocking. The
+# same defect #236 closed for qualification premises, in a worse place. Exit 1
+# is the only no, and everything else comes back verbatim so the caller can
+# say which code it was.
+#
+# A pipeline is a limit here, stated rather than solved: `git ls-files | grep
+# -q x` reports grep's status, so a failure before the last pipe stage is not
+# seen. pipefail is not the answer, because `grep -q` closing early hands the
+# producer SIGPIPE (141) on a real match, which would read as unknown.
 _felix_probe_ask() {
   local root="$1" cmd="$2" rc
   [ -n "$cmd" ] && [ "$cmd" != "-" ] || return 2
   ( cd "$root" 2>/dev/null || exit 126
     bash -c "$cmd" felix-probe </dev/null >/dev/null 2>&1 )
   rc=$?
-  case "$rc" in 0|126|127) return "$rc" ;; *) return 1 ;; esac
+  return "$rc"
 }
 
 # Which instrument answered, and a token that changes when it is replaced.
@@ -246,9 +261,10 @@ felix_probe_state() {
     _felix_probe_ask "$root" "$when"; ask=$?
     case "$ask" in
       0) ;;
+      1) printf 'not-applicable\t0\tthe `when` command says this does not apply here\n'; return 0 ;;
       126) printf 'unknown\t0\tthe checkout could not be entered, so nothing was asked\n'; return 0 ;;
       127) printf 'unknown\t0\ta command in the `when` test does not exist here, so whether this row applies is not known\n'; return 0 ;;
-      *) printf 'not-applicable\t0\tthe `when` command says this does not apply here\n'; return 0 ;;
+      *) printf 'unknown\t0\tthe `when` command exited %s, which is neither yes nor no, so whether this row applies is not known\n' "$ask"; return 0 ;;
     esac
   fi
 
@@ -320,6 +336,12 @@ felix_probe_state() {
         printf 'blind\t0\tthe witness proves this surface exists and the probe enumerated none of it\n'
       fi
       return 0 ;;
+    1)
+      # The witness itself may be unaskable — an empty string reaches
+      # _felix_probe_ask as a refusal rather than a verdict. Guarded above, so
+      # a 1 here is the witness genuinely reporting the surface absent.
+      printf 'empty\t0\tthe probe found nothing and the witness agrees the surface is absent\n'
+      return 0 ;;
     126|127)
       # The witness could not be asked. That is not "absent" — it is the one
       # question that decides between absent and blind, unanswered — and a
@@ -327,11 +349,10 @@ felix_probe_state() {
       printf 'unknown\t0\ta command in the witness does not exist here, so absent and blind cannot be told apart\n'
       return 0 ;;
   esac
-
-  # The witness itself may be unaskable — an empty string reaches _felix_probe_ask
-  # as a refusal rather than a verdict. Guarded above, so a non-zero here is the
-  # witness genuinely reporting the surface absent.
-  printf 'empty\t0\tthe probe found nothing and the witness agrees the surface is absent\n'
+  # Neither yes nor no. A witness that crashed has not said the surface is
+  # absent, and reading its crash as absence was the one route left from
+  # "nothing found" to a clean row.
+  printf 'unknown\t0\tthe witness exited %s, which is neither yes nor no, so absent and blind cannot be told apart\n' "$ask"
   return 0
 }
 

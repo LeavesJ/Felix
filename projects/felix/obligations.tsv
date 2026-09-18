@@ -23,11 +23,14 @@
 # row is dormant by construction, so no mutation there can move it — the
 # suite shows it failing on a fixture deployment instead.
 #
-# It grounds on BOTH facts its applicability rests on. `--applies` asks two
-# questions — is anything deployed here, and does the marketplace serve this
-# tree — and the row first named only the first, so the row could flip
-# ACTIVE to DORMANT with nothing in the probe record saying which fact moved.
+# The question moved with #239 (docs/2026-08-18-promotion-spec.md): the
+# evidence asks whether the cache entry for the version MAIN declares holds
+# main's engine, which every checkout can answer, so the row is ACTIVE in a
+# worktree now and dormant only where there is no cache or no main to read.
+# It grounds on the one fact its applicability rests on, the cache; the
+# marketplace registry decides nothing any more, so `marketplace_root` left
+# the grounds when it left the question.
 #
 # obligation	class	pathway	applies	evidence	grounds	reason
 lifecycle_wired	RELEASE_BLOCKING	deterministic	test -s engine/hooks/hooks.json	engine/harness/bin/lifecycle-check engine/harness/templates engine/hooks/hooks.json	hook_binding	a moment with nothing at it is a completion nobody checks, and a floor that does not run reports nothing
-engine_deployed	TASK_BLOCKING	deterministic	engine/harness/bin/deploy-check --applies	engine/harness/bin/deploy-check	deployed_engine,marketplace_root	written is not installed: an engine change that is not deployed governs nothing, and only the tree the marketplace serves can put that right
+engine_deployed	TASK_BLOCKING	deterministic	engine/harness/bin/deploy-check --applies	engine/harness/bin/deploy-check	deployed_engine	written is not installed: the engine main accepted is not the one deployed, and only felix install in the served checkout puts that right

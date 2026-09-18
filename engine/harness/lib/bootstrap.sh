@@ -103,6 +103,11 @@ YAML
 # Guidebook p11, as configuration rather than instruction. Written only when the
 # project has no deny list of its own; an existing policy is never overwritten,
 # because a permission file someone tightened by hand is not Felix's to relax.
+#
+# `gh pr merge` asked a person every time, whatever the tier or channel, which
+# made the founder the merger of every governed repository after he had said
+# Felix merges its own pull requests. The stop on a merge is felix merge's
+# escape channels. What still asks is the merge that bypasses a required check.
 felix_bs_render_perms() {
   cat <<'JSON'
 {
@@ -119,7 +124,7 @@ felix_bs_render_perms() {
     ],
     "ask": [
       "Bash(git push*)",
-      "Bash(gh pr merge*)",
+      "Bash(gh pr merge*--admin*)",
       "Bash(gh secret*)",
       "Bash(gh api -X DELETE*)"
     ]

@@ -138,7 +138,16 @@ felix_receipt() {
     vres="\"$(_felix_rcpt_esc "$rres")\""
     vwhen="\"$(_felix_rcpt_esc "$(printf '%s' "$rec" | cut -f3)")\""
     vtree="\"$(_felix_rcpt_esc "$rtid")\""
-    if [ -n "$tid" ] && [ "$rtid" = "$tid" ]; then vstate="current"; else vstate="stale"; fi
+    # Current only by verify.sh's reading, which also asks whether the facts
+    # the verdict rests on have moved; a receipt that cannot be confirmed is
+    # stale, never current, because this document may not claim more than it
+    # knows. A red receipt for this exact tree still reads as current here —
+    # the state says which tree was judged, and the result says how it went.
+    case "$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" in
+      current) vstate="current" ;;
+      red)     if [ -n "$tid" ] && [ "$rtid" = "$tid" ]; then vstate="current"; else vstate="stale"; fi ;;
+      *)       vstate="stale" ;;
+    esac
   fi
 
   # ---- evidence
@@ -177,9 +186,14 @@ felix_receipt() {
       [ "$esc" = "$esc_ungranted" ] || granted="reviewed"
     fi
   fi
-  if [ -n "$esc" ] || [ "$tier" = "red" ] || [ -n "$unknown" ]; then
-    founder="true"; autonomous="false"
-  fi
+  # The founder is required where a channel escapes, and nowhere else: tier is
+  # advice and felix merge never reads it. A red tier with no channel used to
+  # set founder_required, which no merge honoured and which contradicted the
+  # founder's direction that Felix merges its own pull requests. An input that
+  # was never read still refuses autonomy — not knowing is not permission — but
+  # it is not a claim that a person must approve.
+  if [ -n "$esc" ]; then founder="true"; fi
+  if [ -n "$esc" ] || [ -n "$unknown" ]; then autonomous="false"; fi
 
   # ---- status. Precedence is deliberate. Not knowing outranks everything,
   # because a blocked-or-verified verdict computed from inputs that were never

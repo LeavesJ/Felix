@@ -24,8 +24,9 @@
 #
 #   class     INFO ADVISORY TASK_BLOCKING RELEASE_BLOCKING AUTHORITY_BLOCKING
 #   pathway   deterministic witness corroborated probabilistic unknown
-#   applies   a command; exit 0 applies, non-zero does not, 126/127 unknown.
-#             `-` means it always applies.
+#   applies   a command; exit 0 applies, 1 does not, and anything else —
+#             126, 127, a crash — is unknown, which blocks. `-` means it
+#             always applies.
 #   evidence  a command; exit 0 holds, 1 fails, 2 cannot examine, 126/127
 #             unknown. Its output is the coverage report: what it examined
 #             and a verdict per member.
@@ -67,6 +68,8 @@ _felix_obligation_scan() {
         why = $1 ": pathway \047" $3 "\047 is not one of" paths
       else if ($3 == "probabilistic" && $2 ~ /_BLOCKING$/)
         why = $1 ": a single probabilistic finding is advisory only and may not block"
+      else if (seen[$1]++)
+        why = $1 ": admitted twice, and a name that names two rows names neither"
       if (mode == "rows" && why == "") print
       if (mode == "bad"  && why != "") print why
     }' "$table"
@@ -94,16 +97,24 @@ felix_obligation_state() {
     _felix_probe_ask "$root" "$applies"; rc=$?
     case "$rc" in
       0) ;;
+      1)   printf 'DORMANT\t-\tthe grounded state says this does not apply here\n'; return 0 ;;
       126) printf 'UNKNOWN\tUNKNOWN\tthe checkout could not be entered, so whether this applies is not known\n'; return 0 ;;
       127) printf 'UNKNOWN\tUNKNOWN\ta command in `applies` does not exist here, so whether this applies is not known\n'; return 0 ;;
-      *)   printf 'DORMANT\t-\tthe grounded state says this does not apply here\n'; return 0 ;;
+      # Neither yes nor no. This read as DORMANT until 2026-09-16, so an
+      # `applies` that crashed retired a blocking obligation with a sentence
+      # claiming the grounded state had spoken. It had not.
+      *)   printf 'UNKNOWN\tUNKNOWN\tthe applies command exited %s, which is neither yes nor no, so whether this applies is not known\n' "$rc"; return 0 ;;
     esac
   fi
 
   out="$( cd "$root" 2>/dev/null || exit 126
           bash -c "$evidence" felix-obligation </dev/null 2>&1 )"
   rc=$?
-  last="$(printf '%s\n' "$out" | grep '[^[:space:]]' | tail -1)"
+  # One line, and never a field separator in it: the detail travels in a
+  # tab-separated row that a filter reads by column, and an evidence command
+  # whose last line carried two tabs could put anything it liked into the
+  # columns after it — found by review against the exception column.
+  last="$(printf '%s\n' "$out" | grep '[^[:space:]]' | tail -1 | tr '\t\r' '  ')"
   case "$rc" in
     0)   printf 'ACTIVE\tSATISFIED\tthe evidence contract holds\n' ;;
     2)   printf 'ACTIVE\tUNKNOWN\tthe evidence could not be examined%s\n' "${last:+: $last}" ;;
@@ -114,12 +125,29 @@ felix_obligation_state() {
   return 0
 }
 
+# The exception reader (amendments §3), guarded in the WIDENING direction: a
+# grant clears a block, so a copy of the engine shipped without exceptions.sh
+# must read every row as unexcepted, and `command -v` below makes it so. The
+# reverse guard — fail closed when a blocker's library is missing — is what
+# escape.sh does for this file, and the two directions are deliberate.
+if ! command -v felix_exception_for >/dev/null 2>&1; then
+  . "$(dirname "${BASH_SOURCE[0]:-$0}")/exceptions.sh" 2>/dev/null
+fi
+
 # Every admitted row, evaluated. Emits:
 #   obligation <TAB> class <TAB> pathway <TAB> applicability <TAB> discharge
-#     <TAB> detail <TAB> grounds
+#     <TAB> detail <TAB> grounds <TAB> exception
+#
+# The eighth column is `-`, or `excepted|<expires>|<granted_by>` when a grant
+# at the remote-tracking main clears this row (exceptions.sh). Only a
+# TASK_BLOCKING row that applies can carry one: a DORMANT row has nothing to
+# clear, and a grant on it is not counted until the grounded state makes the
+# row apply again. With `release` as the third argument the column is `-` for
+# every row: the release path never carries a clearance, so the blocking
+# filter's release arm is the second lock and not the only one.
 _felix_obligation_field() { printf '%s\n' "$1" | cut -f"$2"; }
-felix_obligations_run() {
-  local proj="$1" root="$2" line name cls pw applies ev grounds st
+felix_obligations_run() {   # proj root [mode]
+  local proj="$1" root="$2" mode="${3:-}" line name cls pw applies ev grounds st exc
   felix_obligation_rows "$proj" | while IFS= read -r line; do
     [ -n "$line" ] || continue
     # cut per field rather than `IFS=$'\t' read`: tab is IFS whitespace, so an
@@ -131,7 +159,24 @@ felix_obligations_run() {
     ev="$(_felix_obligation_field "$line" 5)"
     grounds="$(_felix_obligation_field "$line" 6)"
     st="$(felix_obligation_state "$root" "$applies" "$ev")"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$cls" "$pw" "$st" "${grounds:--}"
+    exc="-"
+    # Grants are read only where the ledger and the governed tree share a
+    # repository — Felix governing itself. A product's tables live in the
+    # Felix home, whose merges the product's boundary never examines, so the
+    # `exception` escape could not fire on a grant written there; until the
+    # boundary reads the home's diff too, such a grant would be a grant a
+    # session could give itself, and it clears nothing (first increment).
+    # ...and only where the grant clears something: a row that is SATISFIED
+    # blocks nothing, and a grant left on it would otherwise label a clean
+    # gate as one resting on a person's grant.
+    if [ "$mode" != "release" ] && [ "$cls" = "TASK_BLOCKING" ] && [ "$(printf '%s\n' "$st" | cut -f1)" != "DORMANT" ] \
+       && [ "$(printf '%s\n' "$st" | cut -f2)" != "SATISFIED" ] \
+       && command -v felix_exception_for >/dev/null 2>&1 && command -v felix_same_repo >/dev/null 2>&1 \
+       && felix_same_repo "$proj" "$root" 2>/dev/null; then
+      exc="$(felix_exception_for "$proj" "$name" "$cls" "$line" 2>/dev/null)" || exc="-"
+      [ -n "$exc" ] || exc="-"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cls" "$pw" "$st" "${grounds:--}" "$exc"
   done
   return 0
 }
@@ -145,6 +190,16 @@ felix_obligations_run() {
 # requirement is still admitted and still printed, and the grounded state has
 # made it inapplicable. Pathway `unknown` is an authority hold and blocks
 # whatever its discharge says, because the row exists to hold, not to pass.
+#
+# An excepted row (eighth column, exceptions.sh) does not stop a TASK: a person
+# accepted that, until a date, and merged the acceptance. It stops a RELEASE
+# exactly as before — the release mode drops TASK_BLOCKING rows anyway, and
+# the reader refuses to except any other class, so the rule below can only
+# ever fire on a TASK_BLOCKING row at the task moment. Amendments §3: an
+# exception may never clear a RELEASE_BLOCKING obligation. It sits BELOW the
+# `unknown` pathway arm on purpose: that arm is an authority hold, which no
+# table can declare away and no grant may clear (amendments §1.3); the reader
+# refuses such rows too, and the order here is the second lock on the door.
 felix_obligations_blocking() {
   local mode="${1:-}"
   awk -F'\t' -v mode="$mode" '
@@ -152,6 +207,7 @@ felix_obligations_blocking() {
     mode == "release" && $2 == "TASK_BLOCKING" { next }
     $4 == "DORMANT" { next }
     $3 == "unknown" { print; next }
+    mode == "" && $2 == "TASK_BLOCKING" && index($8, "excepted|") == 1 { next }
     $5 != "SATISFIED" { print }'
   return 0
 }

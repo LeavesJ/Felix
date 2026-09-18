@@ -46,7 +46,12 @@ build	build implement feature create	core	superpowers:brainstorming superpowers:
 # noticed. Last in the play is the point: it comes due only once the review steps
 # have actually run, which is when "is this really finished" is a real question
 # rather than a rule quoted at turn one.
-ship	ship merge pull-request escape channel classify release	core	code-review superpowers:requesting-code-review superpowers:finishing-a-development-branch superpowers:verification-before-completion
+# `finishing-a-development-branch` removed 2026-09-13. Its procedure ends by
+# presenting a person with a menu — merge, open a pull request, keep, discard —
+# and Felix merges its own pull requests on green CI (the founder's direction,
+# 2026-09-12). The stops that remain are felix merge's escape channels, a red
+# gate, and the consent grants, none of which that menu is about.
+ship	ship merge pull-request escape channel classify release	core	code-review superpowers:requesting-code-review superpowers:verification-before-completion
 
 # Narrowed 2026-08-18, from three misroutes reproduced in one session rather
 # than from a guess. `review` matched "peer review" in a design conversation and

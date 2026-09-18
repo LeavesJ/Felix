@@ -837,10 +837,24 @@ felix_version_bump() {
 # undeployed work, and quieting it would be loosening the check. Lines diff
 # emits about a missing operand match no path shape and always survive, which
 # keeps "absent from one side is the verdict".
+#
+# A third argument names the repository the ignore rule is read from, for a
+# caller whose source side is an archive extracted to a temporary directory
+# and so is not a repository at all; it defaults to the source side.
 felix_deploy_diff() {
-  local src="$1" live="$2" d rc=0 line rest dir name p
+  local src="$1" live="$2" igroot="${3:-$1}" d rc=0 line rest dir name p only
   for d in harness hooks commands; do
     [ -e "$src/$d" ] || [ -e "$live/$d" ] || continue
+    # A directory on one side only is reported file by file, in the shape
+    # diff itself uses for a lone entry, so the report names what was missed
+    # rather than the operand diff could not open — and so each file passes
+    # the residue rule on its own.
+    only=""
+    if [ -e "$src/$d" ] && [ ! -e "$live/$d" ]; then
+      only="$(cd "$src" && find "$d" -type f 2>/dev/null | LC_ALL=C sort | sed "s|^|Only in $src: |")"
+    elif [ ! -e "$src/$d" ] && [ -e "$live/$d" ]; then
+      only="$(cd "$live" && find "$d" -type f 2>/dev/null | LC_ALL=C sort | sed "s|^|Only in $live: |")"
+    fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       p=""
@@ -872,15 +886,76 @@ felix_deploy_diff() {
       # shut off is .git/info/exclude — inside the repository's own .git, a
       # rule there is this machine's deliberate act, and it is named here so
       # nobody discovers it as a surprise.
-      if [ -n "$p" ] && { git -C "$src" -c core.excludesFile=/dev/null check-ignore -q "$p" \
-             || git -C "$src" -c core.excludesFile=/dev/null check-ignore -q "$p/"; } 2>/dev/null; then
+      if [ -n "$p" ] && { git -C "$igroot" -c core.excludesFile=/dev/null check-ignore -q "$p" \
+             || git -C "$igroot" -c core.excludesFile=/dev/null check-ignore -q "$p/"; } 2>/dev/null; then
         continue
       fi
       printf '%s\n' "$line"
       rc=1
     done <<EOF
-$(diff -rq "$src/$d" "$live/$d" 2>&1)
+$(if [ -n "$only" ]; then printf '%s\n' "$only"; else diff -rq "$src/$d" "$live/$d" 2>&1; fi)
 EOF
   done
+  return "$rc"
+}
+
+# The branch being merged into, as a ref this repository can read: the
+# remote's copy first, so a local main that lags the remote is not what gets
+# certified, then the local one. Prints nothing and fails when neither
+# resolves, which is a repository that cannot say what was accepted.
+felix_base_ref() {
+  local root="$1" base="${2:-main}" ref
+  for ref in "origin/$base" "$base"; do
+    if git -C "$root" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+      printf '%s' "$ref"; return 0
+    fi
+  done
+  return 1
+}
+
+# Is the engine main accepted the one deployed? Both sides from the base
+# (docs/2026-08-18-promotion-spec.md §4): the version main declares names the
+# cache entry, and main's own engine/{harness,hooks,commands} — read from the
+# commit, never from any working tree — is what that entry must hold. Every
+# checkout can answer this, which is what lets `felix merge` run from a
+# worktree (#2); the tree standing here does not enter into it.
+#
+#   exit 0  identical; prints the entry
+#   exit 1  differs; every differing path on stdout, or one line naming the
+#           version main declares and that nothing is installed at it
+#   exit 2  cannot examine: no cache on this machine, no base ref, or a
+#           version that cannot be read from the base
+#
+# Both readers of the question share this. deploy-check, the obligation
+# ledger's evidence for the same fact, sources it from the tree beside it. The
+# gate's `installed` check kept an inline copy until 2026-09-17, on the
+# argument that a verifier which sources the code it judges can be switched
+# off by editing that code; it now reads THIS FILE from the base ref with
+# `git show` — never the working tree, never the cache entry — and calls this
+# function in a subshell, so the code that judges is the code main accepted
+# and the argument holds without the copy. The gate and the ledger cannot
+# disagree by construction. FELIX_KERNEL, the suite's override of the judge,
+# is not read: this asks about the real cache.
+felix_accepted_deploy_diff() {
+  local root="$1" base="${2:-main}" cache ref ver entry tmp d rc
+  cache="${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-$HOME/.claude/plugins/cache}/felix/felix}"
+  [ -d "$cache" ] || { printf 'cannot examine: no felix cache at %s\n' "$cache"; return 2; }
+  ref="$(felix_base_ref "$root" "$base")" || { printf 'cannot examine: no %s or origin/%s in this repository\n' "$base" "$base"; return 2; }
+  ver="$(_felix_plugin_version "$root" "$ref")"
+  [ -n "$ver" ] || { printf 'cannot examine: %s declares no engine version\n' "$ref"; return 2; }
+  entry="$cache/$ver"
+  if [ ! -d "$entry/harness" ]; then
+    printf '%s declares %s and nothing is installed at that version\n' "$ref" "$ver"
+    return 1
+  fi
+  tmp="$(mktemp -d 2>/dev/null)" || { printf 'cannot examine: no temporary directory\n'; return 2; }
+  for d in harness hooks commands; do
+    git -C "$root" cat-file -e "$ref:engine/$d" 2>/dev/null || continue
+    git -C "$root" archive "$ref" "engine/$d" 2>/dev/null | tar -x -C "$tmp" 2>/dev/null \
+      || { rm -rf "$tmp"; printf 'cannot examine: could not read engine/%s at %s\n' "$d" "$ref"; return 2; }
+  done
+  felix_deploy_diff "$tmp/engine" "$entry" "$root/engine"; rc=$?
+  rm -rf "$tmp"
+  [ "$rc" -eq 0 ] && printf '%s\n' "$entry"
   return "$rc"
 }

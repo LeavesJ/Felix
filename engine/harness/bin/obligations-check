@@ -53,13 +53,17 @@ if [ -n "$orphans" ]; then
   printf '%s\n' "$orphans" | sed 's/^/  /'; printf '\n'; rc=1
 fi
 
-out="$(felix_obligations_run "$PROJ" .)"
+out="$(felix_obligations_run "$PROJ" . "$MODE")"
 printf '  %-22s %-18s %-9s %-12s %s\n' OBLIGATION CLASS APPLIES DISCHARGE ''
 printf '%s\n' "$out" | while IFS= read -r line; do
   [ -n "$line" ] || continue
   name="$(printf '%s\n' "$line" | cut -f1)"; cls="$(printf '%s\n' "$line" | cut -f2)"
   app="$(printf '%s\n' "$line" | cut -f4)"; dis="$(printf '%s\n' "$line" | cut -f5)"
   det="$(printf '%s\n' "$line" | cut -f6)"
+  # An excepted row (eighth column, exceptions.sh) keeps its discharge and
+  # says who accepted that, until when — the same words cmd_obligations uses.
+  exc="$(printf '%s\n' "$line" | cut -f8)"
+  case "$exc" in 'excepted|'*) det="excepted until $(printf '%s\n' "$exc" | cut -d'|' -f2) by $(printf '%s\n' "$exc" | cut -d'|' -f3-)${det:+; $det}" ;; esac
   printf '  %-22s %-18s %-9s %-12s %s\n' "$name" "$cls" "$app" "$dis" "$det"
   # The evidence's own report, for every active row it did not discharge.
   if [ "$app" = "ACTIVE" ] && [ "$dis" != "SATISFIED" ]; then
@@ -69,12 +73,13 @@ printf '%s\n' "$out" | while IFS= read -r line; do
 done
 
 blocking="$(printf '%s\n' "$out" | felix_obligations_blocking "$MODE" | grep -c .)"
-printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking' \
+excepted="$(printf '%s\n' "$out" | awk -F'\t' 'index($8, "excepted|") == 1' | grep -c .)"
+printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking, %s excepted' \
   "$(printf '%s\n' "$out" | grep -c .)" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "ACTIVE"'  | grep -c .)" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "DORMANT"' | grep -c .)" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "UNKNOWN"' | grep -c .)" \
-  "$blocking"
+  "$blocking" "$excepted"
 ung="$(felix_obligations_ungrounded "$PROJ" | grep -c .)"
 [ "$ung" -gt 0 ] && printf '; %s ground on no probe' "$ung"
 printf '\n'
