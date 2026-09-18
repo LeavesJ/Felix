@@ -153,11 +153,13 @@
 1	a done count that disagrees with the rows reads partial
 1	a dormant capability is deferred
 1	a dormant capability stays quiet
+1	a dry run names the judge before saying what it would squash
 1	a due step containing a colon does not shift it
 1	a fact that moved under the receipt raises exactly one
 1	a failed commit says the memory is NOT backed up
 1	a failing gate still blocks
 1	a failing gate still exits non-zero
+1	a faithful cache entry still merges a self-governed branch
 1	a felix-answered row names felix as the actor
 1	a file facing a directory is a drift, whatever diff exits
 1	a file git ignores dropped into the entry is residue, not drift
@@ -179,6 +181,7 @@
 1	a gate that skipped the suite is not called a passing suite
 1	a gitignored stray in the tree is residue, not drift
 1	a gitlink already in history does not block every future backup
+1	a governed product merges with FELIX_KERNEL set and no engine installed
 1	a governed product merges with no installed engine at all
 1	a grant committed locally on top of the fetched main but not pushed clears nothing
 1	a grant committed on local main with no remote clears nothing
@@ -230,6 +233,7 @@
 1	a hyphen in the name is not a name
 1	a hyphenated server name still credits the plugin that ships it
 1	a judge identical to the candidate merges nothing
+1	a judge that differs from main's engine by one comment is not the engine main accepted
 1	a keyword inside another word is not a match
 1	a kind nobody defined is refused, with a reason
 1	a kind that is two known kinds run together is refused
@@ -643,6 +647,7 @@
 1	an empty evidence cell is no evidence
 1	an empty graphify-out is still no graph — the file is the thing
 1	an empty grounding refuses
+1	an empty kernel cache leaves the judge unverifiable and the merge refused
 1	an empty listing is exit 0 and no rows: a catalogue that was read
 1	an empty marker is reported at session start too
 1	an empty marker refuses too
@@ -758,6 +763,7 @@
 1	an upper-case hash, a bad stamp or an empty grantor is no grant
 1	and --fix does not exit 0 when every repair failed
 1	and --gate does not raise it
+1	and FELIX_KERNEL is refused before the cache is even consulted
 1	and TASK_BLOCKING may not block either
 1	and a CLI that answers nothing reports no drift
 1	and a CLI that cannot answer is not a stale deployment
@@ -774,6 +780,7 @@
 1	and a declared one the tree no longer shows is still an item
 1	and a declined one is ok too
 1	and a directory in no repository hears nothing either
+1	and a doctored judge merges nothing
 1	and a document that is not a plan
 1	and a dormant row blocks nothing
 1	and a failing one as due for that reason
@@ -835,6 +842,7 @@
 1	and an Agent call with no type is still a tool
 1	and an absent table refuses with a non-zero status too
 1	and an automation row still ends in its capability
+1	and an empty cache merges nothing
 1	and an epoch that cannot be read returns non-zero
 1	and an inapplicable control reports no result, not a pass or a fail
 1	and an installed copy with no files to digest claims nothing either
@@ -1022,6 +1030,7 @@
 1	and matches on keywords, not just names
 1	and matches what the holding checkout itself answers
 1	and merge does not call it an unscanned diff
+1	and merges nothing under it
 1	and moves the epoch, because the probe counts it
 1	and names a handoff when the repo has one
 1	and names both tokens
@@ -1040,6 +1049,7 @@
 1	and names the function it could not source
 1	and names the habit
 1	and names the hook
+1	and names the judge only after the merge is reported
 1	and names the path that differs
 1	and names the pipeline step no row here answers
 1	and names the play in order
@@ -1367,6 +1377,7 @@
 1	and the discovery cache gone stale
 1	and the domain it speaks for
 1	and the drift line carries the whole name
+1	and the dry run says the judge is byte-identical to main
 1	and the earlier verdict is not replaced by it
 1	and the engine names the stage among the answers a row may carry
 1	and the engine writes no mistake for it
@@ -1405,6 +1416,7 @@
 1	and the loud form says the catalogue was never seen
 1	and the memory, which is somewhere else now
 1	and the merge is left exactly where the person left it
+1	and the merge names the entry main declares, not the harness inside it
 1	and the message does not accuse the subagent
 1	and the missing function is named
 1	and the monitor reports its capability unglued from the grounding
@@ -1439,6 +1451,7 @@
 1	and the record names the channel
 1	and the refilled cache begins with the stamp
 1	and the refusal is the gate's own
+1	and the refusal names the version main declares or the cache it searched
 1	and the remote keeps the other machine's head
 1	and the remote's own file is not listed against the branch
 1	and the report names the merged path
@@ -1683,6 +1696,7 @@
 1	felix maintenance renders a passing check as such
 1	felix maintenance says a row can never come due
 1	felix merge reaches gh at all
+1	felix merge refuses a self-governed repository when FELIX_KERNEL is set
 1	felix merge refuses on an escape
 1	felix new exits 0
 1	felix new prints the request path for a session

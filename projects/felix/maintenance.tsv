@@ -5,6 +5,11 @@ deployed	7	always	confirm the installed engine still matches the repository
 discover	14	always	look for tooling worth having that is not declared yet
 promote	14	always	check whether the gate has caught the same thing twice
 lessons	30	always	reread lessons.md and cut anything that stopped being true
+# The public snapshot fell twenty-two pull requests behind while this table read
+# "Nothing due", because no row asked. A cadence and not a check: the honest
+# check compares this engine's version with the public repository's, which needs
+# the network, and nothing here may need the network to say what is due.
+snapshot	14	always	bring the public snapshot up to main, and audit it with a wider net than the scrub
 # The graph is looked for beside the repository's .git, not in the current
 # directory: a worktree has no graphify-out/ of its own, and a check keyed on
 # the current directory read due in every worktree session whatever the graph's

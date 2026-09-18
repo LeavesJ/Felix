@@ -693,15 +693,21 @@ _felix_plugin_version() {
 # side-stepped rather than fought: `installed` compares the tree against the
 # newest entry while this reads an older one, and both hold at once.
 #
-# Two limits, stated because a root of trust that overclaims is worse than none.
-# This is not a signature — the trust is that the cache entry for main's version
-# is what main contained when somebody installed it. And FELIX_KERNEL overrides
-# the whole resolution, so anything that can set the environment can choose its
-# own judge; it exists so the suite can point at a constructed kernel instead of
-# whatever happens to be on the machine running it.
+# One limit, stated because a root of trust that overclaims is worse than none:
+# this is not a signature. The trust is that the cache entry for main's version
+# is what main contained when somebody installed it, and felix merge no longer
+# takes that on trust — it asks felix_accepted_deploy_diff whether the entry is
+# byte-identical to main's engine at the base ref before letting it judge.
+#
+# FELIX_KERNEL, which once named a judge outright, is gone (#260). It existed
+# so the suite could point at a constructed kernel and the suite never used
+# it; what it did do was let anything that can set the environment choose its
+# own judge, which is every escape channel evadable in one variable. The cache
+# location is still composable (FELIX_KERNEL_CACHE, FELIX_PLUGIN_CACHE), and
+# the byte comparison at the boundary is what makes that safe: a cache the
+# session doctored does not match main's engine and is refused as the judge.
 felix_kernel_dir() {
   local root="${1:-}" base="${2:-main}" ver p ref
-  if [ -n "${FELIX_KERNEL:-}" ]; then printf '%s' "$FELIX_KERNEL"; return 0; fi
   [ -n "$root" ] || return 1
   # The branch being merged into, not the literal word "main". Hard-coding it
   # made this depend on `init.defaultBranch`, which is a property of whoever ran
