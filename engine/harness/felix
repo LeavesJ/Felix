@@ -1253,8 +1253,20 @@ cmd_merge() {
   # installed engine at all.
   local blockers krc
   if felix_self_governed "$root"; then
+    # The judge is not chosen by the environment (#260). FELIX_KERNEL named one
+    # outright and is refused by name; the cache variables still compose the
+    # path, so the entry they resolve is checked, byte for byte, against the
+    # engine main holds at the base ref — the same question the gate's
+    # installed check asks — and a judge that is not that engine does not judge.
+    [ -z "${FELIX_KERNEL:-}" ] || die "FELIX_KERNEL is set, and the merge boundary does not take a judge from the environment: unset it. The judge is the engine main declares, deployed and byte-identical to main."
     local kernel; kernel="$(felix_kernel_dir "$root" "$base")" || kernel=""
-    [ -n "$kernel" ] && [ -d "$kernel/lib" ] || die "no installed copy of the engine main declares, so there is nothing to judge this that is not this. Run felix install on main, then try again."
+    if [ -z "$kernel" ] || [ ! -d "$kernel/lib" ]; then
+      local jver jcache
+      jver="$(_felix_plugin_version "$root" "$base" 2>/dev/null)"
+      jcache="${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-$HOME/.claude/plugins/cache}/felix/felix}"
+      die "no installed copy of the engine main declares (${jver:-no version readable at $base}) under $jcache, so there is nothing to judge this that is not this. Run felix install on main, then try again."
+    fi
+    local jentry jout jrc jlib
     # The judge must not be the candidate — but only when the candidate is the
     # judge's own source. A branch that does not touch engine/ has no
     # circularity to break, and an identical judge there is not self-judgement:
@@ -1270,6 +1282,30 @@ cmd_merge() {
          && diff -rq "$root/engine/harness" "$kernel" >/dev/null 2>&1; then
       die "the engine that would judge this is byte-identical to the tree it is judging, so it would be judging itself. Bump the version and install main's, or say plainly that this is unjudged."
     fi
+    # And the judge must be the engine main accepted, byte for byte (#260): the
+    # cache entry for main's version against main's engine at the base ref,
+    # the same question the gate's installed check asks. Asked through main's
+    # OWN resolve.sh, read out of the base commit and sourced in a subshell —
+    # never through the copy this CLI sourced, which is the candidate's when
+    # this command runs from the branch — so the code that answers is the code
+    # main accepted, and nothing a candidate writes reaches it. After the
+    # self-judgement guard, so a cache cut from the candidate is named as
+    # judging itself, which is the truer of the two refusals.
+    jlib="$(mktemp -d 2>/dev/null)" || die "could not make a directory to read main's resolve.sh into"
+    if ! git -C "$root" show "$base:engine/harness/lib/resolve.sh" > "$jlib/resolve.sh" 2>/dev/null; then
+      rm -rf "$jlib"; die "main's engine at $base has no lib/resolve.sh, so nothing there can say whether the judge is main's engine"
+    fi
+    jout="$( . "$jlib/resolve.sh" >/dev/null 2>&1
+             command -v felix_accepted_deploy_diff >/dev/null 2>&1 || exit 3
+             felix_accepted_deploy_diff "$root" "$base" 2>/dev/null )"; jrc=$?
+    rm -rf "$jlib"
+    case "$jrc" in
+      0) jentry="$jout" ;;
+      3) die "main's engine at $base defines no felix_accepted_deploy_diff, so it cannot say whether the judge is main's engine" ;;
+      2) die "cannot tell whether the judge is main's engine: $jout" ;;
+      *) die "the judge is not the engine main accepted: $(printf '%s\n' "$jout" | head -3 | tr '\n' ';') — a cache entry that differs from main's engine does not judge. Run felix install on main, or unset a cache override that points elsewhere." ;;
+    esac
+    [ "$kernel" -ef "$jentry/harness" ] || die "the judge resolved to $kernel and the engine main accepted is at $jentry/harness; they are not the same directory, and only that engine judges."
     blockers="$(_felix_kernel_blockers "$kernel" "$proj" "$base" "$root" "$FELIX_HOME_DIR")"
     krc=$?
     case "$krc" in
@@ -1331,6 +1367,7 @@ EOF
 
   if [ "$dry" -eq 1 ]; then
     printf 'nothing escapes this tree, and the gate is green on it.\n'
+    if [ -n "${jentry:-}" ]; then printf 'judged by %s, the engine main declares, byte-identical to main.\n' "$jentry"; fi
     printf 'felix merge would squash this now.\n'
     return 0
   fi
@@ -1380,6 +1417,17 @@ EOF
   fi
   gh pr merge "$branch" --repo "$slug" --squash || die "gh pr merge failed"
   printf 'merged. nothing in it escaped the tree.\n'
+  # Said, not only printed: a merge is the moment the boundary let something
+  # through, and which engine judged it is the fact a reader of says.log
+  # would want beside it. An if, not a short-circuit: this is the command's
+  # last statement, and a product merge has no judge to name.
+  if [ -n "${jentry:-}" ]; then
+    printf 'judged by %s, the engine main declares, byte-identical to main.\n' "$jentry"
+    felix_say "$proj" "merged" "$branch: judged by $jentry, the engine main declares" "felix merge" "" 2>/dev/null || true
+  else
+    felix_say "$proj" "merged" "$branch: a governed product, judged by this engine" "felix merge" "" 2>/dev/null || true
+  fi
+  return 0
 }
 
 cmd_next() {

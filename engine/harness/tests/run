@@ -5435,7 +5435,16 @@ SG="$TMP/selfgov"; mkdir -p "$SG/engine/.claude-plugin" "$SG/engine/harness/lib"
 # one was refused for a stale receipt, and a refusal looks exactly like the
 # feature working.
 SG="$( cd "$SG" && pwd -P )"
-printf 'widget\n' > "$SG/.felix"; printf 'stub\n' > "$SG/engine/harness/lib/escape.sh"
+printf 'widget\n' > "$SG/.felix"
+# Main's engine is the real harness, committed as the base, and the cache entry
+# for main's version below is a copy of the same: since #260 the boundary
+# refuses a judge that is not byte-identical to main's engine at the base ref,
+# so a fixture whose main was a one-line stub while its cache held a real
+# engine was modelling exactly the doctored cache the boundary now refuses.
+cp -R "$FROOT/harness/." "$SG/engine/harness/"
+# And it ignores what the real repository ignores, so a log the suite leaves in
+# its harness copy is residue to the byte comparison here as it is there (#86).
+printf '*.log\n.DS_Store\n' > "$SG/.gitignore"
 printf '{ "version": "1.0.0" }\n' > "$SG/engine/.claude-plugin/plugin.json"
 ( cd "$SG" && git add -A >/dev/null && git commit -qm base >/dev/null && git checkout -q -b feature )
 printf '{ "version": "2.0.0" }\n' > "$SG/engine/.claude-plugin/plugin.json"
@@ -5510,7 +5519,8 @@ rm -rf "$KC2/1.0.0/harness"; cp -R "$FROOT/harness" "$KC2/1.0.0/harness"
 # without testing anything.
 ( cd "$SG" && git checkout -q main \
   && rm -rf engine/harness && cp -R "$FROOT/harness" engine/harness \
-  && git add -A >/dev/null && git -c user.name=t -c user.email=t@t commit -qm engine >/dev/null \
+  && git add -A >/dev/null \
+  && { git diff --cached --quiet || git -c user.name=t -c user.email=t@t commit -qm engine >/dev/null; } \
   && git checkout -q -b prose \
   && printf 'notes\n' > NOTES.md && git add -A >/dev/null \
   && git -c user.name=t -c user.email=t@t commit -qm prose >/dev/null )
@@ -5521,13 +5531,16 @@ _sgrecord; _sgmerge
 # which this fixture does not reliably produce, so asserting on it would test
 # the fixture rather than the fix.
 case "$(cat "$TMP/sg.out")" in
-  *identical*) bad "a change that does not touch the engine is not called self-judgement" "$(cat "$TMP/sg.out")" ;;
+  *"judging itself"*) bad "a change that does not touch the engine is not called self-judgement" "$(cat "$TMP/sg.out")" ;;
   *)           ok  "a change that does not touch the engine is not called self-judgement" ;;
 esac
 # And it actually merges. Every other assertion in this section is a refusal,
 # and a guard that refused everything would satisfy all of them — this is the
 # one that fails if the kernel path stops permitting anything at all.
-is "and a self-governed branch does merge under the kernel" "$SGMERGES" "1"
+# With the reason, not the count alone: a merge refused for any cause reads
+# as zero, and the block's own comment above says why that is vacuous.
+if [ "$SGMERGES" = "1" ]; then ok "and a self-governed branch does merge under the kernel"
+else bad "and a self-governed branch does merge under the kernel" "merges=$SGMERGES rc=$SGRC: $(cat "$TMP/sg.out")"; fi
 ( cd "$SG" && git checkout -q feature && git branch -qD prose )
 rm -rf "$KC2/1.0.0/harness"; cp -R "$FROOT/harness" "$KC2/1.0.0/harness"
 
@@ -5558,7 +5571,7 @@ diff -rq "$SG/engine/harness" "$KC2/1.0.0/harness" >/dev/null 2>&1 \
   || bad "the bump fixture has an identical judge, so the guard can fire" "they differ"
 _sgrecord; _sgmerge
 case "$(cat "$TMP/sg.out")" in
-  *identical*) bad "a version bump alone is not self-judgement" "$(cat "$TMP/sg.out")" ;;
+  *"judging itself"*) bad "a version bump alone is not self-judgement" "$(cat "$TMP/sg.out")" ;;
   *)           ok  "a version bump alone is not self-judgement" ;;
 esac
 ( cd "$SG" && git checkout -q feature && git branch -qD bumponly )
@@ -5567,8 +5580,15 @@ rm -rf "$KC2/1.0.0/harness"; cp -R "$FROOT/harness" "$KC2/1.0.0/harness"
 # review.sh must be in the kernel's source list. escape.sh guards the reviewed
 # channel with `command -v felix_review_passed`, so leaving review.sh out does
 # not error — it silently stops a reviewer's pass from ever clearing, which is
-# the one exception invariant 2 grants.
-printf 'felix_review_passed() { return 0; }\n' > "$KC2/1.0.0/harness/lib/review.sh"
+# the one exception invariant 2 grants. The verdict is RECORDED, through the
+# real review.sh, for this tree: since #260 the boundary refuses a judge whose
+# review.sh was rewritten, so a stubbed pass would be refused as a doctored
+# judge before it could clear anything.
+_sgreview() {   # verdict -> a record for the SG tree, as a reviewer would leave it
+  ( cd "$SG" && . "$FROOT/harness/lib/resolve.sh" && . "$FROOT/harness/lib/verify.sh" && . "$FROOT/harness/lib/review.sh"
+    felix_review_record "$FROOT" "$FROOT/projects/widget" "$(felix_tree_id "$SG" "$FROOT")" "$1" reviewer-1 "through the kernel" ) >/dev/null 2>&1
+}
+_sgreview pass
 # The row is rewritten rather than sed'd onto. BSD sed does not interpret \t, so
 # substituting on a tab silently changes nothing, and this assertion would have
 # gone on testing the execute channel while claiming to test reviewed.
@@ -5581,14 +5601,12 @@ case "$(cat "$TMP/sg.out")" in
   *reviewed*) bad "a passing verdict clears a reviewed escape through the kernel" "$(cat "$TMP/sg.out")" ;;
   *)          ok  "a passing verdict clears a reviewed escape through the kernel" ;;
 esac
-# The other half of the pair, and the only thing that proves review.sh is in the
-# child's source list rather than merely present on disk. escape.sh guards the
-# lookup with `command -v felix_review_passed`, so a kernel where that function
-# is undefined does not error — the escape simply never clears.
-printf '# a review.sh that defines nothing\n' > "$KC2/1.0.0/harness/lib/review.sh"
+# The other half of the pair: the same tree with a verdict that is not a pass.
+# Only `pass` clears, so a reviewer who blocked reads the same as one who
+# never ran, and the escape stands.
+_sgreview block
 _sgrecord; _sgmerge
 has "and without it the same escape stands" "$(cat "$TMP/sg.out")" "reviewed"
-printf 'felix_review_passed() { return 0; }\n' > "$KC2/1.0.0/harness/lib/review.sh"
 
 sed '/KERNEL2/d' "$FROOT/projects/widget/risk.tsv" > "$TMP/rv2" \
   && mv "$TMP/rv2" "$FROOT/projects/widget/risk.tsv"
@@ -5603,6 +5621,129 @@ _cm_stamp "$MR"
 ( cd "$MR" && PATH="$GHB:$PATH" GHSTUB_LOG="$TMP/gh.prod.log" \
     FELIX_KERNEL_CACHE="$TMP/no-cache-at-all" "$FELIX" merge --base HEAD~1 >/dev/null 2>&1 )
 is "a governed product merges with no installed engine at all" \
+   "$(grep -c '^pr merge' "$TMP/gh.prod.log" | tr -d ' ')" "1"
+
+
+# The judge is pinned outside the tree it judges (#260, amendments §2.3). Three
+# ways the pin can fail to hold, each refused on a branch that merges when it
+# does hold — so every refusal below is attributable to the one thing changed,
+# never to an escape or a stale receipt. FELIX_KERNEL no longer names a judge
+# anywhere: a set variable is refused before anything is judged, whatever it
+# points at, and it points here at the faithful judge itself. The judge that
+# is resolved is then compared byte for byte with the engine main accepted at
+# the base, and an entry that differs by so much as a comment is not that
+# engine.
+#
+# The branch is the prose shape from above: off main, one file, no engine in
+# the diff, so the identical-judge guard stays out of the picture and the
+# merge that closes this section is the same merge the section opened with.
+( cd "$SG" && git checkout -q main && git checkout -q -b pinned \
+  && printf 'pinned notes\n' > NOTES.md && git add -A >/dev/null \
+  && git -c user.name=t -c user.email=t@t commit -qm pinned >/dev/null )
+# review.sh was rewritten above, so the entry is restored before anything
+# reads it: a faithful entry is byte-identical to main's engine, and that is
+# the precondition every assertion here either relies on or breaks on purpose.
+rm -rf "$KC2/1.0.0/harness"; cp -R "$FROOT/harness" "$KC2/1.0.0/harness"
+
+# _sgmerge with the CLI's environment varied: every argument is a VAR=value
+# handed to env, so the one difference from _sgmerge is the variable under
+# test. A FELIX_KERNEL_CACHE given here overrides the fixture's own.
+_sgmerge_under() {
+  : > "$TMP/gh.sg.log"
+  ( cd "$SG" && PATH="$GHB:$PATH" GHSTUB_LOG="$TMP/gh.sg.log" \
+      FELIX_KERNEL_CACHE="$KC2" env "$@" "$FELIX" merge --base HEAD~1 >"$TMP/sg.out" 2>&1 )
+  SGRC=$?
+  SGMERGES="$(grep -c '^pr merge' "$TMP/gh.sg.log" | tr -d ' ')"
+}
+# A refusal is an exit AND a reason. Asserted together because either alone
+# passes for the wrong thing: a warning that merges anyway carries the text,
+# and a merge refused for a stale receipt carries the exit.
+_sgrefused() {
+  if [ "$SGRC" -ne 0 ]; then has "$1" "$(cat "$TMP/sg.out")" "$2"
+  else bad "$1" "exit 0: $(cat "$TMP/sg.out")"; fi
+}
+# The first line of sg.out holding the text, by number, for the assertions
+# about order; empty when the text is absent.
+_sgline() { grep -n -F -- "$1" "$TMP/sg.out" | head -1 | cut -d: -f1; }
+
+# (a) A set FELIX_KERNEL is refused whatever it names — here the faithful
+# judge itself, so nothing about the value can be what was refused.
+_sgrecord; _sgmerge_under FELIX_KERNEL="$KC2/1.0.0/harness"
+_sgrefused "felix merge refuses a self-governed repository when FELIX_KERNEL is set" "FELIX_KERNEL is set"
+is "and merges nothing under it" "$SGMERGES" "0"
+
+# (b) One comment appended to one file, which no judge would execute any
+# differently. Byte for byte means byte for byte.
+printf '# one more line than main accepted\n' >> "$KC2/1.0.0/harness/lib/say.sh"
+_sgrecord; _sgmerge_under
+_sgrefused "a judge that differs from main's engine by one comment is not the engine main accepted" \
+           "the judge is not the engine main accepted"
+is "and a doctored judge merges nothing" "$SGMERGES" "0"
+cp "$FROOT/harness/lib/say.sh" "$KC2/1.0.0/harness/lib/say.sh"
+
+# (c) A cache with nothing in it. Whether the CLI says it cannot tell or that
+# nothing is installed at main's version, it must not merge, and it must say
+# what it looked for or where it looked.
+SGEMPTY="$TMP/kcache-empty"; mkdir -p "$SGEMPTY"
+_sgrecord; _sgmerge_under FELIX_KERNEL_CACHE="$SGEMPTY"
+[ "$SGRC" -ne 0 ] \
+  && ok  "an empty kernel cache leaves the judge unverifiable and the merge refused" \
+  || bad "an empty kernel cache leaves the judge unverifiable and the merge refused" "exit 0: $(cat "$TMP/sg.out")"
+case "$(cat "$TMP/sg.out")" in
+  *1.0.0*|*"$SGEMPTY"*) ok  "and the refusal names the version main declares or the cache it searched" ;;
+  *)                    bad "and the refusal names the version main declares or the cache it searched" "$(cat "$TMP/sg.out")" ;;
+esac
+is "and an empty cache merges nothing" "$SGMERGES" "0"
+# "Before judging anything" has one observable: with no judge to be found at
+# all, the refusal is still the variable's and not the cache's.
+_sgrecord; _sgmerge_under FELIX_KERNEL="$KC2/1.0.0/harness" FELIX_KERNEL_CACHE="$SGEMPTY"
+_sgrefused "and FELIX_KERNEL is refused before the cache is even consulted" "FELIX_KERNEL is set"
+
+# (e) The dry run, before the real merge, so that whatever a merge leaves
+# behind is not what the dry run is reading.
+_sgrecord
+: > "$TMP/gh.sg.log"
+( cd "$SG" && PATH="$GHB:$PATH" GHSTUB_LOG="$TMP/gh.sg.log" \
+    FELIX_KERNEL_CACHE="$KC2" "$FELIX" merge --base HEAD~1 --dry-run >"$TMP/sg.out" 2>&1 )
+_sgj="$(_sgline 'judged by ')"; _sgw="$(_sgline 'would squash')"
+if [ -n "$_sgj" ] && [ -n "$_sgw" ] && [ "$_sgj" -lt "$_sgw" ]; then
+  ok  "a dry run names the judge before saying what it would squash"
+else
+  bad "a dry run names the judge before saying what it would squash" \
+      "judged-by at line [$_sgj], would-squash at line [$_sgw]: $(cat "$TMP/sg.out")"
+fi
+has "and the dry run says the judge is byte-identical to main" "$(cat "$TMP/sg.out")" "byte-identical to main"
+
+# (d) The same fixture, untouched, merges — the assertion every refusal above
+# borrows its meaning from. The entry named is the version directory main
+# declares, the parent of the harness that judged and not the harness itself;
+# the pattern admits any spelling of the cache path and no other suffix.
+_sgrecord; _sgmerge
+is "a faithful cache entry still merges a self-governed branch" "$SGMERGES" "1"
+grep -Eq 'judged by [^ ]*/1\.0\.0, the engine main declares, byte-identical to main\.' "$TMP/sg.out" \
+  && ok  "and the merge names the entry main declares, not the harness inside it" \
+  || bad "and the merge names the entry main declares, not the harness inside it" "$(cat "$TMP/sg.out")"
+_sgm="$(_sgline 'merged. nothing in it escaped the tree')"; _sgj="$(_sgline 'judged by ')"
+if [ -n "$_sgm" ] && [ -n "$_sgj" ] && [ "$_sgj" -gt "$_sgm" ]; then
+  ok  "and names the judge only after the merge is reported"
+else
+  bad "and names the judge only after the merge is reported" \
+      "merged at line [$_sgm], judged-by at line [$_sgj]: $(cat "$TMP/sg.out")"
+fi
+( cd "$SG" && git checkout -q feature && git branch -qD pinned )
+rm -rf "$KC2/1.0.0/harness"; cp -R "$FROOT/harness" "$KC2/1.0.0/harness"
+
+# And the product that ships no engine is still left alone — now with the one
+# variable that refuses a self-governed repository outright set in its
+# environment, and no cache to find a judge in.
+: > "$TMP/gh.prod.log"
+( cd "$MR" && . "$FROOT/harness/lib/verify.sh"
+  felix_verify_record "$MR" "$FROOT" 0 "true" "$(felix_tree_id "$MR" "$FROOT")" )
+_cm_stamp "$MR"
+( cd "$MR" && PATH="$GHB:$PATH" GHSTUB_LOG="$TMP/gh.prod.log" \
+    FELIX_KERNEL_CACHE="$TMP/no-cache-at-all" FELIX_KERNEL="$KC2/1.0.0/harness" \
+    "$FELIX" merge --base HEAD~1 >/dev/null 2>&1 )
+is "a governed product merges with FELIX_KERNEL set and no engine installed" \
    "$(grep -c '^pr merge' "$TMP/gh.prod.log" | tr -d ' ')" "1"
 
 printf '\nwhat it verified and what it merges are the same branch\n'
