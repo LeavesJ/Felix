@@ -44,37 +44,106 @@ felix_mem_lesson() {
 # lost it the next time anything ran — and the mechanical half, which git can
 # reconstruct at any moment, survived. Now the note is passed in, or carried
 # forward from the file being replaced.
+#
+# And it replaces only what it wrote. A handoff written by hand — 212,864 bytes
+# of one, with no "Regenerated" line, in a memory directory another checkout's
+# docs/ symlinks into — would have been truncated to about 565 bytes of git
+# state by one run of this, and the next pulse commit would have buried the
+# original. So a file that is neither empty (the placeholder `felix new`
+# writes) nor in the generated shape is refused, with its size named, unless
+# REPLACE is 1, which is what --replace passes.
+#
+# The write lands beside the file and is renamed over it, so a write that
+# fails part way leaves the old handoff whole rather than truncated. Three
+# things the redirection did for free are kept by hand:
+#   - A handoff that is a symlink, or a chain of them, is written through to
+#     the file at the end, each hop read relative to the link it came from.
+#     Renamed onto a link, the link would become a regular file and its target
+#     would go stale without a word.
+#   - The mode is carried across, because a rename puts a new file in place
+#     and a handoff somebody closed to other users should stay closed.
+#   - The text is built before the temporary file exists, so that file lives
+#     only between one printf and the rename. The git calls are the slow part
+#     and the part a person interrupts, and a temporary file stranded there
+#     would be committed by the next pulse.
 felix_mem_handoff() {
-  local proj="$1" root="$2" gate="$3" note="${4:-}"
+  local proj="$1" root="$2" gate="$3" note="${4:-}" replace="${5:-0}"
+  local f dest link hops=0 body tmp
   mkdir -p "$(felix_mem_dir "$proj")"
-  if [ -z "$note" ] && [ -f "$(felix_mem_dir "$proj")/SESSION_HANDOFF.md" ]; then
-    note="$(sed -n 's/^- what was in progress: //p' "$(felix_mem_dir "$proj")/SESSION_HANDOFF.md" | head -1)"
+  f="$(felix_mem_dir "$proj")/SESSION_HANDOFF.md"
+  if [ "$replace" != 1 ] && felix_mem_handoff_foreign "$f"; then
+    printf 'felix handoff: not replacing %s, %s bytes that felix handoff did not write:\n' \
+      "$f" "$(wc -c < "$f" | tr -d ' ')" >&2
+    printf 'it does not open with the header this command writes, "# Handoff" and then\n' >&2
+    printf '"Regenerated <date>." on the third line. Move it aside, or pass --replace to\n' >&2
+    printf 'overwrite it with the regenerated handoff.\n' >&2
+    return 1
+  fi
+  if [ -z "$note" ] && [ -f "$f" ]; then
+    note="$(sed -n 's/^- what was in progress: //p' "$f" | head -1)"
     case "$note" in _fill*) note="" ;; esac
   fi
-  {
-    printf '# Handoff\n\nRegenerated %s. Anything below is the state of the tree,\nnot a summary of intent.\n\n' "$(date +%Y-%m-%d)"
-    printf '## Where\n\n'
-    printf -- '- branch: `%s`\n' "$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-    printf -- '- head: `%s`\n' "$(git -C "$root" log -1 --format='%h %s' 2>/dev/null)"
-    printf -- '- tree: `%s`\n' "$root"
-    printf '\n## Uncommitted\n\n'
-    local dirty; dirty="$(git -C "$root" status --short 2>/dev/null | grep -v '^??' || true)"
-    if [ -n "$dirty" ]; then printf '```\n%s\n```\n' "$dirty"
-    else printf 'Nothing. The tree is clean.\n'; fi
-    printf '\n## Recent\n\n```\n%s\n```\n' \
-      "$(git -C "$root" log -8 --format='%h %ad %s' --date=short 2>/dev/null)"
-    printf '\n## Next\n\n'
-    # The command, not the key. `verify: gate.sh` was project.json's gate value
-    # copied verbatim, and there is no gate.sh at any root a session would look
-    # in; the command that runs it is felix gate, and that is what is printed.
-    if [ -n "$gate" ]; then printf -- '- verify: `felix gate` (runs `%s`)\n' "$gate"
-    else printf -- '- verify: declare a gate in project.json, then `felix gate`\n'; fi
-    if [ -n "$note" ]; then
-      printf -- '- what was in progress: %s\n' "$note"
-    else
-      printf -- '- what was in progress: _fill this in with `felix handoff --was "..."`; it is the one part git cannot tell you_\n'
-    fi
-  } > "$(felix_mem_dir "$proj")/SESSION_HANDOFF.md"
+  body="$(_felix_mem_handoff_text "$root" "$gate" "$note")"
+  dest="$f"
+  while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
+    link="$(readlink "$dest")"
+    case "$link" in /*) dest="$link" ;; *) dest="${dest%/*}/$link" ;; esac
+    hops=$((hops + 1))
+  done
+  tmp="${dest}.tmp.$$"
+  # Copied first only for its mode; the redirection below replaces the text.
+  [ -f "$dest" ] && cp -p "$dest" "$tmp" 2>/dev/null
+  # The substitution dropped the one newline the last printf ended with.
+  printf '%s\n' "$body" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+}
+
+# The text of a regenerated handoff, from what git knows of ROOT. A function of
+# its own so the caller can build it before any file exists: written inline in
+# a command substitution, bash 3.2 misreads the apostrophes in its comments.
+_felix_mem_handoff_text() {
+  local root="$1" gate="$2" note="$3"
+  printf '# Handoff\n\nRegenerated %s. Anything below is the state of the tree,\nnot a summary of intent.\n\n' "$(date +%Y-%m-%d)"
+  printf '## Where\n\n'
+  printf -- '- branch: `%s`\n' "$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  printf -- '- head: `%s`\n' "$(git -C "$root" log -1 --format='%h %s' 2>/dev/null)"
+  printf -- '- tree: `%s`\n' "$root"
+  printf '\n## Uncommitted\n\n'
+  local dirty; dirty="$(git -C "$root" status --short 2>/dev/null | grep -v '^??' || true)"
+  if [ -n "$dirty" ]; then printf '```\n%s\n```\n' "$dirty"
+  else printf 'Nothing. The tree is clean.\n'; fi
+  printf '\n## Recent\n\n```\n%s\n```\n' \
+    "$(git -C "$root" log -8 --format='%h %ad %s' --date=short 2>/dev/null)"
+  printf '\n## Next\n\n'
+  # The command, not the key. `verify: gate.sh` was project.json's gate value
+  # copied verbatim, and there is no gate.sh at any root a session would look
+  # in; the command that runs it is felix gate, and that is what is printed.
+  if [ -n "$gate" ]; then printf -- '- verify: `felix gate` (runs `%s`)\n' "$gate"
+  else printf -- '- verify: declare a gate in project.json, then `felix gate`\n'; fi
+  if [ -n "$note" ]; then
+    printf -- '- what was in progress: %s\n' "$note"
+  else
+    printf -- '- what was in progress: _fill this in with `felix handoff --was "..."`; it is the one part git cannot tell you_\n'
+  fi
+}
+
+# The shape every version of felix_mem_handoff has written: `# Handoff` alone on
+# the first line, and `Regenerated <date>.` opening the third. Two exact lines
+# rather than the word found anywhere, because a hand-written handoff can say
+# "regenerated" and still be the only copy of what it holds. What sits below
+# the header may have been edited by hand, and is replaced as it always was.
+_felix_mem_handoff_generated() {
+  [ "$(sed -n 1p "$1")" = "# Handoff" ] || return 1
+  sed -n 3p "$1" | grep -qE '^Regenerated [0-9]{4}-[0-9]{2}-[0-9]{2}\.'
+}
+
+# 0 when the handoff at F is one this command did not write: not the empty
+# placeholder, and not in the generated shape. felix_mem_handoff refuses
+# exactly these unless told to replace them. Named apart so that felix handoff
+# can ask the same question before the write, which is the only moment the
+# answer can be had, and record whether it refused or replaced.
+felix_mem_handoff_foreign() {
+  [ -s "$1" ] && ! _felix_mem_handoff_generated "$1"
 }
 
 # A mistake the gate caught, recorded without anyone deciding it was worth

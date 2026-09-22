@@ -24,7 +24,7 @@
 # platform, or a hook quietly removed, cannot sit here unnoticed.
 #
 # event	stance	reason	holds
-SessionStart	wired	bind the session, mount doctrine, tidy, report what is due
+SessionStart	wired	bind the session and record the moment in lifecycle.log, a resume included and silently; mount doctrine, tidy, report what is due
 UserPromptSubmit	wired	route the work, name the tool due next, mount matching lessons
 PreToolUse	wired	refuse what this project has forbidden, on the shell and on the files a session reaches for
 PostToolUse	wired	record what was reached for, so what is never used can be found

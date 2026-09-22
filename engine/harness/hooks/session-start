@@ -43,6 +43,8 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/commission.sh"
 # shellcheck source=../lib/commission-provider.sh
 . "${SCRIPT_DIR}/../lib/commission-provider.sh"
+# shellcheck source=../lib/lifecycle.sh
+. "${SCRIPT_DIR}/../lib/lifecycle.sh"
 
 # JSON-escape via parameter substitution, one C-level pass each.
 #
@@ -85,6 +87,69 @@ _felix_emit() {
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
 
+# A resume is bound, and says nothing.
+#
+# Claude Code starts a new process on a resume and rebinds every hook, and
+# until the matcher named it Felix was not called there at all, so a resumed
+# session never learned which engine it now runs. The matcher makes the moment
+# reachable; this exit keeps what a resume shows exactly what it showed before,
+# which is nothing. What records the moment, lib/lifecycle.sh, is called before
+# that exit, further down, and before the broken-binding report for the same
+# reason: a resume never heard that report either.
+#
+# Claude Code only, because only there was a resume unbound. Copilot CLI fires
+# its sessionStart on a resume with no matcher in front of it, so a resume there
+# always got the banner, and unchanged means it still does; the other harness
+# _felix_emit knows is left as it was for the same reason.
+#
+# The payload is read once, whole, and the three fields the record and this
+# exit need are taken from it with the sed idiom hooks/post-tool uses, in one
+# pass: each expression starts again from the held line, and the first line
+# that carries a field is the one that answers for it. awk keeps that first
+# line of each field and drops every later one before the loop sees them, so
+# the loop turns three times at most. Unbounded, it cut one line off the front
+# of what was left on each turn, which is quadratic in bash 3.2: a payload with
+# thousands of lines carrying these keys held the hook for minutes, and past
+# the platform's deadline a startup lost its banner. The read it replaced
+# bounded itself with head -1. A terminal on stdin is a person running the
+# hook by hand, and waiting on them would hang the hook.
+_felix_payload=""
+[ -t 0 ] || _felix_payload="$(cat 2>/dev/null)"
+_felix_source=""; _felix_session=""; _felix_transcript=""; _felix_fields=""
+[ -n "$_felix_payload" ] && _felix_fields="$(printf '%s\n' "$_felix_payload" | sed -n -e h \
+  -e 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/source \1/p' -e g \
+  -e 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/session_id \1/p' -e g \
+  -e 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/transcript_path \1/p' 2>/dev/null \
+  | awk '!s[$1]++' 2>/dev/null)"
+while [ -n "$_felix_fields" ]; do
+  _felix_l="${_felix_fields%%$'\n'*}"
+  case "$_felix_l" in
+    "source "*)          [ -n "$_felix_source" ]     || _felix_source="${_felix_l#source }" ;;
+    "session_id "*)      [ -n "$_felix_session" ]    || _felix_session="${_felix_l#session_id }" ;;
+    "transcript_path "*) [ -n "$_felix_transcript" ] || _felix_transcript="${_felix_l#transcript_path }" ;;
+  esac
+  case "$_felix_fields" in *$'\n'*) _felix_fields="${_felix_fields#*$'\n'}" ;; *) _felix_fields="" ;; esac
+done
+
+# Resolved here, not beside the bail it feeds further down, because the record
+# needs a project and has to be written before a resume leaves. A broken
+# binding resolves to nothing, so it records nothing and is still reported
+# below; a directory nothing governs records nothing and still says nothing.
+# Its stderr goes nowhere. A marker nobody can read makes the resolve's tr
+# complain, and on a resume, which used to leave before resolving anything,
+# that complaint would be the one thing the hook said.
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+
+# Every source, a resume included, and the Copilot resume that keeps its
+# banner. Nothing it does reaches the screen or the exit status: a recorder
+# that could print would break the silence the exit below exists to keep.
+[ -n "$PROJ" ] && felix_lifecycle_session "$PROJ" "$PWD" \
+  "$_felix_source" "$_felix_session" "$_felix_transcript" >/dev/null 2>&1
+
+# The record sits above this line, so a resume is recorded before it leaves.
+[ "$_felix_source" = "resume" ] && [ -z "${COPILOT_CLI:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] \
+  && exit 0
+
 # A binding that is present and does not resolve, reported at the one moment
 # that is early enough to be worth knowing.
 #
@@ -117,7 +182,7 @@ if [ -n "$broken" ]; then
   exit 0
 fi
 
-PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
+# PROJ was resolved above the resume exit, for the record.
 [ -n "$PROJ" ] || exit 0
 
 project="$(basename "$PROJ")"
@@ -339,6 +404,23 @@ if [ -f "$_mem/ledger.tsv" ] || [ -d "$_mem/ledger.d" ]; then
       reconcile_line="
 The record proposes changing what is mounted: ${_rec}
 Evidence in 'felix stack reconcile'. Nothing moves without a person."
+      # Marked seen here, and this hook cannot know yet whether anybody will
+      # read it. The platform's summary request starts a session of its own
+      # (#264), and SessionStart fires for that session like any other, before
+      # the request is typed: the prompt hook recognises it, and Stop and
+      # SessionEnd then pass over it, but this runs first. Nothing it is handed
+      # tells the two apart. Its source is `startup`, as a person's is; the
+      # request is not in the transcript it names yet, since in all 78 summary
+      # sessions on record it was enqueued only after SessionStart finished;
+      # the model is Haiku, which people also choose (8 of the 279 most recent
+      # other sessions); and the transcripts show the same entrypoint and
+      # permission mode for both. Checked 2026-09-22.
+      #
+      # So a proposal can be spent on a session nobody reads. It happened once:
+      # mount:scheduled-tasks went to a summary session on 2026-09-17 and was
+      # marked seen. Nothing is lost by it, since `felix stack reconcile` still
+      # lists every proposal; what is lost is the one time it is volunteered.
+      # The same holds for discovery's and commissioning's once-only lines below.
       if [ "${_recstranded:-0}" -gt 0 ] 2>/dev/null; then
         felix_stack_reconcile_mark_seen "$PROJ" "$FELIX_HOME_DIR" '^(mount|declare)$' 2>/dev/null
       else
@@ -358,13 +440,27 @@ fi
 # home rather than the repository, so nothing auto-loads it: inside Felix itself
 # that is masked, because the file happens to sit in the tree being edited, and
 # for every other project it is not masked at all. The same is true of the
-# handoff. Pointing at them is the whole delivery mechanism, so say plainly that
-# they are required rather than leaving a path and hoping.
+# repository's HANDOFF.md, which Claude Code does not load either. Pointing at
+# them is the whole delivery mechanism, so say plainly that they are required
+# rather than leaving a path and hoping.
 read_lines="Read before planning: ${PROJ}/CLAUDE.md"
 [ -f "${_repo_root}/HANDOFF.md" ] && read_lines="${read_lines}
                    ${_repo_root}/HANDOFF.md"
-[ -f "$_mem/SESSION_HANDOFF.md" ] && read_lines="${read_lines}
-                   ${_mem}/SESSION_HANDOFF.md"
+
+# The session handoff is named apart from those, because it is not direction.
+# A prior session wrote it, sometimes from another worktree, and on a detached
+# HEAD it gives its branch as HEAD. It used to sit in the list above, under a
+# sentence calling all of it "standing direction that has already been
+# decided", and a fresh session copied a stale blocker forward from it on that
+# authority. It is still worth reading. It is state, and state is re-checked
+# by command before anybody acts on it.
+state_lines=""
+[ -f "$_mem/SESSION_HANDOFF.md" ] && state_lines="
+
+Also on disk, and not direction: ${_mem}/SESSION_HANDOFF.md
+A prior session wrote it, possibly from another worktree or branch. Treat what
+it says about branches, blockers and open work as a claim, and re-check each
+one by command before acting on it."
 
 # A night the founder granted is the first thing a session should know, because
 # it changes what this session does with every boundary it meets. Printed in
@@ -400,7 +496,7 @@ ${overnight_line}${drift_line}${maint_line}${graph_line}${tidy_line}${retire_lin
 ${read_lines}
 
 None of those are loaded for you. They carry standing direction that has
-already been decided, so reading them is how you avoid being told twice.
+already been decided, so reading them is how you avoid being told twice.${state_lines}
 
 Run the gate through the command above rather than a repo-relative path, which
 may not exist in the tree you are standing in. Declare your tier before you
@@ -421,6 +517,8 @@ if [ -f "$PROJ/routes.tsv" ] && command -v claude >/dev/null 2>&1; then
 
 Worth a look, found since last time and not installed: ${_new}
 felix discover --inspect shows what each one actually ships."
+    # Spent even on a summary session, which cannot be told apart here; see the
+    # reconcile line above.
     felix_discover_mark_seen "$PROJ" "$FELIX_HOME_DIR"
   fi
 fi
@@ -485,6 +583,8 @@ skill each request names, write the answer file it names, then felix commission:
     context="$context
 
 Commissioning: receipt ${_cm_valid}."
+    # Spent even on a summary session, which cannot be told apart here; see the
+    # reconcile line above.
     mkdir -p "$(dirname "$_cm_seen")" 2>/dev/null && printf '%s\n' "$_cm_topo" >> "$_cm_seen" 2>/dev/null
   fi
   [ "$_cm_ans" -gt 0 ] && context="$context

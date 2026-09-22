@@ -17,15 +17,27 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
 . "${SCRIPT_DIR}/../lib/ledger.sh"  2>/dev/null || exit 0
+. "${SCRIPT_DIR}/../lib/verify.sh"  2>/dev/null || exit 0
 
 raw="$(cat 2>/dev/null || true)"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
-PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
-[ -n "$PROJ" ] || exit 0
 
 session="$(printf '%s' "$raw" \
   | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+# A session nobody in it typed into is not a session to fold (#264): whatever
+# it reached for, it reached for on nobody's behalf. Consulted first, before the
+# project is resolved, so the marker goes with the session even where nothing
+# resolves; it is ephemeral and this is its end. A marker a person's prompt
+# outranked goes too, and that session folds as any other.
+_machine=0
+felix_session_machine "$FELIX_HOME_DIR" "$session" && _machine=1
+felix_session_machine_clear "$FELIX_HOME_DIR" "$session"
+[ "$_machine" = 1 ] && exit 0
+
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+[ -n "$PROJ" ] || exit 0
 [ -n "$session" ] || exit 0
 
 felix_ledger_rollup "$PROJ" "$FELIX_HOME_DIR" "$session" "$(date -u +%Y-%m-%d)"

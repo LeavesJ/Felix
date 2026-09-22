@@ -39,12 +39,41 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/say.sh"
 . "${SCRIPT_DIR}/../lib/ledger.sh"
 . "${SCRIPT_DIR}/../lib/verify.sh"
+. "${SCRIPT_DIR}/../lib/lifecycle.sh"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
 PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
 [ -n "$PROJ" ] || exit 0
 
 raw="$(cat 2>/dev/null || true)"
+
+# A session nobody in it typed into is recorded as nothing, and this is the
+# first thing done with the payload because everything after it writes: the
+# session mark, the routing decision, the named play, the route state and the
+# brief. The platform's summary request came through here as the first prompt
+# of a session of its own, and each one became a session in the ledger that was
+# pointed at a play and never reached it (#264). Only that kind leaves here. A
+# runtime block inside a session a person holds is the message kind, and it
+# goes on below to everything but the route. What counts, and why each opening
+# is structure and not vocabulary, is felix_route_machine's to say.
+#
+# Exit 0 and silent, never 2: a prompt hook that blocks erases the prompt, and
+# the request is not this hook's to refuse, only to leave uncounted.
+#
+# What it leaves instead is a marker keyed on the payload's session id, so that
+# Stop and SessionEnd can tell the session apart too: neither sees the prompt.
+# And one lifecycle row, because SessionStart already wrote the session's
+# startup row and could not know; the summary row is how a reader drops it.
+machine="$(felix_route_machine "$(felix_route_prompt "$raw" 2>/dev/null)" 2>/dev/null)"
+if [ "$machine" = session ]; then
+  _felix_msid="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  felix_session_machine_mark "$FELIX_HOME_DIR" "$_felix_msid" 2>/dev/null || true
+  felix_lifecycle_summary "$PROJ" "$PWD" "$_felix_msid" \
+    "$(printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" \
+    >/dev/null 2>&1 || true
+  exit 0
+fi
+
 root="$(felix_repo_root "$PWD")"
 
 # What this session has already done. Present on every event that shares the
@@ -60,11 +89,12 @@ sid="$sid_raw"
 [ -n "$sid" ] || sid="repo-$(printf '%s' "$root" | tr -c 'a-zA-Z0-9' '-')"
 
 # The HEAD this session began at, recorded on the first prompt because
-# SessionStart never reads its payload and so has no session id to key on. The
-# first mark wins, so later prompts do not move it and a compact cannot reset
-# it. Stop needs this to tell work that was committed from a tree that merely
-# happens to be clean — before it existed, committing your work skipped the
-# completion check entirely, and committing is what you do at the end.
+# SessionStart reads only the source from its payload and so has no session id
+# to key on. The first mark wins, so later prompts do not move it and a compact
+# cannot reset it. Stop needs this to tell work that was committed from a tree
+# that merely happens to be clean — before it existed, committing your work
+# skipped the completion check entirely, and committing is what you do at the
+# end.
 #
 # Never checked. A session that cannot record this loses one completion check;
 # a session that cannot start loses everything.
@@ -75,9 +105,11 @@ sid="$sid_raw"
 # reminders, the Stop hook's own feedback — and routing those announced a play
 # at text nobody wrote, logged a miss that skews `--promote`, and then had Stop
 # ask why the named play went unused. Nothing to route and nothing to record,
-# so both are skipped.
+# so both are skipped. What reaches here is only the message kind, a block
+# inside a session a person holds; the session kind left at the top. Only the
+# route is skipped for it, so the mark above and the lessons below still run.
 route_block=""
-if felix_route_is_machine "$(felix_route_prompt "$raw" 2>/dev/null)" 2>/dev/null; then
+if [ -n "$machine" ]; then
   :
 elif [ -f "$PROJ/routes.tsv" ]; then
   ctx="$(felix_route_context "$root")"

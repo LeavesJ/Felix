@@ -588,6 +588,66 @@ _felix_ledger_fold_current() {   # state file, fold file -> 0 when nothing new
   return 0
 }
 
+# The sessions nobody typed into, from the one record that says which they were.
+#
+# Until #264 the platform's summary request came through the prompt hook as a
+# session of its own, and each one left what a session leaves: a mark, a named
+# play in state/ledger, a fold in ledger.d. A one-off pass takes the folds away.
+# The rest stays on disk, so the two loops below met a session whose record was
+# behind what is on disk, and the catch-up folded it straight back: the pass
+# undone by the next `felix ledger`, and session-start holding every unmount
+# proposal on account of sessions that never were.
+#
+# says.log is where the old prompt hook wrote what it was asked, beside the
+# session id and when, cut to its first 200 characters by felix_say. That is
+# all of the request the record keeps, and 200 characters of its opening are
+# words a person can paste as well: the prompt hook reads a person who stops
+# short of the whole opening and closing as a person, and still writes their
+# brief with the same 200 characters in it. Matched on those alone, that
+# person's session was passed over here, never folded and never counted as
+# stranded, with whatever it reached for. So a session is taken for one of
+# these only when its brief rows can have come from nothing else:
+#
+#   every brief row of the session asked the first 200 characters of an
+#   opening route.sh lists, since the request was its only prompt; and
+#   every one was written before the day route.sh gives for that wording,
+#   when no engine that matched it was running yet and a request of the
+#   platform's was still briefed like a prompt.
+#
+# What this still takes for one: a person's session from before that day whose
+# only briefs asked those 200 characters. In the logs on 2026-09-22 there is
+# none; each of the 78 sessions with such a row has that one brief and no other.
+#
+# Read at most once per walk, and only when the walk meets a session it would
+# otherwise count, so a home with nothing stranded pays nothing for it. route.sh
+# holds the wordings, and session-start does not source it, hence the load here.
+_felix_ledger_machine_sessions() {   # proj -> one session id per line
+  local says forms="" i
+  says="$(felix_mem_dir "$1")/says.log"
+  [ -f "$says" ] || return 0
+  [ -n "${_FELIX_ROUTE_SESSION_REQUESTS+x}" ] \
+    || . "$(dirname "${BASH_SOURCE[0]:-$0}")/route.sh" 2>/dev/null || return 0
+  # day <TAB> the opening's first 200 characters, one wording per line.
+  for ((i = 0; i + 2 < ${#_FELIX_ROUTE_SESSION_REQUESTS[@]}; i += 3)); do
+    forms="${forms}${_FELIX_ROUTE_SESSION_REQUESTS[i + 2]}	${_FELIX_ROUTE_SESSION_REQUESTS[i]:0:200}
+"
+  done
+  # Through the environment, because awk -v would read each `\n` in the
+  # wording as a newline and the row holds it as two characters. The stamps
+  # are ISO 8601 in UTC, so a string comparison against the day is a
+  # comparison of times: a row from that day or later is not before it.
+  _FELIX_LEDGER_FORMS="$forms" LC_ALL=C awk -F'\t' '
+    BEGIN { n = split(ENVIRON["_FELIX_LEDGER_FORMS"], f, "\n")
+            for (i = 1; i <= n; i++) {
+              j = index(f[i], "\t")
+              if (j > 1) day[substr(f[i], j + 1)] = substr(f[i], 1, j - 1)
+            } }
+    $2 != "brief" { next }
+    ($4 in day) && ($1 "") < day[$4] { old[$3] = 1; next }
+    { other[$3] = 1 }
+    END { for (s in old) if (!(s in other)) print s }' "$says" 2>/dev/null
+}
+
 # How many sessions have appends that nothing folded.
 #
 # The companion to the catch-up, and the reason it exists separately: the
@@ -608,7 +668,7 @@ _felix_ledger_fold_current() {   # state file, fold file -> 0 when nothing new
 # that had stopped keeping up made this zero, so the banner printed the retire
 # list with no caveat at all while uncounted reaches sat on disk.
 felix_ledger_stranded() {
-  local proj="$1" home="$2" root="${3:-}" mem dir f session n=0
+  local proj="$1" home="$2" root="${3:-}" mem dir f session n=0 machine="" looked=0
   mem="$(felix_mem_dir "$proj")"
   dir="$mem/ledger.d"
   for f in "$home"/state/ledger/*.tsv; do
@@ -616,13 +676,15 @@ felix_ledger_stranded() {
     session="$(basename "$f" .tsv)"
     _felix_ledger_fold_current "$f" "$dir/$session.tsv" && continue
     _felix_ledger_owns "$home" "$root" "$session" || continue
+    [ "$looked" = 1 ] || { machine="$(_felix_ledger_machine_sessions "$proj")"; looked=1; }
+    printf '%s\n' "$machine" | grep -qxF -- "$session" && continue
     n=$((n + 1))
   done
   printf '%s' "$n"
 }
 
 felix_ledger_catchup() {
-  local proj="$1" home="$2" root="${3:-}" mem dir f session n=0
+  local proj="$1" home="$2" root="${3:-}" mem dir f session n=0 machine="" looked=0
   mem="$(felix_mem_dir "$proj")"
   dir="$mem/ledger.d"
   for f in "$home"/state/ledger/*.tsv; do
@@ -630,6 +692,8 @@ felix_ledger_catchup() {
     session="$(basename "$f" .tsv)"
     _felix_ledger_fold_current "$f" "$dir/$session.tsv" && continue
     _felix_ledger_owns "$home" "$root" "$session" || continue
+    [ "$looked" = 1 ] || { machine="$(_felix_ledger_machine_sessions "$proj")"; looked=1; }
+    printf '%s\n' "$machine" | grep -qxF -- "$session" && continue
     felix_ledger_rollup "$proj" "$home" "$session" \
       "$(date -r "$f" -u +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" || continue
     n=$((n + 1))

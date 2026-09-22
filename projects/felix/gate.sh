@@ -131,7 +131,11 @@ fi
 GCACHE="${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-$HOME/.claude/plugins/cache}/felix/felix}"
 if [ -d "$GCACHE" ]; then
   INSTALL_DRIFT=0
-  : > /tmp/felix-install-drift.log
+  # The differing paths, held here rather than in a file. They sat in one fixed
+  # path under /tmp that every gate on the machine truncated and rewrote, so a
+  # gate whose own drift was empty could print another tree's: the defect the
+  # tests block below records for the suite log, one check up.
+  GDRIFT=""
   GWHY=""
   # The branch being merged into, as felix_kernel_dir resolves it: origin/main
   # first, so a local main that lags the remote is not what gets certified.
@@ -166,7 +170,7 @@ if [ -d "$GCACHE" ]; then
       3) GWHY="main's engine at $GBASE cannot answer: its resolve.sh defines no felix_accepted_deploy_diff"
          INSTALL_DRIFT=1 ;;
       2) GWHY="$GOUT"; INSTALL_DRIFT=1 ;;
-      *) printf '%s\n' "$GOUT" | grep . > /tmp/felix-install-drift.log
+      *) GDRIFT="$(printf '%s\n' "$GOUT" | grep .)"
          INSTALL_DRIFT=1 ;;
     esac
   fi
@@ -202,12 +206,12 @@ if [ -d "$GCACHE" ]; then
       printf '  %-18s FAIL (structural: the engine main declares is not the one deployed, and only the checkout the marketplace serves can deploy it — the marketplace serves %s)\n' installed "$MROOT"
       FAILED="$FAILED installed"
       [ -n "$GWHY" ] && printf '    %s\n' "$GWHY"
-      head -5 /tmp/felix-install-drift.log | sed 's/^/    /'
+      [ -n "$GDRIFT" ] && printf '%s\n' "$GDRIFT" | head -5 | sed 's/^/    /'
       printf '    run felix install on main in %s\n' "$MROOT"
     else
       fail installed
       [ -n "$GWHY" ] && printf '    %s\n' "$GWHY"
-      head -5 /tmp/felix-install-drift.log | sed 's/^/    /'
+      [ -n "$GDRIFT" ] && printf '%s\n' "$GDRIFT" | head -5 | sed 's/^/    /'
       [ -n "$GHERE" ] && [ "$GHERE" != "$GVER" ] \
         && printf '    this checkout declares %s and main declares %s: the bump reaches main by merging it\n' "$GHERE" "${GVER:-nothing}"
       printf '    reinstall with: felix install (on main)\n'
@@ -225,13 +229,28 @@ else
 fi
 
 # ------------------------------------------------------------- tests ---------
+# A log of this run's own, never a path another gate can open. It was one fixed
+# path under /tmp for every gate on the machine, and each gate opened it with
+# O_TRUNC and wrote at its own offset, so concurrent gates interleaved in it.
+# Measured 2026-09-21: a gate on one worktree printed "tests ok, 2645 passed"
+# while its own suite had passed 2586 — the log held both summaries, and tail
+# read the other session's. The verdict was sound, being this suite's exit
+# status; the count under it, and the FAIL excerpt a red run prints, were
+# whichever gate wrote last. A reviewer reading the count in a PR body cannot
+# tell. Deleted on a pass, where nothing points at it; kept on a failure, where
+# the path is printed.
+GTLOG_DIR="${TMPDIR:-/tmp}"; GTLOG_DIR="${GTLOG_DIR%/}"; GTLOG=""
 if [ "${SKIP_REST:-0}" -eq 1 ]; then
   printf '  %-18s skipped (the deployed engine is not this tree)\n' tests
 elif [ "${1:-}" = "--quick" ]; then
   printf '  %-18s skipped (--quick)\n' tests
-elif ./engine/harness/tests/run >/tmp/felix-gate-tests.log 2>&1; then
+elif ! GTLOG="$(mktemp "$GTLOG_DIR/felix-gate-tests.XXXXXX" 2>/dev/null)" || [ -z "$GTLOG" ]; then
+  fail tests
+  printf '    could not make a log file for the suite under %s\n' "$GTLOG_DIR"
+elif ./engine/harness/tests/run >"$GTLOG" 2>&1; then
   pass tests
-  printf '                     %s\n' "$(tail -1 /tmp/felix-gate-tests.log)"
+  printf '                     %s\n' "$(tail -1 "$GTLOG")"
+  rm -f "$GTLOG"
 else
   fail tests
   # The evidence, not only the verdict (#86 again, one check over). bad() puts
@@ -239,8 +258,8 @@ else
   # so a failure that only reproduces on the runner arrived as a name with
   # nothing under it, and the one line saying WHICH word leaked was in a log
   # file nobody can read from here.
-  grep -A2 '^  FAIL' /tmp/felix-gate-tests.log | head -30 | sed 's/^/  /'
-  printf '                     full log: /tmp/felix-gate-tests.log\n'
+  grep -A2 '^  FAIL' "$GTLOG" | head -30 | sed 's/^/  /'
+  printf '                     full log: %s\n' "$GTLOG"
 fi
 
 # ------------------------------------------------------------- secret --------
