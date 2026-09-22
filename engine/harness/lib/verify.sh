@@ -79,6 +79,51 @@ felix_session_mark() {
   printf '%s\n' "$head" > "$path" 2>/dev/null || true
 }
 
+# A session nobody in it typed into.
+#
+# The platform's summary request starts a session of its own and types into it
+# (#264). The prompt hook records nothing for that, but the session still ends
+# like any other, and nothing at its end knew it for one: Stop held it in a tree
+# with unverified work and told the summarising model to run the gate, and a
+# tool call made on that advice was folded into ledger.d at SessionEnd, the
+# phantom back in the denominator. So the prompt hook leaves this marker in
+# place of a record, and Stop and SessionEnd consult it first and do nothing at
+# all for the session. SessionEnd takes it away. State under the home, never
+# memory: it describes a session that is running, not one that happened.
+#
+# Honoured only while the session has no mark. Every prompt a person types
+# marks the session and a summary request never does, so a marker beside a mark
+# is not what it says, and the session is judged as it always was. A session
+# can write its own state as easily as its code; this is the floor and not a
+# wall, and forging the exemption takes removing the session's own mark too.
+#
+# No session id, no marker: the prompt hook still records nothing for the
+# request, since what it may do with a prompt is the prompt's kind and not the
+# id's, and Stop and SessionEnd keep their old behaviour for the session.
+_felix_machine_path() { printf '%s/state/machine/%s' "$1" "$2"; }
+
+felix_session_machine_mark() {   # home, sid
+  local path
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 0
+  path="$(_felix_machine_path "$1" "$2")"
+  mkdir -p "$(dirname "$path")" 2>/dev/null || return 0
+  : > "$path" 2>/dev/null || true
+}
+
+felix_session_machine() {   # home, sid -> 0 when nobody in the session typed into it
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  [ -f "$(_felix_machine_path "$1" "$2")" ] || return 1
+  [ ! -f "$(_felix_session_path "$1" "$2")" ]
+}
+
+felix_session_machine_clear() {   # home, sid
+  local path
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 0
+  path="$(_felix_machine_path "$1" "$2")"
+  [ -f "$path" ] || return 0
+  rm -f "$path" 2>/dev/null || true
+}
+
 # Did this session commit anything? Returns 1 when unknown, so the caller keeps
 # whatever it did before rather than treating ignorance as a change.
 felix_session_committed() {

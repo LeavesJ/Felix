@@ -40,7 +40,8 @@
 #   felix lessons [--for] what this project already learned, matched to context
 #   felix promote        recurring devlog themes not yet in lessons
 #   felix adopt <cap>    declare a capability this project now has
-#   felix new <name>     scaffold a new project
+#   felix new <name>     scaffold a new project; --no-commission skips commissioning
+#   felix audit          read-only: stops after unchecked edits, from Claude Code transcripts
 #   felix install        register the session hook; --uninstall to remove
 #
 # Adding a project is creating a directory and a JSON file. It is never an edit
@@ -56,15 +57,34 @@ set -uo pipefail
 # directory the *link* sits in, so every `. lib/...` looked in ~/.local/bin and
 # found nothing. The command that was supposed to make Felix convenient was the
 # one command guaranteed to stop it working.
+#
+# The directory of a path is taken by parameter expansion, not dirname, so
+# felix audit from a plain clone runs bash and awk and nothing else, and
+# readlink only to follow a symlink to felix, as the README says: a path with
+# no slash is in ., and /felix is in /.
+_felix_up() { case "$1" in */*) _felix_d="${1%/*}"; _felix_d="${_felix_d:-/}" ;; *) _felix_d=. ;; esac; }
 _felix_src="${BASH_SOURCE[0]}"
 while [ -L "$_felix_src" ]; do
-  _felix_dir="$(cd "$(dirname "$_felix_src")" && pwd)"
+  _felix_up "$_felix_src"; _felix_dir="$(cd "$_felix_d" && pwd)"
   _felix_src="$(readlink "$_felix_src")"
   case "$_felix_src" in /*) ;; *) _felix_src="$_felix_dir/$_felix_src" ;; esac
 done
-SCRIPT_DIR="$(cd "$(dirname "$_felix_src")" && pwd)"
-unset _felix_src _felix_dir
+_felix_up "$_felix_src"; SCRIPT_DIR="$(cd "$_felix_d" && pwd)"
+unset _felix_src _felix_dir _felix_d; unset -f _felix_up
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"   # engine: read-only when installed as a plugin
+
+# felix audit is dispatched here, ahead of every other library and before a
+# home is resolved: it is the one command meant to run from a plain clone with
+# nothing installed, and it must leave nothing behind, so it gets the chance to
+# touch nothing before anything else has. What it reads, and why it writes
+# nothing, is in lib/audit.sh.
+cmd_audit() {
+  # shellcheck source=lib/audit.sh
+  . "${SCRIPT_DIR}/lib/audit.sh" || exit 1
+  felix_audit "$@"
+}
+if [ "${1:-}" = "audit" ]; then shift; cmd_audit "$@"; exit $?; fi
+
 # shellcheck source=lib/resolve.sh
 . "${SCRIPT_DIR}/lib/resolve.sh"
 # shellcheck source=lib/detect.sh
@@ -93,6 +113,8 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"   # engine: read-only when installe
 . "${SCRIPT_DIR}/lib/recommend.sh"
 # shellcheck source=lib/memory.sh
 . "${SCRIPT_DIR}/lib/memory.sh"
+# shellcheck source=lib/lifecycle.sh
+. "${SCRIPT_DIR}/lib/lifecycle.sh"
 # shellcheck source=lib/automerge.sh
 . "${SCRIPT_DIR}/lib/automerge.sh"
 # shellcheck source=lib/budget.sh
@@ -182,6 +204,16 @@ Felix. The engineering OS: it decides how work gets built, and proves it.
 Resolves which project governs the current directory. Knows nothing about any
 specific project, language, or toolchain.
 
+  trying it first
+    felix audit [--dir D] [--since YYYY-MM-DD] [--verify ERE]
+                           read-only, from a plain clone: how often a turn stopped on an edit
+                           nothing had checked, from the transcripts Claude Code keeps
+    felix new <name> --no-commission
+                           bind one project (rules, gate guess, marker) without commissioning:
+                           no plugin installs, no network; felix commission runs it later.
+                           Where a gate was guessed, its sessions are held once felix install
+                           has run; where none was, set gate in project.json first
+
   every day
     felix which            which project governs here, and where its doctrine is
     felix gate [args]      run this project's gate; exits with the gate's status
@@ -233,7 +265,8 @@ specific project, language, or toolchain.
     felix budget           how much unattended work has been spent today
 
   memory
-    felix handoff [note]   regenerate the handoff; the note (or --was) records what was in progress
+    felix handoff [note]   regenerate the handoff; the note (or --was) records what was in progress;
+                           a handoff it did not write is refused unless --replace
     felix log <text>       add a devlog entry
     felix lesson <text>    add a lesson, matched into later prompts
     felix lessons          what this project has already paid for
@@ -241,7 +274,8 @@ specific project, language, or toolchain.
     felix monitor [--open] render everything Felix did that nobody could see
 
   setup
-    felix new <name>       govern a project: a directory, a JSON file, a marker
+    felix new <name> [path] [--no-commission]
+                           govern a project: a directory, a JSON file, a marker, then commissioning
     felix install          deploy this engine, bumping the version if it must
     felix bootstrap        write CI, permissions and the files a project needs
     felix setup [id]       the steps only a person can do, and what is left
@@ -728,13 +762,39 @@ cmd_gate() {
 }
 
 cmd_new() {
+  # --no-commission is taken wherever it stands, and it is the only flag taken.
+  # It exists so that governing a project can be tried for the price of a
+  # directory and a marker — no marketplace, no plugin install, no network —
+  # with commissioning one command away. So any other word starting with - is
+  # refused, wherever it stands, before anything is made, and named as the
+  # flag it is: a mistyped --no-commission is the natural one, and dropped
+  # without a word in the third place it let full commissioning run, a
+  # marketplace added and plugins installed at user scope, for someone who
+  # asked for neither. Taken as the name, a flag would also make a project
+  # directory the independence check enumerates and governs forever (#102);
+  # taken as the path, it made projects/<name>, failed to write the marker,
+  # printed "bound via" anyway and exited 0.
+  local synopsis="usage: felix new <name> [path-to-checkout] [--no-commission]"
+  local commission=1 a
+  local rest=()
+  for a in "$@"; do
+    case "$a" in
+      --no-commission) commission=0 ;;
+      -*) die "$synopsis (got a flag it does not take: $a; nothing was made)" ;;
+      *) rest+=("$a") ;;
+    esac
+  done
+  set -- ${rest[@]+"${rest[@]}"}
   local name="${1:-}" target="${2:-$PWD}"
-  [ -n "$name" ] || die "usage: felix new <name> [path-to-checkout]"
-  # A project directory named after a flag would be enumerated by the
-  # independence check and governed forever (#102).
-  case "$name" in -*) die "usage: felix new <name> [path-to-checkout] (got a flag: $name)" ;; esac
+  [ -n "$name" ] || die "$synopsis"
+  # A name and a path, and nothing after them.
+  [ $# -le 2 ] || die "$synopsis (unexpected argument: $3; nothing was made)"
   _felix_name_ok "$name" \
-    || die "usage: felix new <name> [path-to-checkout] (a name is one directory name: letters, digits, . _ -; got: $name)"
+    || die "$synopsis (a name is one directory name: letters, digits, . _ -; got: $name)"
+  # The path is checked before anything is made. One that is not a directory
+  # used to create projects/<name>, fail to write the marker, print "bound
+  # via" anyway and exit 0, leaving a project the retry refuses as existing.
+  [ -d "$target" ] || die "$synopsis (not a directory: $target)"
   local dir="$FELIX_HOME_DIR/projects/$name"
   [ -e "$dir" ] && die "project $name already exists at $dir"
   local tpl="$SCRIPT_DIR/templates"
@@ -745,6 +805,14 @@ cmd_new() {
   caps="$(felix_detect "$root" | sort -u)"
   gate="$(felix_guess_gate "$root")"
   slug="$(felix_repo_slug "$root")"
+  # The marker binds the checkout, so a checkout it cannot be written into is
+  # refused here, before projects/<name> exists. Refused only after it, the
+  # project was left behind, and the same command, once the checkout was
+  # writable, refused it as already there.
+  if [ -d "$root/.felix" ] || { [ -e "$root/.felix" ] && [ ! -w "$root/.felix" ]; } \
+     || { [ ! -e "$root/.felix" ] && [ ! -w "$root" ]; }; then
+    die "cannot write the marker $root/.felix, which binds the checkout; nothing was made"
+  fi
 
   mkdir -p "$(felix_mem_dir "$dir")" "$dir/setup"
 
@@ -760,12 +828,20 @@ cmd_new() {
     read -r maturity || maturity=""
   fi
   case "$maturity" in prototype|internal|public-beta|production) ;; *) maturity="" ;; esac
+  # Built before the here-document, not inside it. It was `${maturity:+...}`
+  # in the body, and bash removes the double quotes inside that expansion
+  # there — 3.2.57 and 5.2.21 both, measured — so the file said
+  # `maturity: prototype` and felix_json_str, which matches a quoted key, read
+  # nothing back.
+  local maturity_line=""
+  if [ -n "$maturity" ]; then
+    maturity_line="$(printf ',\n  "maturity": "%s"' "$maturity")"
+  fi
   cat > "$dir/project.json" <<EOF
 {
   "name": "$name",
   "remote_match": "$slug",
-  "gate": "$gate"${maturity:+,
-  "maturity": "$maturity"}
+  "gate": "$gate"$maturity_line
 }
 EOF
 
@@ -858,24 +934,44 @@ EOF
     printf 'beside this file. `felix classify` and `felix evidence` read them, and\n'
     printf 'nothing red is ever touched unattended.\n'
   } > "$dir/CLAUDE.md"
-  : > "$(felix_mem_dir "$dir")/DEVLOG.md"
-  : > "$(felix_mem_dir "$dir")/lessons.md"
-  : > "$(felix_mem_dir "$dir")/SESSION_HANDOFF.md"
+  # Created, never truncated. The refusal above looks at the project directory
+  # and memory is not in it: invariant 6 says nothing deletes a memory root, so
+  # <memory>/<name>/ routinely outlives projects/<name>/ — removed by hand, or
+  # on a second machine whose memory synced first. These were `: >`, which
+  # left a surviving devlog, lessons file and handoff at zero bytes each for
+  # the next pulse commit to record.
+  local memdir kept="" f
+  memdir="$(felix_mem_dir "$dir")"
+  for f in DEVLOG.md lessons.md SESSION_HANDOFF.md; do
+    if [ -e "$memdir/$f" ]; then kept="$kept $f"; else : > "$memdir/$f"; fi
+  done
 
   # The marker binds the checkout without needing a remote.
-  printf '%s\n' "$name" > "$root/.felix"
+  printf '%s\n' "$name" > "$root/.felix" \
+    || die "created $dir, but could not write the marker $root/.felix; write '$name' into it to bind the checkout"
 
   printf 'created %s\n\n' "$dir"
   printf '  detected     %s\n' "$(printf '%s' "$caps" | tr '\n' ' ')"
   printf '  gate guess   %s\n' "${gate:-none, set it yourself}"
   printf '  repo         %s\n' "${slug:-no github remote}"
-  printf '  bound via    %s/.felix\n\n' "$root"
+  printf '  bound via    %s/.felix\n' "$root"
+  [ -n "$kept" ] && printf '  memory       kept%s, already in %s\n' "$kept" "$memdir"
+  printf '\n'
   printf 'seeded stack.tsv, profiles.tsv, setup.tsv and %s runbook(s).\n' \
     "$(ls "$dir/setup" 2>/dev/null | wc -l | tr -d ' ')"
   # The sequence this used to print is run instead. Invariant 3: printing a
   # suggestion for something Felix could safely have done is a defect, and
   # every stage below holds its own install ceiling. Commissioning's exit
   # status is its own report; the project was created either way.
+  #
+  # Unless the person said not to. That is not a suggestion printed in place
+  # of an action Felix could take (invariant 3): the action was declined, by
+  # the one person entitled to decline it, and the line says how to take it.
+  if [ "$commission" -eq 0 ]; then
+    printf '\ncommissioning skipped (--no-commission): nothing was installed, registered or fetched. Run felix commission in %s when you want it.\n' "$root"
+    printf '\nA starting constitution was written at %s/CLAUDE.md.\n' "$dir"
+    return 0
+  fi
   printf '\ncommissioning — every engine stage that answers a need runs now, and an\n'
   printf 'independent check says whether it did.\n\n'
   ( cd "$root" && cmd_commission ) || true
@@ -2128,7 +2224,7 @@ cmd_toolbox() {
     # Bundled plugins are real, reachable, and have no directory to read. That
     # is a normal answer: unknown risk, not a missing plugin.
     if [ -n "$dir" ]; then
-      risk="$(felix_discover_risk "$(felix_discover_inspect "$dir")")"
+      risk="$(felix_toolbox_risk "$name" "$dir")"
     fi
     cap="$(felix_toolbox_capability "$name" "$rules" "$dir")"
 
@@ -2352,15 +2448,17 @@ EOF
     local scratchq="$_FELIX_DISCOVER_SCRATCH"
     printf '%s\n' "$cands" | while IFS=$'\t' read -r score cap name desc; do
       [ -n "${name:-}" ] || continue
-      local src url sha sub facts tier
+      local src url sha sub mkt facts tier
       src="$(felix_discover_source "$name")" || src=""
       url="$(printf '%s' "$src" | cut -f1)"
       sha="$(printf '%s' "$src" | cut -f2)"
       sub="$(printf '%s' "$src" | cut -f3)"
+      mkt="$(printf '%s' "$src" | cut -f4)"
       tier="unknown"
       local digest=""
       if [ -n "$url" ] && felix_discover_fetch "$url" "$sha" "$scratchq/$name"; then
-        facts="$(felix_discover_inspect "$scratchq/$name" "$sub")"
+        facts="$(felix_discover_inspect "$scratchq/$name" "$sub" \
+          "$(felix_discover_marketplace_file "$mkt")" "$name")"
         tier="$(felix_discover_risk "$facts")"
         # Taken here, from the copy the tier was scored off, because there is
         # no second chance at it: the catalogue drops a plugin from
@@ -2437,11 +2535,12 @@ EOF
 
   printf '%s\n' "$cands" | while IFS=$'\t' read -r score cap name desc; do
     [ -n "${name:-}" ] || continue
-    local src url sha sub facts risk why
+    local src url sha sub mkt facts risk why
     src="$(felix_discover_source "$name")" || src=""
     url="$(printf '%s' "$src" | cut -f1)"
     sha="$(printf '%s' "$src" | cut -f2)"
     sub="$(printf '%s' "$src" | cut -f3)"
+    mkt="$(printf '%s' "$src" | cut -f4)"
     if [ -z "$url" ]; then
       printf '  %-26s %-8s could not resolve a source to read\n' "$name" "unknown"
       continue
@@ -2450,7 +2549,8 @@ EOF
       printf '  %-26s %-8s fetch failed, skipped\n' "$name" "unknown"
       continue
     fi
-    facts="$(felix_discover_inspect "$scratch/$name" "$sub")"
+    facts="$(felix_discover_inspect "$scratch/$name" "$sub" \
+      "$(felix_discover_marketplace_file "$mkt")" "$name")"
     risk="$(felix_discover_risk "$facts")"
     why="$(felix_discover_why "$facts")"
     printf '  %-26s %-8s %s\n' "$name" "$risk" "${why:-skills only, nothing that runs on its own}"
@@ -3760,7 +3860,7 @@ cmd_lesson() {
 }
 
 cmd_handoff() {
-  resolve_or_die; local proj="$PROJ" root gate note="" was="" words=""
+  resolve_or_die; local proj="$PROJ" root gate note="" was="" words="" replace=0
   # #127. The catch-all used to shift anything it did not know, so
   # `felix handoff "what was in progress"` — the invocation everyone types —
   # dropped the one line git cannot rebuild and printed success over an older
@@ -3768,18 +3868,34 @@ cmd_handoff() {
   # given both ways refuses rather than choosing one silently.
   while [ $# -gt 0 ]; do
     case "$1" in
-      --was) need_value "$@"; was="$2"; shift 2 ;;
-      --)    shift; words="${words:+$words }$*"; break ;;
-      -*)    die "usage: felix handoff [--was \"what was in progress\" | what was in progress]" ;;
-      *)     words="${words:+$words }$1"; shift ;;
+      --was)     need_value "$@"; was="$2"; shift 2 ;;
+      --replace) replace=1; shift ;;
+      --)        shift; words="${words:+$words }$*"; break ;;
+      -*)        die "usage: felix handoff [--was \"what was in progress\" | what was in progress] [--replace]" ;;
+      *)         words="${words:+$words }$1"; shift ;;
     esac
   done
   [ -n "$was" ] && [ -n "$words" ] \
-    && die "usage: felix handoff [--was \"what was in progress\" | what was in progress] — the note was given twice"
+    && die "usage: felix handoff [--was \"what was in progress\" | what was in progress] [--replace] — the note was given twice"
   note="${was:-$words}"
   root="$(felix_repo_root "$PWD")"
   gate="$(felix_json_str "$proj/project.json" gate)"
-  felix_mem_handoff "$proj" "$root" "$gate" "$note"
+  # Asked before the write, because the write is what changes the answer. The
+  # lifecycle row (lib/lifecycle.sh) says which of three things happened: a
+  # handoff this command did not write was refused, or replaced because
+  # --replace said so, or the file was written as it always has been. A write
+  # that fails for any other reason is not a refusal, and records nothing.
+  local foreign=0
+  felix_mem_handoff_foreign "$(felix_mem_dir "$proj")/SESSION_HANDOFF.md" && foreign=1
+  # A handoff this command did not write is refused by the library, which says
+  # why and how large it is; nothing below runs, because nothing was written.
+  if ! felix_mem_handoff "$proj" "$root" "$gate" "$note" "$replace"; then
+    [ "$foreign" = 1 ] && [ "$replace" != 1 ] \
+      && felix_lifecycle_handoff "$proj" "$root" refused >/dev/null 2>&1
+    exit 1
+  fi
+  if [ "$foreign" = 1 ]; then felix_lifecycle_handoff "$proj" "$root" replaced >/dev/null 2>&1
+  else                        felix_lifecycle_handoff "$proj" "$root" written  >/dev/null 2>&1; fi
   printf 'wrote %s/SESSION_HANDOFF.md\n\n' "$(felix_mem_dir "$proj")"
   # Carrying a note across a regeneration is right; carrying it in silence is
   # how a two-session-old note read as this session's. Said only when nothing

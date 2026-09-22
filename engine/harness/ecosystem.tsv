@@ -58,6 +58,8 @@
 # ---- the probes. These may name ecosystems; it is what they are for. --------
 allow	lib/detect.sh	*	the capability probe itself. It greps dependency manifests for tokens and reports what it finds, symmetrically across every ecosystem it knows; the answer belongs to the checkout, not to the engine. This is the file the words are read from, so a row per word would only be a second copy of it.
 allow	lib/bootstrap.sh	python|node|rust|npm|pip|cargo	the CI scaffold, which is a stack probe and a per-stack emitter. It must say `setup-node` to a package.json project and `setup-python` to a pyproject.toml one; naming one stack and not the others is what would be wrong here.
+allow	lib/audit.sh	cargo|dotnet|npm|pnpm|pytest|python|yarn|playwright	felix audit's default roster of what counts as a check, read off transcripts from any project a person ever opened. It asks "did a test runner run", so it names the runners of many ecosystems side by side, which is the probe shape. No list names them all, and one it leaves out makes that ecosystem's sessions read as never checked, so the report says a runner it does not name is no check. --verify adds a project's own runner to it.
+allow	lib/audit-read.sh	npm|python	The first half of felix audit's awk program, split from lib/audit.sh on 2026-09-22 to keep each file under 500 lines. Its comments and patterns name the runners of lib/audit.sh's default roster, which it reads commands against, so the same probe shape and the same reason as that row apply.
 
 # ---- probes of a different shape: paths and capability names ----------------
 allow	lib/escape.sh	alembic|prisma	the durable-path regex. Which directories hold migrations that a revert cannot undo is a fact about ecosystems, and it names several rather than one.

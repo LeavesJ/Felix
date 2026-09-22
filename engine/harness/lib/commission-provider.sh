@@ -296,9 +296,9 @@ ROWS
 # INFERRED, and the only door out is for the engine to go and look.
 #
 # Looking is what turns INFERRED into OBSERVED: source the plugin, fetch it at
-# its pinned sha, read the three files discovery already reads, and tier what
-# was actually found. The tier that reaches the policy is then the engine's
-# own reading and never the provider's word. This is the panel's finding that
+# its pinned sha, read what discovery already reads, marketplace entry
+# included, and tier what was actually found. The tier that reaches the
+# policy is then the engine's own reading and never the provider's word. This is the panel's finding that
 # an INFERRED capability would otherwise be consumed as DECLARED.
 #
 # Two of the provider's fields are claims, not one, and both are refused as
@@ -416,7 +416,8 @@ felix_commission_admit() {
       continue
     fi
 
-    facts="$(felix_discover_inspect "$scratch/$bare" "$sub")"
+    facts="$(felix_discover_inspect "$scratch/$bare" "$sub" \
+      "$(felix_discover_marketplace_file "$(printf '%s' "$src" | cut -f4)")" "$bare")"
     tier="$(felix_discover_risk "$facts")"
 
     # Risk before grounding, and the order was the other way round until a

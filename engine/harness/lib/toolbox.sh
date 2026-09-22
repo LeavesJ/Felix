@@ -37,6 +37,24 @@ felix_toolbox_path() {
   return 1
 }
 
+# The tier of an installed copy, read with its marketplace entry. The cache is
+# laid out <cache>/<marketplace>/<plugin>/<version>, which is how
+# felix_toolbox_path found the copy, so the marketplace is the first name under
+# the cache root. An LSP plugin from the official catalogue ships a README and
+# nothing else; its server is declared in the entry, and read without it the
+# copy tiers `low` on no evidence at all.
+felix_toolbox_marketplace() {
+  local rel="${1#"$FELIX_PLUGIN_CACHE"/}"
+  [ "$rel" != "$1" ] || return 1
+  printf '%s' "${rel%%/*}"
+}
+
+felix_toolbox_risk() {
+  local name="$1" dir="$2" mkt mf=""
+  mkt="$(felix_toolbox_marketplace "$dir")" && mf="$(felix_discover_marketplace_file "$mkt")"
+  felix_discover_risk "$(felix_discover_inspect "$dir" "" "$mf" "$name")"
+}
+
 # Skills a plugin ships, one per line. These are what a route can actually name:
 # a play entry is `plugin` or `plugin:skill`, and without the list the second
 # form has to be guessed.
@@ -125,7 +143,7 @@ felix_toolbox_unwired() {
     cap="$(felix_toolbox_capability "$name" "$rules" "$dir")"
     [ -n "$cap" ] || continue
     [ -n "$(felix_toolbox_route_for "$proj" "$cap")" ] || continue
-    risk="-"; [ -n "$dir" ] && risk="$(felix_discover_risk "$(felix_discover_inspect "$dir")")"
+    risk="-"; [ -n "$dir" ] && risk="$(felix_toolbox_risk "$name" "$dir")"
     [ "$risk" = "high" ] && continue
     printf '%s\t%s\n' "$name" "$cap"
   done

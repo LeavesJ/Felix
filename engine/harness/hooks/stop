@@ -66,6 +66,14 @@ _active="$(printf '%s' "$raw" \
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
 
+# A session nobody in it typed into has no work of anyone's to judge. The
+# platform's summary request is one (#264): held here in a tree with unverified
+# work, the summarising model was told to run the gate, and whatever it did on
+# that advice went into the ledger as a session. Consulted first, so nothing
+# below it runs for that session: no hold, no nudge, no record. The prompt hook
+# leaves the marker, and felix_session_machine says when it is honoured.
+felix_session_machine "$FELIX_HOME_DIR" "${SID:-}" && exit 0
+
 # The one place this file does not fail open, and it is deliberate.
 #
 # Everything else here allows and records, because a completion gate that can
