@@ -556,6 +556,17 @@ _felix_merge_refs() {
 #   base...HEAD   committed on this branch
 #   --cached      staged, about to be committed
 #   (bare)        edited, not yet staged
+#
+# With rename detection off, so a renamed file lists both its names. git
+# detects renames by default, and a rename then shows only where the file went:
+# every rule keyed on a path or a basename is asked about the new name and
+# never about the old. `git mv` of a project's deny table to deny-archived.tsv
+# switched every one of its rules off, since the hook reads deny.tsv by name,
+# and the verifier that guards the table saw a file it had no rule for. Same
+# for the risk table whose count rows guard the gate and the suite. Found by a
+# review of the table validator's contract, 2026-09-22, in a scratch clone.
+# The flag follows --name-only because the merge-race test injects a peer
+# checkout on `diff --name-only`, inside this very diff.
 felix_changed_paths() {
   local root="$1" base="${2:-}" refs
   {
@@ -564,13 +575,13 @@ felix_changed_paths() {
       # was typed. See _felix_merge_refs. Unquoted on purpose: it prints two refs.
       if refs="$(_felix_merge_refs "$root" "$base")"; then
         # shellcheck disable=SC2086
-        git -C "$root" diff --name-only $refs 2>/dev/null
+        git -C "$root" diff --name-only --no-renames $refs 2>/dev/null
       else
-        git -C "$root" diff --name-only "$base...HEAD" 2>/dev/null
+        git -C "$root" diff --name-only --no-renames "$base...HEAD" 2>/dev/null
       fi
     fi
-    git -C "$root" diff --name-only --cached 2>/dev/null
-    git -C "$root" diff --name-only 2>/dev/null
+    git -C "$root" diff --name-only --no-renames --cached 2>/dev/null
+    git -C "$root" diff --name-only --no-renames 2>/dev/null
   } | grep -v '^$' | LC_ALL=C sort -u
 }
 

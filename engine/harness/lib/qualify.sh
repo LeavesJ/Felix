@@ -27,18 +27,46 @@
 # 5 and 6 are the ones that separate the two, and the amendments record that 5
 # alone caught four cheats out of four.
 #
-# REPORT ONLY. Nothing here refuses anything, and that is deliberate rather than
-# unfinished: arming this — refusing to let an unqualified checker enforce —
-# turns every gate red on the day it lands, and how much Felix may block is a
-# founder's decision, not a session's. What this does is make the gap visible,
-# which is the step that does not need the decision.
+# What refuses and what only reports. This file refuses nothing itself;
+# `felix qualify --gate` refuses on a declared control that did not hold, one
+# that could not run, a checker never shown failing here, and a row that cannot
+# be read as a control. A control nobody declared refuses nothing. That is the
+# ratchet cmd_qualify argues for, and it is what made arming safe: refusing to
+# let an unqualified checker enforce turns every gate red on the day it lands,
+# and how much Felix may block is a founder's decision, not a session's.
+#
+# So a checker short of the six controls is reported and not refused. That was
+# decided, not left, on 2026-09-22 after a contract review asked. Refusing it
+# is the design the ratchet replaced, and it would turn this engine's own gate
+# red today: independence declares four of six, and its table says why the two
+# decoupled controls cannot be met by a checker that reads text. Declaring them
+# to satisfy the refusal would bind two held controls and go red the other way.
+# The gate prints the shortfall under `qualified ok` instead, so an ok is not
+# read as six of six.
+#
+# Leaving it is safe because of the merge boundary, not this file.
+# qualification.tsv is an enforcing table (escape.sh): removing or changing a
+# control a checker already had fires `verifier` at felix merge. A missing
+# control can therefore only be one never declared, which is a coverage gap
+# the gate reports. It cannot be one quietly withdrawn, which would be a trust
+# gap.
 #
 # The mutations must be authored by something that has not seen the checker
 # (amendments 2.2). That is load-bearing and unverifiable from here: whoever
 # writes both writes mutations its own checker survives. The table records who
 # authored each row so the claim is at least legible; it cannot be enforced.
 
-FELIX_QUALIFY_CONTROLS='violation restoration irrelevant alternate decoupled_violation decoupled_satisfaction'
+# control:expect. The verdict belongs to the control, not to the row. `expect`
+# used to be free text beside `control`, so a violation row expecting `pass`
+# over a mutation that changed nothing was met: a control that tested nothing,
+# counted as one that held. A contract review found it on 2026-09-22. A row that
+# pairs a control with any other verdict is now malformed, and so is a row
+# naming no control here. That row has no verdict to be held to, and without
+# this one misspelt letter would put a row beyond the pairing.
+FELIX_QUALIFY_EXPECT='violation:fail restoration:pass irrelevant:pass alternate:fail decoupled_violation:fail decoupled_satisfaction:pass'
+# The names alone, derived so the two lists cannot disagree.
+FELIX_QUALIFY_CONTROLS="${FELIX_QUALIFY_EXPECT//:fail/}"
+FELIX_QUALIFY_CONTROLS="${FELIX_QUALIFY_CONTROLS//:pass/}"
 
 # checker <TAB> command <TAB> control <TAB> expect <TAB> mutation [<TAB> premise]
 #
@@ -68,20 +96,35 @@ FELIX_QUALIFY_CONTROLS='violation restoration irrelevant alternate decoupled_vio
 # out is a control that stages its own premise, which applies everywhere.
 _felix_qualify_table() { printf '%s/qualification.tsv' "$1"; }
 
-felix_qualify_rows() {
+# One reading of a row, shared by the two readers below, so what runs and what
+# is reported malformed cannot drift apart. why() is empty for a control and
+# otherwise says why the row is not one. Each non-comment row with a checker
+# name is exactly one of the two.
+_felix_qualify_read() {   # proj, awk action
   local f; f="$(_felix_qualify_table "$1")"
   [ -f "$f" ] || return 0
-  LC_ALL=C awk -F'\t' 'NF >= 5 && $1 !~ /^[[:space:]]*#/ && $1 != "" && $5 != ""' "$f"
+  LC_ALL=C awk -F'\t' -v pairs="$FELIX_QUALIFY_EXPECT" '
+    BEGIN { n = split(pairs, p, " ")
+            for (i = 1; i <= n; i++) { split(p[i], kv, ":"); want[kv[1]] = kv[2] } }
+    function why() {
+      if (NF < 5)          return NF " field(s); a control needs five"
+      if ($5 == "")        return "no mutation"
+      if (!($3 in want))   return "[" $3 "] is not one of the six controls"
+      if ($4 != want[$3])  return $3 " must expect " want[$3] ", not [" $4 "]"
+      return ""
+    }
+    $1 ~ /^[[:space:]]*#/ || $1 == "" { next }
+    '"$2" "$f"
 }
 
-# A row that names a checker and not enough to run anything. Reported, never
-# skipped: a malformed row is a control nobody is applying, and silence about it
-# reads as a control that passed.
-felix_qualify_malformed() {
-  local f; f="$(_felix_qualify_table "$1")"
-  [ -f "$f" ] || return 0
-  LC_ALL=C awk -F'\t' '$1 !~ /^[[:space:]]*#/ && $1 != "" && (NF < 5 || $5 == "") { print $1 "\t" NF }' "$f"
-}
+felix_qualify_rows() { _felix_qualify_read "$1" 'why() == "" { print }'; }
+
+# A row that is not a control: too short to run, no mutation, a control that is
+# not one of the six, or a verdict that is not the control's. Reported and never
+# run. A malformed row is a control nobody is applying, and silence about it
+# reads as a control that passed; running it is how a violation expecting
+# `pass` came to be met. `felix qualify --gate` refuses on any.
+felix_qualify_malformed() { _felix_qualify_read "$1" '(r = why()) != "" { print $1 "\t" r }'; }
 
 felix_qualify_checkers() { felix_qualify_rows "$1" | cut -f1 | LC_ALL=C sort -u; }
 

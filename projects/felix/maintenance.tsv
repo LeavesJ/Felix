@@ -41,3 +41,11 @@ snapshot	14	always	bring the public snapshot up to main, and audit it with a wid
 # handoff section is the most common merge, and without this the row is
 # permanently due, which is the shape the paragraph above already refuses.
 graphify	0	always	refresh the knowledge graph after a merge	G="$(dirname "$(git rev-parse --git-common-dir)")"; test -n "$(find "$G/graphify-out/graph.json" -newermt "$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$(git -C "$G" rev-parse HEAD)" -- . ":(exclude)projects/*/maintenance.log" ":(exclude)*.md")" 2>/dev/null)"
+# Handoff sections wait in docs/handoff/pending/ until something folds them
+# into HANDOFF.md (lib/handoff.sh). Waiting costs nothing, since the session
+# start names each one, so this asks only once three have landed: past that
+# the list a session is told to read grows, and three is about half a day of
+# sessions. Read on the remote-tracking main, where they land, and not on the
+# tree standing here, which a worktree cut this morning does not show. One
+# session folds; a second fold of the same main writes the same bytes.
+handoff	0	always	fold the handoff sections that landed into HANDOFF.md: felix handoff --rotate on a branch cut from main	test "$(git ls-tree --name-only refs/remotes/origin/main docs/handoff/pending/ 2>/dev/null | grep -c '\.md$')" -lt 3

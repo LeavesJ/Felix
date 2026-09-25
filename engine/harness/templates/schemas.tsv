@@ -1,0 +1,145 @@
+# Every table the engine reads, and what a row of it is.
+#
+# Engine-only. felix new copies templates by name and never this one: a
+# project cannot declare its own schema, for the reason a project cannot
+# declare an escape channel away. It is in FELIX_ESCAPE_TABLES by its full
+# path, so a branch that removes a row here, or loosens one in place, stops at
+# the merge boundary, and a file that happens to share the name in some
+# product repository does not.
+#
+# One row per table, keyed by basename, checked by lib/table.sh:
+#
+#   table    the file's basename. Most end in .tsv; a table under another
+#            name is declared the same way, and bin/schema-check then finds
+#            it by that name
+#   lives    tree: files in the checkout, which bin/schema-check enumerates on
+#            every gate; memory: stores under the memory root, which no gate
+#            can see, whose writers the suite checks against the row, and a
+#            copy of which in the tree is refused
+#   columns  the column names in order. A trailing ? marks a column a row may
+#            leave off; only trailing columns may be optional, and a table has
+#            either one column or at least two that every row carries
+#   empty    refused: a table in the tree with no rows fails the gate, because
+#            emptiness is never legitimate there; allowed: it is a real state
+#
+# The comment above each row says what an empty table and an absent one mean
+# to the engine, by the function or command that decides it. It is a comment
+# and not a column so that keeping it true costs nobody an escalation: the
+# merge boundary compares rows, and every word of prose here would otherwise
+# be a verdict somebody has to approve.
+#
+# A table the check finds with no row here fails it. A row whose table is not
+# in the tree is reported and does not fail: some tables are absent until a
+# project writes one, and a published copy of the engine leaves some behind.
+#
+# table	lives	columns	empty
+#
+# Present and empty, every prompt is logged to routes.log as a miss and feeds
+# felix route --promote (hooks/user-prompt). Absent, routing is off, nothing is
+# logged, and felix route and felix ready die.
+routes.tsv	tree	name keywords profile play	allowed
+# Present and empty, felix profile lists nothing and every capability reads as
+# in no profile and never reached (felix_toolbox_route_for,
+# felix_commission_gaps). Absent, felix profile dies and the rest reads as empty.
+profiles.tsv	tree	name capabilities	allowed
+# felix new seeds it with comments only when the catalogue offers nothing.
+# Empty or absent, every play entry renders as undeclared (_felix_route_kind,
+# felix_ready_report). Absent, felix stack plan and apply die.
+stack.tsv	tree	kind name source risk capability grounding?	allowed
+# Present and empty, every changed path is yellow, green is unreachable and no
+# project channel escapes (felix_classify_diff, felix_escapes). Absent is not no
+# risk: the receipt's tier is unknown and felix classify dies.
+risk.tsv	tree	tier kind pattern reason channel? confine?	allowed
+# Nothing is refused, present and empty or absent alike (hooks/pre-tool,
+# felix_deny_match). Most projects have none, and felix new seeds none.
+deny.tsv	tree	tool pattern reason	allowed
+# Present and empty, the gate's ecosystem check fails as leaks, with nothing
+# allowed and nothing muted. Absent, it fails as blind.
+ecosystem.tsv	tree	kind file token reason	refused
+# Nothing is demanded: felix evidence says no rule is declared and no merge
+# blocker results (felix_evidence_check). Absent differs only in felix
+# evidence dying.
+evidence.tsv	tree	name when requires reason	allowed
+# Present and empty, felix probes exits 1, the gate fails probes, and the
+# merge boundary refuses. Absent, the gate skips and announces it, and the
+# merge boundary refuses.
+probes.tsv	tree	predicate grounds when probe witness?	refused
+# Present and empty, felix qualify returns 1 and the gate fails qualified.
+# Absent, the gate skips and announces it.
+qualification.tsv	tree	checker command control expect mutation premise?	refused
+# Present and admitting nothing, an empty ledger is not a clean bill: felix
+# obligations returns 1, the gate fails and the merge boundary refuses. Absent,
+# the gate skips and announces it, and the merge boundary refuses.
+obligations.tsv	tree	obligation class pathway applies evidence grounds? reason?	refused
+# The seeded and normal state: no clearance. Absent reads the same, and the
+# copy that clears anything is read from refs/remotes/origin/main
+# (felix_exceptions_rows).
+exceptions.tsv	tree	obligation row_hash expires granted_by reason	allowed
+# Present and declaring no need, the gate fails, felix commission returns 1 and
+# the merge boundary refuses. Absent, the gate skips and announces it, and the
+# merge boundary refuses as never commissioned.
+commissioning.tsv	tree	need grounds instrument when answer check step	refused
+# Engine-only (templates/commission). Empty or absent, felix commission omits
+# the steps no row answers (felix_commission_steps_unanswered), which reads
+# exactly like every step answered: the silence the table exists to prevent.
+steps.tsv	tree	step description answered-by	refused
+# Present and empty, felix maintenance says nothing is due, which reads like a
+# kept-up project, and the session badge and the pulse say nothing
+# (felix_maint_status). Absent, felix maintenance dies.
+maintenance.tsv	tree	name cadence capability description check?	allowed
+# When each upkeep last ran, appended by felix maintenance --ran and tracked so
+# the record travels with the project (felix_maint_record). Empty or absent,
+# nothing has run yet, and every routine is due.
+maintenance.log	tree	name epoch date	allowed
+# felix new writes it with comments only when no template row applies: nothing
+# outstanding, and the human_steps need is met. Absent is different: felix
+# setup dies and human_steps is not met.
+setup.tsv	tree	id title capability check	allowed
+# What detection found in the checkout, one capability a line, written by
+# felix new and felix adopt (felix_detect). Empty or absent, the project
+# declares no capability, and every capability-keyed row stays dormant.
+capabilities	tree	capability	allowed
+# What Felix may do here unattended, one permission a line. Absent or empty,
+# nothing is permitted, the state every project starts in (felix_autonomy_allows).
+autonomy	tree	permission	allowed
+# A person's stances on what each moment must answer. Absent or empty, every
+# item is a gap (felix_procedures_gaps). No project has written one yet.
+procedures.tsv	tree	item moment answered-by note?	allowed
+# Engine-only. Empty or absent, every procedure stance is unreachable and
+# reported as a gap (felix_procedures_moments).
+moments.tsv	tree	moment description	refused
+# Engine-only, the stance behind the lifecycle_wired obligation. With comments
+# only, every bound event is undeclared and lifecycle-check exits 1; zero bytes
+# or absent, it exits 2 and the obligation reads unknown (felix_coverage_check).
+lifecycle.tsv	tree	event stance reason holds?	refused
+# Engine-only. Empty or absent, felix new seeds a stack.tsv with comments only
+# and felix recommend says every row is already declared, which cannot be told
+# from a project that needs nothing.
+catalog.tsv	tree	kind name source risk capability keywords?	refused
+# Engine-only. Empty, only name fallback rules exist and felix doctor lists
+# every capability as unruled. Absent is quieter: felix doctor says nothing, as
+# if every capability had a rule (felix_capabilities_unruled).
+discover-rules.tsv	tree	capability keywords	refused
+# The public snapshot's acknowledgements. Empty or absent, nothing is waived and
+# every audit hit stops the snapshot; only origin/main's copy waives anything.
+# The snapshot itself does not carry it.
+.snapshot-ack.tsv	tree	subject value why	allowed
+# The red run always writes a base row and a run row (tests/red), and a record
+# with neither fails the suite. Absent, the suite's record checks skip.
+red.tsv	tree	kind_or_name ref_or_failed_or_times sha_or_passed? version_or_skipped?	refused
+# Empty, the suite compares its run against nothing and says every assertion
+# was reached, a pass that checked nothing. Absent, it says no manifest is
+# recorded yet.
+assertions.tsv	tree	count name	refused
+# Empty, no table has a row and bin/schema-check fails every table as
+# undeclared. Absent, it cannot examine, which is never read as clean.
+schemas.tsv	tree	table lives columns empty	refused
+# No production reader. Absent, nothing governed has started, handed off or
+# been summarised against this memory root since the recorder deployed, or
+# every append failed: the writer never fails its caller, so the two cannot be
+# told apart (lib/lifecycle.sh).
+lifecycle.log	memory	time kind session bound installed head handoff transcript note	allowed
+# One row per declined route mandate, from felix route --ack (felix_route_ack).
+# Absent, no decline was ever recorded. A row names no session and no route, so
+# declines cannot yet be tallied per route.
+decisions.log	memory	time root verdict reason	allowed

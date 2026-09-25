@@ -206,8 +206,10 @@ show_hits() {  # DIR HITS: each line, and the row that would acknowledge it
 
 # ------------------------------------------------------------- build -------
 # The published set, out of the commit; the consent files left out by pathspec.
+# assets/ holds the README's images (2026-09-23): the README is published, so
+# what it shows must be too, or the public page renders broken images.
 PUB=""
-for p in engine "projects/$SELF" .gitignore .claude-plugin/marketplace.json; do
+for p in engine "projects/$SELF" .gitignore .claude-plugin/marketplace.json assets; do
   if git -C "$HOME_TOP" cat-file -e "$SRC:$p" 2>/dev/null; then PUB="$PUB $p"; fi
 done
 [ "$PUBLIC_README" -eq 1 ] || PUB="$PUB README.md"
@@ -330,7 +332,7 @@ own="$(awk -F'\t' '$4 == "repository" { print $1 ":" $2 }' "$OUT/hits.all")"
 [ -z "$own" ] || die "the home's own repository is named in the build; a person rewrites each:" $own
 unacked "$OUT/hits.all" > "$OUT/hits"
 bad_shape=""
-for e in $(ls -A "$B"); do case "$e" in engine|projects|.gitignore|.claude-plugin|README.md) ;; *) bad_shape="$bad_shape $e" ;; esac; done
+for e in $(ls -A "$B"); do case "$e" in engine|projects|.gitignore|.claude-plugin|README.md|assets) ;; *) bad_shape="$bad_shape $e" ;; esac; done
 for e in $(ls -A "$B/projects"); do [ "$e" = "$SELF" ] || bad_shape="$bad_shape projects/$e"; done
 [ ! -d "$B/.claude-plugin" ] || for e in $(ls -A "$B/.claude-plugin"); do [ "$e" = marketplace.json ] || bad_shape="$bad_shape .claude-plugin/$e"; done
 consent="$({ find "$B" \( -name autonomy -o -name autonomy.commission \) -print; find "$B/projects" -name 'autonomy*' -print; } | sed "s|^$B/||" | sort -u)"
@@ -377,11 +379,14 @@ secrets() { (cd "$1" && "$B/engine/harness/bin/secret-scan" --tree 2>&1 >/dev/nu
 [ -n "$EXPECT" ] || secrets "$CLONE" > "$OUT/secret.base"
 
 STAGE="engine projects .gitignore .claude-plugin"; [ "$PUBLIC_README" -eq 1 ] || STAGE="$STAGE README.md"
+# assets/ only where one side has it: a pathspec neither side has stops git add,
+# and the snapshots made before it existed must still reproduce.
+if [ -e "$B/assets" ] || git -C "$CLONE" cat-file -e "$BASE:assets" 2>/dev/null; then STAGE="$STAGE assets"; fi
 # shellcheck disable=SC2086
 (cd "$B" && git --git-dir="$CLONE/.git" --work-tree="$B" add -A -f -- $STAGE)
 # shellcheck disable=SC2086
 git -C "$CLONE" ls-files -- $STAGE | sort | cmp -s - "$OUT/files.build" || die "the staged paths are not the built tree"
-outside="$(git -C "$CLONE" diff --cached --name-only "$BASE" | grep -vE '^(engine/|projects/|\.gitignore$|\.claude-plugin/|README\.md$)' || true)"
+outside="$(git -C "$CLONE" diff --cached --name-only "$BASE" | grep -vE '^(engine/|projects/|\.gitignore$|\.claude-plugin/|README\.md$|assets/)' || true)"
 [ -z "$outside" ] || die "staging touched paths outside the published set:" $outside
 if [ "$PUBLIC_README" -eq 1 ] && git -C "$CLONE" diff --cached --name-only "$BASE" | grep -qx README.md; then die "README.md changed with --public-readme"; fi
 
@@ -478,7 +483,7 @@ say ""
 say "Withheld, and why:"
 git -C "$HOME_TOP" ls-tree --name-only "$SRC" | while IFS= read -r e; do
   case "$e" in
-    engine|.gitignore) ;;
+    engine|.gitignore|assets) ;;
     README.md) if [ "$PUBLIC_README" -eq 1 ]; then say "  README.md: the public one is kept (--public-readme)"; fi ;;
     .claude-plugin) n="$(git -C "$HOME_TOP" ls-tree --name-only "$SRC" .claude-plugin/ | grep -vc marketplace.json || true)"
       if [ "$n" != 0 ]; then say "  .claude-plugin/: $n file(s) besides the marketplace manifest, the only one a clone needs"; fi ;;
@@ -493,5 +498,5 @@ done
 say "  projects/$SELF/autonomy, autonomy.commission: a person's consent, and consent is not state"
 say "  memory: never in the tree, so never in the build"
 say "Kept from the public repository, outside the staged paths:"
-git -C "$CLONE" ls-tree -r --name-only HEAD | grep -vE '^(engine/|projects/|\.gitignore$|\.claude-plugin/|README\.md$)' | sed 's/^/  /' || true
+git -C "$CLONE" ls-tree -r --name-only HEAD | grep -vE '^(engine/|projects/|\.gitignore$|\.claude-plugin/|README\.md$|assets/)' | sed 's/^/  /' || true
 say "Scratch, unscrubbed where it says raw: $OUT"

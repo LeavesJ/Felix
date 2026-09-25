@@ -447,6 +447,22 @@ read_lines="Read before planning: ${PROJ}/CLAUDE.md"
 [ -f "${_repo_root}/HANDOFF.md" ] && read_lines="${read_lines}
                    ${_repo_root}/HANDOFF.md"
 
+# And the handoff sections that landed after HANDOFF.md was last folded
+# (lib/handoff.sh). Each is a whole section and newer than the one HANDOFF.md
+# holds, so leaving them out would hand a session the state before the latest
+# sessions ran. Newest five by name, which leads with the time each was
+# written; any more are counted rather than listed, since folding them in is
+# upkeep and a long list here is the reading cost the split was made to cut.
+_pending="$(for _p in "${_repo_root}"/docs/handoff/pending/*.md; do
+              [ -f "$_p" ] && printf '%s\n' "$_p"; done | LC_ALL=C sort -r)"
+if [ -n "$_pending" ]; then
+  _npend="$(printf '%s\n' "$_pending" | grep -c .)"
+  read_lines="${read_lines}
+$(printf '%s\n' "$_pending" | head -5 | sed 's/^/                   /')"
+  [ "$_npend" -gt 5 ] && read_lines="${read_lines}
+                   and $((_npend - 5)) older in ${_repo_root}/docs/handoff/pending/"
+fi
+
 # The session handoff is named apart from those, because it is not direction.
 # A prior session wrote it, sometimes from another worktree, and on a detached
 # HEAD it gives its branch as HEAD. It used to sit in the list above, under a
@@ -468,21 +484,29 @@ one by command before acting on it."
 # arrives without anybody typing it, and a one-line reminder that something is
 # "on" would send the reader looking for what it means.
 #
-# Silence when no night is running, which is the ordinary case.
+# Silence when no night is running, which is the ordinary case, and silence
+# for every session but the one the night belongs to. A night is a session's,
+# not the project's (lib/overnight.sh), and telling a session somebody is
+# typing into that the founder is asleep is an instruction nobody gave it. The
+# session that starts also closes other sessions' nights whose time ran out,
+# since a session that closed early leaves its night where nothing else reads.
 overnight_line=""
-if felix_overnight_active "$PROJ"; then
-  _on_left="$(felix_overnight_field "$PROJ" 3)"
-  _on_wait="$(felix_overnight_deferred_count "$PROJ")"
-  overnight_line="
+if [ -n "${_felix_session:-}" ]; then
+  felix_overnight_sweep "$PROJ" "$_felix_session" >/dev/null 2>&1 || true
+  if felix_overnight_active "$PROJ" "$_felix_session"; then
+    _on_left="$(felix_overnight_field "$PROJ" 3 "$_felix_session")"
+    _on_wait="$(felix_overnight_deferred_count "$PROJ")"
+    overnight_line="
 $(felix_overnight_direction)
-Granted: ${_on_left} continuation(s) left, ${_on_wait} decision(s) already
-deferred for the morning. felix overnight --report reads them back.
+Granted to this session: ${_on_left} continuation(s) left, ${_on_wait} decision(s)
+already deferred for the morning. felix overnight --report reads them back.
 "
-elif [ -f "$(felix_overnight_dir "$PROJ")/active" ]; then
-  overnight_line="
-Overnight is over: $(felix_overnight_expired "$PROJ"). This is an ordinary
-session again. felix overnight --report, then --end to close it out.
+  elif felix_overnight_owns "$PROJ" "$_felix_session"; then
+    overnight_line="
+Overnight is over: $(felix_overnight_expired "$PROJ" "$_felix_session"). This is an
+ordinary session again. felix overnight --report, then --end to close it out.
 "
+  fi
 fi
 
 context="Felix governs this session.

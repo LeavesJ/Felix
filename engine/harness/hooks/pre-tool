@@ -69,7 +69,16 @@ done < "$PROJ/deny.tsv"
 cmd="$(felix_deny_subject "$raw" "$tool")"
 [ -n "$cmd" ] || exit 0
 
-reason="$(felix_deny_match "$PROJ" "$tool" "$cmd")" || exit 0
+# Where the command starts, for a row scoped to the checkout: the session's
+# directory as the payload reports it, which can be a fixture the session
+# moved into while this process still stands in the checkout it resolved.
+start=""
+case "$raw" in
+  *'"cwd"'*) start="${raw#*\"cwd\"}"; start="${start#*\"}"; start="${start%%\"*}" ;;
+esac
+[ -n "$start" ] && [ -d "$start" ] || start="$PWD"
+
+reason="$(felix_deny_match "$PROJ" "$tool" "$cmd" "$start")" || exit 0
 [ -n "$reason" ] || exit 0
 
 # Said out loud as well as refused. A refusal with no record is indistinguishable

@@ -14,7 +14,11 @@
 #
 # Honest about its reach. The platform documents that a Stop hook must return
 # success while stop_hook_active is set, and caps consecutive blocks itself, so
-# this interrupts once per chain. It is a speed bump with a permanent record,
+# this interrupts once per chain it starts; a chain another hook started is
+# judged like any other stop (felix_hold_take in lib/verify.sh). The one
+# exception is a session's own night, which carries through the chain on bounds
+# of its own (lib/overnight.sh).
+# Everything else is a speed bump with a permanent record,
 # not an inescapable barrier. The inescapable barrier is CI at the merge
 # boundary, which Felix already sets up and which is not affected by this.
 #
@@ -34,6 +38,7 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/detect.sh"
 . "${SCRIPT_DIR}/../lib/maintenance.sh"
 . "${SCRIPT_DIR}/../lib/overnight.sh"
+. "${SCRIPT_DIR}/../lib/overnight-stop.sh"
 
 escape_for_json() {
   local s="$1"
@@ -62,9 +67,77 @@ SID="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\(
 _active="$(printf '%s' "$raw" \
   | sed -n 's/.*[{,][[:space:]]*"stop_hook_active"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' \
   | head -1)"
-[ "${_active:-}" = "true" ] && exit 0
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
+
+# A chain the platform started from Felix's own hold ends here, as the
+# platform asks, except for a session that holds a night of its own. That
+# night is the grant to keep going, and leaving at the flag meant it held a
+# session once per prompt, so a session nobody was typing into (the one kind
+# a night exists for) got a single continuation. It is bounded by its own
+# deadline, budget and quiet count (lib/overnight-stop.sh), and inside the chain
+# nothing else here may block: every other refusal below still lets a chain
+# end, as it always has, except the gate's, which is charged to the night.
+#
+# A chain Felix did not start does not end here. The flag says only that some
+# hook started this turn, and an asyncRewake hook's rewake is a turn started
+# with it set, so leaving at the flag let the turn that answered a background
+# review end unchecked and unrecorded. The hold's own record tells the two
+# apart, and is taken at every flagged stop, a night's included, so a night
+# leaves none behind. An id or a record that cannot tell ends the stop, as
+# before. FOREIGN marks a stop judged inside another hook's chain.
+CHAIN=0 FOREIGN=0
+if [ "${_active:-}" = "true" ]; then
+  _chain_proj="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || exit 0
+  felix_hold_take "$FELIX_HOME_DIR" "${SID:-}"; _held=$?
+  if felix_overnight_owns "$_chain_proj" "${SID:-}"; then
+    CHAIN=1
+  else
+    [ "$_held" -eq 1 ] || exit 0
+    FOREIGN=1
+  fi
+else
+  felix_hold_clear "$FELIX_HOME_DIR" "${SID:-}"
+fi
+
+# Every hold goes on record as Felix's own before it is made, because the
+# flagged stop after it is let through on that record alone. Inside another
+# hook's chain a hold that cannot be recorded is not made: the stop after it
+# would be judged afresh and held again, and two holds in a row is a loop.
+_felix_stop_may_hold() {
+  felix_hold_mark "$FELIX_HOME_DIR" "${SID:-}" || [ "$FOREIGN" = "0" ]
+}
+
+# The transcript this stop's payload names, or nothing.
+_felix_stop_tp() {
+  printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# This session's night, decided at this stop. It exits when the night decides:
+# with a hold, or with the morning page when the night ended here. It returns
+# when the session holds no night, and the caller carries on as if there were
+# none. The argument is whatever else this stop had to say, carried along
+# because a blocking branch that exits first silences every message after it.
+_felix_stop_night() {   # extra -> exits, or returns
+  local body rc due
+  due="$(felix_maint_status "$PROJ" "$ROOT" 2>/dev/null | awk -F'\t' '$1 == "due" { printf "%s%s", sep, $2; sep = ", " }')"
+  body="$(felix_overnight_continue "$PROJ" "${SID:-}" "$(_felix_stop_tp)" "$due")"; rc=$?
+  case "$rc" in
+    0)
+      body="${body}${1:-}"
+      _felix_stop_may_hold
+      felix_say "$PROJ" "overnight" "$body" "" "${SID:-}"
+      printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$body")"
+      exit 0 ;;
+    2)
+      body="${body}${1:-}"
+      felix_say "$PROJ" "overnight-end" "$body" "" "${SID:-}"
+      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+        "$(escape_for_json "$body")"
+      exit 0 ;;
+  esac
+  return 0
+}
 
 # A session nobody in it typed into has no work of anyone's to judge. The
 # platform's summary request is one (#264): held here in a tree with unverified
@@ -89,6 +162,8 @@ felix_session_machine "$FELIX_HOME_DIR" "${SID:-}" && exit 0
 # checked" must not render identically.
 broken="$(felix_binding_broken "$PWD" "$FELIX_HOME_DIR")"
 if [ -n "$broken" ]; then
+  [ "$CHAIN" = "1" ] && exit 0
+  _felix_stop_may_hold || exit 0
   felix_unresolved_log "$broken" "$PWD"
   printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$broken")"
   exit 0
@@ -114,8 +189,15 @@ git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # So a clean tree is only silence when this session also committed nothing.
 # Unknown counts as unchanged: no session id, no mark, no git — the hook keeps
 # its old behaviour rather than starting to block trees it knows nothing about.
+#
+# A night still has something to say over a tree with nothing to verify: the
+# session stopping before its first commit is the one a night was granted to
+# keep going, and this exit used to let it close for the night.
 if ! felix_tree_dirty "$ROOT" "$FELIX_HOME_DIR"; then
-  felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT" || exit 0
+  if ! felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT"; then
+    felix_overnight_owns "$PROJ" "${SID:-}" && _felix_stop_night ""
+    exit 0
+  fi
 fi
 
 TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR")" || TID=""
@@ -213,62 +295,53 @@ if [ "$current" = "current" ]; then
   # A night that was granted is a reason not to close on a green gate.
   #
   # This is the only branch in this file that holds a session whose work IS
-  # verified, and it is deliberately the narrowest: it fires only while a
-  # person's grant is live and inside its own bounds, it spends one of the
-  # continuations that grant allowed, and it ends the night itself the moment a
-  # bound is reached. It cannot loop — the platform sets stop_hook_active on a
-  # block and caps consecutive blocks, which is the same ceiling the gate's own
-  # refusal has always had.
+  # verified, and it is deliberately the narrowest: it fires only for the
+  # session the night belongs to, only while that night is inside its own
+  # bounds, it spends one of the continuations the grant allowed, and it ends
+  # the night itself the moment a bound is reached. What it says is what the
+  # machine can actually see: maintenance rows that are due, decisions already
+  # deferred, and whether the last continuation called any tool. It does not
+  # invent work. The decision is lib/overnight-stop.sh's felix_overnight_continue.
   #
-  # What it says is what the machine can actually see: maintenance rows that
-  # are due, and decisions already deferred. It does not invent work. When two
-  # continuations in a row find neither, the night ends rather than nag, and the
-  # report is the last thing the session is handed.
-  # The condition is "a night exists", not "a night is live", and the
-  # difference is a branch that could never run. `felix_overnight_active` is
-  # false precisely when a bound has been reached, so an expired night entered
-  # through `active` could only ever be one that expired DURING this stop — a
-  # deadline that passed while the session sat idle would skip the branch
-  # entirely, leave the state file behind, and close without ever handing over
-  # the report. A fixture whose deadline was in the past is what found it.
-  if [ -f "$(felix_overnight_dir "$PROJ")/active" ]; then
-    if _on_over="$(felix_overnight_expired "$PROJ")"; then
-      felix_overnight_end "$PROJ" "$_on_over"
-      _on_body="Overnight is over: ${_on_over}.
-
-$(felix_overnight_report "$PROJ")"
-      felix_say "$PROJ" "overnight-end" "$_on_body" "" "${SID:-}"
-      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
-        "$(escape_for_json "$_on_body")"
-      exit 0
-    fi
-
-    _on_due="$(felix_maint_status "$PROJ" "$ROOT" 2>/dev/null | awk -F'\t' '$1 == "due" { printf "%s%s", sep, $2; sep = ", " }')"
-    _on_waiting="$(felix_overnight_deferred_count "$PROJ")"
-    _on_quiet=0; [ -z "$_on_due" ] && _on_quiet=1
-    _on_left="$(felix_overnight_spend "$PROJ" "$_on_quiet")"
-    # One line per continuation, so the morning report can show the shape of
-    # the night rather than only its ending. Counting events was all the report
-    # had, and a count cannot say whether the night spent itself on one stuck
-    # thing or moved through several.
-    felix_overnight_log_event "$PROJ" continue \
-      "left ${_on_left}; due ${_on_due:-none}; deferred ${_on_waiting}"
-
+  # The condition is "this session holds a night", not "its night is live", and
+  # the difference is a branch that could never run. A live night is false
+  # precisely when a bound has been reached, so an expired night entered that
+  # way could only ever be one that expired DURING this stop — a deadline that
+  # passed while the session sat idle would skip the branch entirely, leave the
+  # state file behind, and close without ever handing over the report. A
+  # fixture whose deadline was in the past is what found it.
+  if felix_overnight_owns "$PROJ" "${SID:-}"; then
     # The branch holds the session, so it must also carry what the branches
     # below it would have said. Written the other way round first, and it cost
     # the founder's own instruction: a night swallowed the verification nudge
     # and the skipped-play question entirely, because a blocking branch that
     # exits first is a branch that silences every message after it. Each is
     # still once per session, using the same markers those branches use.
+    #
+    # Once per session means once per night as well. A night holds a session
+    # through the chain up to its whole budget, and a rider with no marker of
+    # its own repeated at every hold, the plugin report rescanning the whole
+    # transcript each time. So each says itself once and writes that it did.
     _on_extra=""
-    _on_blocks="$(_felix_stop_blocks)"
-    [ -n "$_on_blocks" ] && _on_extra="${_on_extra}
+    _on_said="$FELIX_HOME_DIR/state/overnight-said/${SID:-none}"
+    if ! grep -qx blocks "$_on_said" 2>/dev/null; then
+      _on_blocks="$(_felix_stop_blocks)"
+      if [ -n "$_on_blocks" ]; then
+        _on_extra="${_on_extra}
 
 ${_on_blocks}"
-    _on_unrec="$(felix_guard_unrecorded "$PROJ")"
-    [ -n "$_on_unrec" ] && _on_extra="${_on_extra}
+        mkdir -p "$(dirname "$_on_said")" 2>/dev/null && printf 'blocks\n' >> "$_on_said" 2>/dev/null
+      fi
+    fi
+    if ! grep -qx unrecorded "$_on_said" 2>/dev/null; then
+      _on_unrec="$(felix_guard_unrecorded "$PROJ")"
+      if [ -n "$_on_unrec" ]; then
+        _on_extra="${_on_extra}
 
 ${_on_unrec}"
+        mkdir -p "$(dirname "$_on_said")" 2>/dev/null && printf 'unrecorded\n' >> "$_on_said" 2>/dev/null
+      fi
+    fi
     if [ -n "${SID:-}" ] \
        && grep -qE "	superpowers(@[^	]*)?	" "$PROJ/stack.tsv" 2>/dev/null \
        && [ ! -f "$FELIX_HOME_DIR/state/verified/$SID" ]; then
@@ -280,48 +353,7 @@ The gate is green, which means the suite passed. It does not mean the things
 you said are true. Use superpowers:verification-before-completion on this
 piece before you take the next one: check the claims, not the tests."
     fi
-
-    # Spending can be what exhausts the grant, so the same question is asked
-    # again on the way out.
-    if _on_over="$(felix_overnight_expired "$PROJ")"; then
-      felix_overnight_end "$PROJ" "$_on_over"
-      _on_body="Overnight is over: ${_on_over}.
-
-$(felix_overnight_report "$PROJ")"
-      felix_say "$PROJ" "overnight-end" "$_on_body" "" "${SID:-}"
-      printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
-        "$(escape_for_json "$_on_body")"
-      exit 0
-    fi
-
-    _on_body="Overnight is on, the gate is green, and ${_on_left} continuation(s) remain.
-Do not stop to report — take the next piece of work.
-
-What this hook can see from here:"
-    [ -n "$_on_due" ] && _on_body="${_on_body}
-  * maintenance due: ${_on_due}"
-    [ "${_on_waiting:-0}" -gt 0 ] && _on_body="${_on_body}
-  * ${_on_waiting} decision(s) already deferred, which stay deferred until morning"
-    [ -z "$_on_due" ] && _on_body="${_on_body}
-  * nothing mechanical is due. Two continuations in a row with nothing due end
-    the night by themselves."
-    # Pointed at rather than run. felix next ranks the backlog by reading gate
-    # history, the ledger and the tables, which is a second or two of work —
-    # affordable when a person asks for it and not in a hook that fires at
-    # every stop of every session.
-    _on_body="${_on_body}
-  * felix next ranks what is left, and HANDOFF's own Next list is the queue
-    this hook cannot see."
-    _on_body="${_on_body}
-
-Anything that needs the founder gets written down rather than waited on:
-
-  felix overnight --defer approval --what \"...\" --unblock \"the command\"
-
-felix overnight --end stops the night now.${_on_extra}"
-    felix_say "$PROJ" "overnight" "$_on_body" "" "${SID:-}"
-    printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$_on_body")"
-    exit 0
+    _felix_stop_night "$_on_extra"
   fi
   # The gate is satisfied, so nothing is held. But this is the one moment where
   # "you changed the results page and never opened a browser" is a fact about
@@ -456,6 +488,26 @@ else
   detail="stale receipt"
 fi
 
+# Inside a night's chain this refusal is only bounded by the night, so it is
+# counted against it (felix_overnight_charge). A night that runs out here hands
+# over the morning page and lets the session close on the red tree, which is
+# what a chain always did; out of a chain nothing is charged.
+if [ "$CHAIN" = "1" ]; then
+  _on_body="$(felix_overnight_charge "$PROJ" "${SID:-}" "$(_felix_stop_tp)" "$detail")"; _on_rc=$?
+  if [ "$_on_rc" -eq 2 ]; then
+    felix_verify_log "$PROJ" "allowed" "$TID" "night over; $detail"
+    felix_say "$PROJ" "overnight-end" "$_on_body" "" "${SID:-}"
+    printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "Stop",\n    "additionalContext": "%s"\n  }\n}\n' \
+      "$(escape_for_json "$_on_body")"
+    exit 0
+  fi
+  [ "$_on_rc" -eq 0 ] || exit 0
+fi
+
+if ! _felix_stop_may_hold; then
+  felix_verify_log "$PROJ" "allowed" "$TID" "$detail; inside another hook's chain, and the hold could not be recorded"
+  exit 0
+fi
 felix_verify_log "$PROJ" "blocked" "$TID" "$detail"
 
 reason="$why

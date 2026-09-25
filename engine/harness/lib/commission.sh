@@ -276,9 +276,14 @@ felix_commission_state() {
       # stale, partial or answered — and is loaded by the command and the
       # hook. Sourced alone, this file still knows the row is a provider's.
       if command -v felix_commission_provider_state >/dev/null 2>&1; then
-        local pst pdetail
+        local pst pdetail pline
+        # Captured before the tab-split read, as in felix_commission_run: inside
+        # its heredoc the topology was hashed under the tab IFS, and a checkout
+        # path with a space then read an answer stale that session-start and
+        # the request call current.
+        pline="$(felix_commission_provider_state "$proj" "$root" "$need")"
         IFS=$'\t' read -r pst pdetail <<PROV
-$(felix_commission_provider_state "$proj" "$root" "$need")
+$pline
 PROV
         [ "$pst" = "answered" ] && prov="$(felix_commission_answer_provenance "$proj" "$need")"
         printf '%s\t%s\t%s\n' "$pst" "$pdetail" "$prov"
