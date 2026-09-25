@@ -733,8 +733,14 @@ _felix_route_ack_path() {
 # Record a decline: one line of state for the Stop hook to consume, one durable
 # row in decisions.log for whoever revises the table. The state line is
 # best-effort; the record is the point.
+#
+# The reason is the one field a session writes freely, and schemas.tsv holds a
+# decisions.log row to four cells. A tab in it made a fifth cell that every
+# reader after it misplaced, and a newline made a second row that was only the
+# end of a sentence. Each folds to a space, as lifecycle.sh folds its fields.
 felix_route_ack() {
   local proj="$1" root="$2" home="$3" reason="$4" now dir
+  reason="${reason//$'\t'/ }"; reason="${reason//$'\r'/ }"; reason="${reason//$'\n'/ }"
   [ -n "$reason" ] || return 1
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   dir="$(felix_mem_dir "$proj")"

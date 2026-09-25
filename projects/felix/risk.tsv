@@ -37,6 +37,8 @@ yellow	path	^engine/harness/felix$	the CLI surface; wrong here is loud rather th
 yellow	path	^engine/harness/templates/	seeds every new project, but only at creation
 yellow	path	^projects/[^/]+/gate\.sh$	a gate that cannot fail is not a gate	verifier	count:^[[:space:]]*(pass|fail|check) 
 yellow	path	^engine/harness/tests/run$	weakening the suite is how a gate stops being one	verifier	count:^[[:space:]]*(ok|is|has|bad) 
+yellow	path	^engine/harness/lib/table\.sh$	the table validator; a refusal taken out of it is a shape two readers read apart, accepted again	verifier	count:\\t[a-z][a-z-]*\\t
+yellow	path	^engine/harness/bin/schema-check$	the schema check; a refusal taken out of it is a table the gate stops asking about	verifier	count:(^|[^_a-z])add "
 yellow	path	^projects/[^/]+/(routes|profiles|stack|risk|evidence)\.tsv$	changes what gets suggested, not what runs
 yellow	path	^projects/[^/]+/probes\.tsv$	a probe removed is a fact nobody reads any more, and the surface it grounded goes back to being a filename match	verifier	count:^[a-z][a-z_]*[[:space:]]
 yellow	path	^projects/[^/]+/obligations\.tsv$	an obligation removed is a requirement waived by whoever removed it, and admitted obligations may not decrease within an epoch	verifier	count:^[a-z][a-z_]*[[:space:]]

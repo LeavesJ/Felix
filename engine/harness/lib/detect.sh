@@ -17,11 +17,18 @@
 # Search the dependency manifests of any ecosystem for a token.
 _felix_dep_grep() {
   local root="$1" pat="$2" f
-  for f in pyproject.toml requirements.txt requirements/*.txt setup.cfg Pipfile \
+  # The globs are quoted here so they reach the inner loop whole and expand
+  # against the root there. Bare, they expanded against the current directory
+  # first: run from a folder holding requirements/dev.txt, f became that name,
+  # the root's requirements/prod.txt was never read, and every probe below
+  # missed what it named.
+  for f in pyproject.toml requirements.txt 'requirements/*.txt' setup.cfg Pipfile \
            package.json Cargo.toml go.mod Gemfile composer.json build.gradle \
-           pom.xml *.csproj; do
+           pom.xml '*.csproj'; do
+    # The root is quoted and the pattern is not. An unquoted root splits on
+    # IFS, so a checkout whose path holds a space matched nothing at all.
     # shellcheck disable=SC2086
-    for m in $root/$f; do
+    for m in "$root"/$f; do
       [ -f "$m" ] || continue
       grep -qiE "$pat" "$m" && return 0
     done
@@ -42,8 +49,9 @@ _felix_any() {
   local root="$1"; shift
   local p
   for p in "$@"; do
+    # Quoted root, bare pattern, as in _felix_dep_grep.
     # shellcheck disable=SC2086
-    for m in $root/$p; do
+    for m in "$root"/$p; do
       [ -e "$m" ] && return 0
     done
   done

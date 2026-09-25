@@ -12,14 +12,12 @@
 # here reads it: the evaluations are derived later, from this file and the
 # transcripts.
 #
-# A dated exception to rows-first, taken 2026-09-21. This is a new store, and
-# the queue holds new tables for the table validator, queue item 2. It lands
-# ahead of that because it has to exist before queue item 1 takes effect, and
-# docs/2026-09-21-where-felix-stands.md §6 gives lifecycle.log a schema row
-# "with queue item 2", which presumes the file is already there. The
-# schemas.tsv row it owes lands with item 2. Until then the columns below are
-# the only statement of its shape, and the suite is the only thing holding it
-# to them.
+# A dated exception to rows-first, taken 2026-09-21 and closed 2026-09-22.
+# This was a new store landing ahead of the table validator, queue item 2,
+# because it had to exist before queue item 1 took effect. Its schema row is
+# now in templates/schemas.tsv, and the suite checks the rows this file writes
+# against that row with lib/table.sh. The columns below and that row must say
+# the same nine names in the same order; the suite holds them to it.
 #
 # Append-only TSV at $(felix_mem_dir <project>)/lifecycle.log: the memory
 # root, never the tree, and apart from the ledger. Nine columns on every row,

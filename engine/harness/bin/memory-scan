@@ -48,6 +48,9 @@
 # is read off what the engine actually writes now: the names below, the
 # directories beside them, and a trailing backup suffix, because a rotated
 # ledger.tsv.bak-20260816010302 is the same record with a date on it.
+# It drifted once more: the lifecycle recorder (#281) began writing
+# lifecycle.log to the memory root and this list did not learn the name until
+# the table validator's review read the two side by side, 2026-09-22.
 set -u
 # Captured first, then tested. `cd "$(git rev-parse ...)"` with the
 # substitution empty is `cd ""`, which bash treats as a no-op that succeeds,
@@ -58,7 +61,7 @@ top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
 [ -n "$top" ] || { printf 'memory-scan: cannot search: not a git checkout\n'; exit 1; }
 cd "$top" || { printf 'memory-scan: cannot search: %s\n' "$top"; exit 1; }
 
-MEMORY_NAMES='lessons\.md|ledger\.tsv|DEVLOG\.md|SESSION_HANDOFF\.md|mistakes\.log|verification\.log|facts\.log|says\.log|commissioning\.log|routes\.log|decisions\.log'
+MEMORY_NAMES='lessons\.md|ledger\.tsv|DEVLOG\.md|SESSION_HANDOFF\.md|mistakes\.log|verification\.log|facts\.log|says\.log|commissioning\.log|routes\.log|decisions\.log|lifecycle\.log'
 MEMORY_DIRS='ledger\.d|commission|audits'
 rc=0
 

@@ -63,14 +63,18 @@ _FELIX_AUDIT_READ='
   # line break still ends it. So the two are kept, as \003 and a line break,
   # for unquote() to join outside a comment and outside single quotes, and
   # for the quick test to read both ways. Pairs of backslashes are set aside
-  # first, since each is one escaped backslash.
+  # first, since each is one escaped backslash. Where the pattern asks for
+  # them back, they are put back by a split on a regex: r holds real line
+  # breaks by then, and BWK awk, which macOS ships, splits at every one of
+  # them as well when the separator is a one-character string, which turned
+  # each line break into a backslash.
   function decode(r,    n, P, i) {
     if (!index(r, BS)) return r
     gsub(/\\\\/, "\001", r)
     if (index(r, "\001" BS "n")) { gsub("\001\001", "\002", r); gsub("\001" BS BS "n", "\003\n", r); gsub("\002", "\001\001", r) }
     gsub(/\\"/, Q, r); gsub(/\\n/, "\n", r); gsub(/\\t/, " ", r)
     if (rejoin && index(r, "\001")) {
-      n = split(r, P, "\001"); for (i = 1; i < n; i++) P[i] = P[i] BS
+      n = split(r, P, /\001/); for (i = 1; i < n; i++) P[i] = P[i] BS
       r = join(P, 1, n)
     }
     return r

@@ -59,7 +59,23 @@ FELIX_ESCAPE_SCAN="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../bin" 2>/dev/null 
 # Enforcing tables: the files that decide what stops. Shrinking one is the edit
 # that cannot be checked by the thing it shrank, because a green produced by a
 # narrowed judge certifies itself. Named by shape, not by project.
-FELIX_ESCAPE_TABLES='risk.tsv evidence.tsv deny.tsv project.json probes.tsv ecosystem.tsv commissioning.tsv obligations.tsv'
+#
+# qualification.tsv is the plainest case of that sentence. Its rows are the
+# controls `qualified` holds each checker to, and the gate reads the table the
+# branch edited. A branch that deletes a checker's controls or flips what one
+# expects is therefore judged by the table it weakened, and passes. A contract
+# review found it on 2026-09-22 with nothing on the merge path to stop it.
+# Adding a control is free, as it is everywhere else here. Adding a control
+# takes on a commitment and does not withdraw one.
+#
+# An entry is a basename, matched in every governed repository, or a path,
+# which has a slash and is matched as the end of the changed path. The schema
+# table is a path because it is the engine's own: it judges every other
+# table's shape, so a row removed from it is a table the schema check stops
+# reading, and a row loosened in place removes the old line, so both fire, and
+# adding a row for a new table is free. By basename it would also stop the
+# merge of any product that keeps a data file called schemas.tsv.
+FELIX_ESCAPE_TABLES='risk.tsv evidence.tsv deny.tsv project.json probes.tsv ecosystem.tsv commissioning.tsv obligations.tsv qualification.tsv engine/harness/templates/schemas.tsv'
 
 # The subset whose rows are EXEMPTIONS, and for which "adding is free" is
 # backwards. A row in the ecosystem table says "this word is not a stack name"
@@ -108,6 +124,19 @@ FELIX_ESCAPE_EXCEPTION='(^|/)projects/[^/]+/exceptions\.tsv$'
 # Rows already written are not restored by reverting the code that wrote them.
 FELIX_ESCAPE_DURABLE_PATH='(^|/)(migrations|alembic)(/|$)|^prisma/migrations/'
 FELIX_ESCAPE_DURABLE_ADDED='(DROP TABLE|TRUNCATE |DELETE FROM [^W]*$)'
+
+# Whether a changed path is one of a list's tables: an entry without a slash is
+# a basename and matches in any directory; one with a slash is a path and
+# matches only as the whole path or its end. The list is split by awk, never
+# by an unquoted expansion, so no entry is ever a glob.
+_felix_escape_listed() {
+  printf '%s\n' "$2" | P="$1" LC_ALL=C awk '
+    { for (i = 1; i <= NF; i++) {
+        t = $i; p = ENVIRON["P"]
+        if (index(t, "/")) { if (p == t || substr(p, length(p) - length(t)) == "/" t) found = 1 }
+        else { sub(/.*\//, "", p); if (p == t) found = 1 } } }
+    END { exit !found }'
+}
 
 # Whether every changed line in a file stays inside what a row said was safe.
 #
@@ -255,17 +284,15 @@ felix_escapes() {
 
     # verifier, for the tables that decide what stops. Adding is free — except
     # to a table of exemptions, where adding is the removal.
-    case " $FELIX_ESCAPE_TABLES " in
-      *" ${f##*/} "*)
-        case " $FELIX_ESCAPE_EXEMPTION_TABLES " in
-          *" ${f##*/} "*)
-            _felix_escape_changed "$root" "$base" "$f" \
-              && printf 'verifier\t%s\tits rows exempt things from a check, so any change to it changes what is checked\n' "$f" ;;
-          *)
-            _felix_escape_shrank "$root" "$base" "$f" \
-              && printf 'verifier\t%s\tthis decides what stops, and the change removes from it\n' "$f" ;;
-        esac ;;
-    esac
+    if _felix_escape_listed "$f" "$FELIX_ESCAPE_TABLES"; then
+      if _felix_escape_listed "$f" "$FELIX_ESCAPE_EXEMPTION_TABLES"; then
+        _felix_escape_changed "$root" "$base" "$f" \
+          && printf 'verifier\t%s\tits rows exempt things from a check, so any change to it changes what is checked\n' "$f"
+      else
+        _felix_escape_shrank "$root" "$base" "$f" \
+          && printf 'verifier\t%s\tthis decides what stops, and the change removes from it\n' "$f"
+      fi
+    fi
   done <<EOF
 $paths
 EOF

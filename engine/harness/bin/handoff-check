@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Is this checkout's HANDOFF.md one the fold could have written?
+#
+#   handoff-check [<ref>]
+#
+#   exit 0  clean
+#   exit 1  a problem, one line each
+#   exit 2  cannot examine: no HANDOFF.md, or one not in the sectioned layout.
+#           Never read as clean.
+#
+# The judgement is felix_handoff_check's, in lib/handoff.sh. The branch is read
+# against its merge-base with <ref>, the remote-tracking main by default,
+# because that is what it changed; with no ref that resolves, the tree-local
+# half still runs and the output says the rest did not.
+#
+# What it exists to refuse is a section written into HANDOFF.md by hand. That
+# rule gave every session one slot and one counter to share, and four pull
+# requests claimed one id inside an hour on 2026-09-23. A session now adds its
+# section as a file under docs/handoff/pending/, and only the fold gives ids.
+set -u
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 2
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/handoff.sh
+. "$HERE/lib/handoff.sh"
+
+ref="${1:-}"
+if [ -z "$ref" ]; then
+  for r in refs/remotes/origin/main origin/main; do
+    git rev-parse --verify --quiet "$r^{commit}" >/dev/null 2>&1 && { ref="$r"; break; }
+  done
+fi
+out="$(felix_handoff_check "$PWD" "$ref")"; rc=$?
+[ -z "$out" ] || printf '%s\n' "$out" | awk -F'\t' '{ printf "  %-14s %s\n", $1, $2 }'
+exit "$rc"

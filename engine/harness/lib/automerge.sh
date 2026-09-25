@@ -43,17 +43,30 @@ felix_automerge_state() {
   if [ "$failures" -eq 0 ] 2>/dev/null; then printf 'clean'; else printf 'dirty'; fi
 }
 
+# The runs counted are the gate workflow's and no other's, named by the caller
+# from felix_gate_workflow. A failure is evidence that CI disagreed with a green
+# classification only when the gate is what failed. A pull request's branch can
+# carry other workflows' runs, the unattended repair's when it is dispatched
+# there and any other workflow a repository runs on pull requests, and counting
+# those would dirty a green pull request for failures that were never a
+# verdict on the change.
+#
+# No workflow named means no count is asked for, so every row reads unknown. An
+# empty --workflow is no filter to gh, so passing it through would count every
+# workflow again; a gate workflow the repository does not have makes gh answer
+# 404 and print nothing, which is unknown as well. Neither advances a streak.
 felix_automerge_history() {
-  local repo="$1" limit="${2:-20}"
+  local repo="$1" workflow="${2:-}" limit="${3:-20}"
   gh pr list --repo "$repo" --state merged --label risk-green \
      --limit "$limit" --json number,title,headRefName \
      -q '.[] | "\(.number)\t\(.headRefName)\t\(.title)"' 2>/dev/null \
   | while IFS=$'\t' read -r num branch title; do
       [ -n "${num:-}" ] || continue
-      local counts total failures
-      counts="$(gh run list --repo "$repo" --branch "$branch" --limit 20 \
-                  --json conclusion \
-                  -q '[length, ([.[] | select(.conclusion=="failure")] | length)] | @tsv' 2>/dev/null)"
+      local counts="" total failures
+      [ -n "$workflow" ] && \
+        counts="$(gh run list --repo "$repo" --branch "$branch" --workflow "$workflow" \
+                    --limit 20 --json conclusion \
+                    -q '[length, ([.[] | select(.conclusion=="failure")] | length)] | @tsv' 2>/dev/null)"
       total="${counts%%	*}"; failures="${counts##*	}"
       printf '%s\t%s\t%s\n' "$num" "$(felix_automerge_state "$total" "$failures")" "$title"
     done

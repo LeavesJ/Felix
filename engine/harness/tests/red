@@ -112,7 +112,11 @@ VER="$(git -C "$ROOT" show "$SHA:engine/.claude-plugin/plugin.json" 2>/dev/null 
        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 [ -n "$VER" ] || VER="-"
 
-TMP="$(mktemp -d 2>/dev/null)" || _none "no temporary directory"
+# Under $TMPDIR by a template, since a bare `mktemp -d` on a Mac ignores
+# TMPDIR (below, what that cost).
+_tmproot="${TMPDIR:-/tmp}"
+TMP="$(mktemp -d "${_tmproot%/}/tmp.XXXXXXXXXX" 2>/dev/null)" && [ -d "$TMP" ] \
+  || _none "no temporary directory under $_tmproot"
 TREE="$TMP/tree"
 _cleanup() {
   git -C "$ROOT" worktree remove --force "$TREE" >/dev/null 2>&1
@@ -129,17 +133,29 @@ trap _cleanup EXIT
 git -C "$ROOT" worktree add --detach "$TREE" "$SHA" >/dev/null 2>&1
 [ -d "$TREE/engine/harness" ] && git -C "$TREE" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
   || _none "could not check out $BASE under $TMP"
-mkdir -p "$TREE/engine/harness/tests" "$TMP/t" 2>/dev/null
+mkdir -p "$TREE/engine/harness/tests" 2>/dev/null
 cp "$HERE/run" "$TREE/engine/harness/tests/run" 2>/dev/null \
   || _none "could not place tests/run into the tree at $BASE"
 
-# The suite makes its own temporary root with mktemp, and everything it
-# spawns names paths under it. Pointed under this run's directory, so that
-# root is removed with this run and a process still holding any of it is
-# findable by one pattern — the path, with its regex metacharacters escaped,
-# since mktemp's own template puts a dot in it.
+# The suite runs with the caller's TMPDIR, as it does by hand, so its own
+# mktemp root is made where a plain run makes it. Until 2026-09-24 it ran with
+# TMPDIR under this run's directory, so that its root would go with this run
+# and a stray holding it would match the pattern below. On a Mac that never
+# happened: a bare `mktemp -d` there ignores TMPDIR, so the root landed beside
+# this directory, and lib/where.sh, which counts $TMPDIR as a temporary root,
+# saw the suite's scoped fixtures outside every one. 44 of #308's assertions
+# failed in every red run on a Mac, against an engine identical to the tree's.
+# Making the suite honour the moved TMPDIR put the fixtures back under it and
+# broke another assertion: nesting lengthens every path the suite makes by
+# seventeen characters, and "and says which directory it was sent to" reads a
+# path the engine cuts at eighty.
+#
+# So the pattern below, with the path's regex metacharacters escaped, ends
+# what still names this run's directory: the tree the base is checked out in,
+# which the suite reaches as REAL_HARNESS. A stray naming only the suite's own
+# root escapes it, as on a Mac it always did.
 LOG="$TMP/red.log"
-( cd "$TREE" && TMPDIR="$TMP/t" FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ) > "$LOG" 2>&1
+( cd "$TREE" && FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ) > "$LOG" 2>&1
 pkill -9 -f "$(printf '%s' "$TMP" | sed 's/[][\\.*^$(){}+?|]/\\&/g')" >/dev/null 2>&1
 
 PASSED="$(grep -c '^  ok    ' "$LOG")"

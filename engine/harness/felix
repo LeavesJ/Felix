@@ -37,6 +37,7 @@
 #   felix log "<text>"    record a devlog entry, stamped with branch and commit
 #   felix lesson "<text>" record something durable enough to repeat
 #   felix handoff        regenerate the handoff from the state of the tree
+#   felix handoff --section FILE | --rotate | --check   the repository's HANDOFF.md sections
 #   felix lessons [--for] what this project already learned, matched to context
 #   felix promote        recurring devlog themes not yet in lessons
 #   felix adopt <cap>    declare a capability this project now has
@@ -137,6 +138,8 @@ if [ "${1:-}" = "audit" ]; then shift; cmd_audit "$@"; exit $?; fi
 . "${SCRIPT_DIR}/lib/intake.sh"
 # shellcheck source=lib/deny.sh
 . "${SCRIPT_DIR}/lib/deny.sh"
+# shellcheck source=lib/where.sh
+. "${SCRIPT_DIR}/lib/where.sh"
 # shellcheck source=lib/escape.sh
 . "${SCRIPT_DIR}/lib/escape.sh"
 # shellcheck source=lib/review.sh
@@ -170,6 +173,8 @@ if [ "${1:-}" = "audit" ]; then shift; cmd_audit "$@"; exit $?; fi
 . "${SCRIPT_DIR}/lib/commission.sh"
 . "${SCRIPT_DIR}/lib/commission-provider.sh"
 . "${SCRIPT_DIR}/lib/candidates.sh"
+# shellcheck source=lib/handoff.sh
+. "${SCRIPT_DIR}/lib/handoff.sh"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"   # writable: projects, doctrine, memory
 
@@ -267,6 +272,9 @@ specific project, language, or toolchain.
   memory
     felix handoff [note]   regenerate the handoff; the note (or --was) records what was in progress;
                            a handoff it did not write is refused unless --replace
+    felix handoff --section FILE   add this session's HANDOFF.md section as its own file, no id
+    felix handoff --rotate         fold the sections that landed into HANDOFF.md, ids in landing order
+    felix handoff --check          whether HANDOFF.md and its archive are what the fold writes
     felix log <text>       add a devlog entry
     felix lesson <text>    add a lesson, matched into later prompts
     felix lessons          what this project has already paid for
@@ -286,7 +294,13 @@ USAGE
 # callers into $(...), and an exit inside a command substitution only kills the
 # subshell: the script would sail past a failed resolution and die later with a
 # misleading message and the wrong status.
+#
+# The status is 2 unless the caller names another. A command whose exit status
+# is read by a machine may already mean something by 2: felix repair's 2 is the
+# repair ceiling, and the unattended template escalated an unresolvable checkout
+# to a person as a spent ceiling.
 resolve_or_die() {
+  local rc="${1:-2}"
   PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
   [ -n "$PROJ" ] && return 0
   # The CLI already refused here, but it refused with the wrong sentence. A
@@ -294,10 +308,10 @@ resolve_or_die() {
   # telling somebody to "add a .felix file" while a broken one sits in front of
   # them sends them to add a second problem.
   local broken; broken="$(felix_binding_broken "$PWD" "$FELIX_HOME_DIR")"
-  [ -n "$broken" ] && die "$broken" 2
+  [ -n "$broken" ] && die "$broken" "$rc"
   die "no project governs $PWD.
   Either add a .felix file naming one, or declare remote_match in a project.json.
-  Known projects: $(ls "$FELIX_HOME_DIR/projects" 2>/dev/null | tr '\n' ' ')" 2
+  Known projects: $(ls "$FELIX_HOME_DIR/projects" 2>/dev/null | tr '\n' ' ')" "$rc"
 }
 
 
@@ -620,9 +634,14 @@ cmd_gate() {
       local qna
       qna="$(printf '%s\n' "$qout" | grep -cE '  n/a$')"
       [ "${qna:-0}" -gt 0 ] 2>/dev/null && printf '                     %s did not apply here\n' "$qna"
+      # A checker short of the six passes; lib/qualify.sh says why that is
+      # reported rather than refused. This is the report, on the same line a
+      # reader stops at, so `ok` is not read as six controls of six.
+      printf '%s\n' "$qout" | grep -E '^  [^ ]+ declares no control for: ' \
+        | sed 's/^  /                     /'
     else
       printf '  %-18s FAIL\n' qualified | tee -a "$log"
-      printf '%s\n' "$qout" | grep -E 'HELD|UNRUNNABLE|^never shown failing in this checkout' | head -8 | sed 's/^/  /'
+      printf '%s\n' "$qout" | grep -E 'HELD|UNRUNNABLE|MALFORMED|^never shown failing in this checkout' | head -8 | sed 's/^/  /'
       [ "$rc" -eq 0 ] && printf '\ngate: FAIL (qualified)\n'
       rc=1
     fi
@@ -1414,13 +1433,26 @@ cmd_merge() {
   fi
 
   if [ -n "$blockers" ]; then
-    local kind subject reason esc=0 unk=0
+    local kind subject reason esc=0 unk=0 stamp=0 table=0 owed=0
     printf 'not merging\n\n'
     while IFS=$'\t' read -r kind subject reason; do
       [ -n "${kind:-}" ] || continue
       printf '  %-11s %-22s %s\n' "$kind" "$subject" "$reason"
-      [ "$kind" = "escape" ]  && esc=1
-      [ "$kind" = "unknown" ] && unk=1
+      # Which closing paragraph a blocker belongs under is decided per blocker,
+      # from its kind and subject and never from the reason's wording. A
+      # commission receipt or table ends in a commission run, which is the
+      # founder's or, under their grant, the session-start hook's (HANDOFF
+      # §0aq, §0bl): calling it work Felix owes sent a session to re-run a gate
+      # that had passed, or to commission for itself. `engine` is the judge
+      # failing to load commission.sh, which no run reaches; it sits with every
+      # other kind.
+      case "$kind:$subject" in
+        escape:*)           esc=1 ;;
+        unknown:*)          unk=1 ;;
+        commission:receipt) stamp=1 ;;
+        commission:table)   stamp=1; table=1 ;;
+        *)                  owed=1 ;;
+      esac
     done <<EOF
 $blockers
 EOF
@@ -1439,10 +1471,10 @@ $blockers
 EOF
     fi
 
-    # `unknown` is checked before `escape`, because the sentence in the else
-    # branch is the exact claim #56 is about. Saying "nothing here escapes the
-    # tree" after a scan that never ran would move the false all-clear from the
-    # verdict into the explanation and leave it just as wrong. Nothing was
+    # `unknown` is checked before `escape`, because the sentence in the last
+    # branch below is the exact claim #56 is about. Saying "nothing here escapes
+    # the tree" after a scan that never ran would move the false all-clear from
+    # the verdict into the explanation and leave it just as wrong. Nothing was
     # compared, so nothing can be said about what escapes.
     if [ "$unk" -eq 1 ]; then
       printf '\nNothing was compared, so nothing above is a finding about this branch.\n'
@@ -1453,10 +1485,59 @@ EOF
       printf '\nMerging this writes something outside the tree that a revert does not\n'
       printf 'reach, so it is the founder who decides. Show them the diff and the\n'
       printf 'reversal path; a green gate is not the question here.\n'
-    else
-      printf '\nNothing here escapes the tree, so none of it is a founder decision.\n'
-      printf 'It is work Felix owes: run the gate, or write the test that is missing,\n'
-      printf 'then run this again.\n'
+    fi
+    # Said whatever else is said, beside an escape too: the founder is being
+    # asked already, and a merge they clear would stop again on the receipt.
+    #
+    # What clears it is a commission run, and who makes that run depends on the
+    # grant, which the receipt itself never reads. A grant that still covers
+    # the tables runs one unattended at the next session start
+    # (felix_commission_resume_bg). One stamped over tables that have moved
+    # runs nothing until the founder re-arms it, which is the case a table
+    # edit merged to main produces. With no grant, the run is simply theirs,
+    # and naming `felix autonomy --allow commission` there would be asking for
+    # a standing consent the merge does not need.
+    if [ "$stamp" -eq 1 ]; then
+      local grant=none
+      if felix_autonomy_allows "$proj" commission 2>/dev/null; then
+        grant=stale
+        felix_autonomy_commission_current "$proj" 2>/dev/null && grant=current
+      fi
+      case "$grant" in
+        current)
+          printf '\nThe commission is not a session'"'"'s to clear. The founder'"'"'s commission\n'
+          printf 'grant still covers these tables, so the next session started in this\n'
+          printf 'checkout re-commissions unattended; or they run it themselves:\n\n'
+          printf '  felix commission\n\n' ;;
+        stale)
+          printf '\nThe commission is not Felix'"'"'s to clear: this merge waits for the founder.\n'
+          printf 'Their commission grant was stamped over tables that have moved since, so\n'
+          printf 'nothing re-commissions unattended until they re-arm it, having read what\n'
+          printf 'changed. Ask them to run, in order:\n\n'
+          printf '  felix autonomy --allow commission\n'
+          printf '  felix commission\n\n' ;;
+        *)
+          printf '\nThe commission is not Felix'"'"'s to clear: this merge waits for the founder.\n'
+          printf 'This project grants no unattended commission, so the run is theirs:\n\n'
+          printf '  felix commission\n\n'
+          printf 'Clearing this needs no grant; granting one is a separate decision.\n' ;;
+      esac
+      if [ "$table" -eq 1 ]; then
+        printf 'Put the table named above right first: felix commission cannot clear this\n'
+        printf 'over a table it cannot read.\n'
+      fi
+      printf 'Felix never writes a project'"'"'s autonomy file and a session does not\n'
+      printf 'commission for itself, so a green gate does not clear this.\n'
+    fi
+    if [ "$unk" -eq 0 ] && [ "$esc" -eq 0 ]; then
+      if [ "$stamp" -eq 1 ] && [ "$owed" -eq 1 ]; then
+        printf '\nThe rest escapes nothing and is work Felix owes: run the gate, or\n'
+        printf 'write the test that is missing, then run this again.\n'
+      elif [ "$stamp" -eq 0 ]; then
+        printf '\nNothing here escapes the tree, so none of it is a founder decision.\n'
+        printf 'It is work Felix owes: run the gate, or write the test that is missing,\n'
+        printf 'then run this again.\n'
+      fi
     fi
     return 3
   fi
@@ -1722,25 +1803,48 @@ cmd_autonomy() {
 # down and keeps working instead of waiting for somebody who is asleep.
 cmd_overnight() {
   resolve_or_die; local proj="$PROJ"
-  local start=0 hours="" turns="" note="" report=0 clear=0 end="" defer="" what="" unblock="" sid=""
+  local start=0 hours="" turns="" note="" report=0 clear=0 end="" defer="" what="" unblock="" sid="" named=0 all=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --start)   start=1; shift ;;
       --hours)   need_value "$@"; hours="$2"; shift 2 ;;
       --turns)   need_value "$@"; turns="$2"; shift 2 ;;
       --note)    need_value "$@"; note="$2"; shift 2 ;;
-      --session) need_value "$@"; sid="$2"; shift 2 ;;
+      --session) need_value "$@"; sid="$2"; named=1; shift 2 ;;
       --defer)   need_value "$@"; defer="$2"; shift 2 ;;
       --what)    need_value "$@"; what="$2"; shift 2 ;;
       --unblock) need_value "$@"; unblock="$2"; shift 2 ;;
       --report)  report=1; shift ;;
       --clear)   clear=1; shift ;;
-      --end)     end="${2:-ended by hand}"; [ $# -ge 2 ] && shift 2 || shift ;;
+      --end)     case "${2:-}" in ''|-*) end="ended by hand"; shift ;; *) end="$2"; shift 2 ;; esac ;;
+      --all)     all=1; shift ;;
       --status)  shift ;;
-      -*) die "usage: felix overnight [--start [--hours N] [--turns N] [--note ...]] [--defer KIND --what ... [--unblock ...]] [--report] [--clear] [--end [reason]]" ;;
+      -*) die "usage: felix overnight [--start [--hours N] [--turns N] [--note ...]] [--session ID] [--defer KIND --what ... [--unblock ...]] [--report] [--clear] [--end [reason] [--all]]" ;;
       *) shift ;;
     esac
   done
+
+  # Whose night this command is about. A night belongs to one session (see
+  # lib/overnight.sh), and the session a shell belongs to is the one the
+  # platform exports to it; --session names another. A terminal outside every
+  # session has no id at all. It cannot start a night, since there is nobody
+  # for the night to hold, and it is the one caller for whom --end means every
+  # night: that is a person's way out, and a person at a terminal is inside
+  # none of them.
+  local scope="session"
+  [ "$named" -eq 1 ] || sid="${CLAUDE_CODE_SESSION_ID:-}"
+  # From inside a session, a night is that session's to take and nobody
+  # else's to give: a grant there holds whatever session it names at every
+  # stop, and the one inside it is the only one that asked. Naming another
+  # session is for a person at a terminal, which exports no id.
+  if [ "$start" -eq 1 ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ "$sid" != "$CLAUDE_CODE_SESSION_ID" ]; then
+    die "from inside a session, a night can only be granted to that session. Type it in the session the night is for."
+  fi
+  [ "$all" -eq 1 ] && scope="all"
+  if [ -z "$sid" ]; then scope="all"
+  elif ! _felix_overnight_sid_ok "$sid"; then
+    die "the session id cannot name a night: letters, digits, dot, dash and underscore only"
+  fi
 
   if [ -n "$defer" ]; then
     case "$defer" in
@@ -1758,12 +1862,24 @@ cmd_overnight() {
   fi
 
   if [ -n "$end" ]; then
-    if felix_overnight_active "$proj"; then
-      felix_overnight_end "$proj" "$end"; printf 'overnight ended: %s\n\n' "$end"
+    local id key ended=0
+    if [ "$scope" = "all" ]; then
+      while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        key="$id"; [ "$id" = "-" ] && key=""
+        felix_overnight_end "$proj" "$end" "$key"; ended=$(( ended + 1 ))
+      done <<EOT
+$(felix_overnight_nights "$proj")
+EOT
+      printf 'ended %s night(s): %s\n\n' "$ended" "$end"
+    elif felix_overnight_owns "$proj" "$sid"; then
+      felix_overnight_end "$proj" "$end" "$sid"
+      printf 'overnight ended for %s: %s\n\n' "$(_felix_overnight_whose "$sid")" "$end"
     else
-      felix_overnight_end "$proj" "$end"; printf 'no night was running.\n\n'
+      printf 'no night was running for %s. Another session'"'"'s night is ended from inside\n' "$(_felix_overnight_whose "$sid")"
+      printf 'it, or with felix overnight --end --all, which ends every night.\n\n'
     fi
-    felix_overnight_report "$proj"
+    felix_overnight_report "$proj" "$sid"
     return 0
   fi
 
@@ -1776,41 +1892,50 @@ cmd_overnight() {
 
   if [ "$start" -eq 1 ]; then
     local why
+    [ "$scope" = "all" ] && die "overnight --start needs the session the night is for, and this shell is in none.
+Type it inside that session, where the platform exports its id:  ! felix overnight --start
+or name the session:  felix overnight --start --session <session id>"
     if why="$(felix_overnight_start "$proj" "${hours:-$FELIX_OVERNIGHT_DEFAULT_HOURS}" \
                 "${turns:-$FELIX_OVERNIGHT_DEFAULT_TURNS}" "$sid" "$note")"; then
-      printf 'overnight is on for %s.\n\n' "$(basename "$proj")"
+      printf 'overnight is on for %s, for %s and no other.\n\n' "$(basename "$proj")" "$(_felix_overnight_whose "$sid")"
       felix_overnight_direction
       printf '\nIt ends on whichever comes first: %s hour(s), %s continuation(s), or two\n' \
         "${hours:-$FELIX_OVERNIGHT_DEFAULT_HOURS}" "${turns:-$FELIX_OVERNIGHT_DEFAULT_TURNS}"
-      printf 'continuations in a row with nothing to do. felix overnight --end stops it now,\n'
+      printf 'continuations in a row that call no tool. felix overnight --end stops it now,\n'
       printf 'and closing the session stops it too — nothing here runs without one.\n'
       return 0
     fi
     die "overnight --start refused: $why"
   fi
 
-  # Status, which is also what a bare `felix overnight` answers.
-  if felix_overnight_active "$proj"; then
-    printf 'overnight is ON for %s\n\n' "$(basename "$proj")"
+  # Status, which is also what a bare `felix overnight` answers: about this
+  # session's night when there is a session, and about every night when not.
+  if [ "$scope" = "session" ] && felix_overnight_active "$proj" "$sid"; then
+    printf 'overnight is ON for %s, %s\n\n' "$(basename "$proj")" "$(_felix_overnight_whose "$sid")"
     felix_overnight_direction
     printf '\n'
-  elif [ -f "$(felix_overnight_dir "$proj")/active" ]; then
-    printf 'overnight is OVER for %s: %s\n\n' "$(basename "$proj")" \
-      "$(felix_overnight_expired "$proj")"
+  elif [ "$scope" = "session" ] && felix_overnight_owns "$proj" "$sid"; then
+    printf 'overnight is OVER for %s, %s: %s\n\n' "$(basename "$proj")" \
+      "$(_felix_overnight_whose "$sid")" "$(felix_overnight_expired "$proj" "$sid")"
     printf 'The state is still here so the report can read it. felix overnight --end\n'
     printf 'closes it, and --start begins another.\n\n'
+  elif [ "$scope" = "all" ] && [ -n "$(felix_overnight_nights "$proj")" ]; then
+    printf 'overnight: %s night(s) on record for %s, listed below.\n\n' \
+      "$(felix_overnight_nights "$proj" | grep -c .)" "$(basename "$proj")"
   else
-    printf 'overnight is off for %s\n\n' "$(basename "$proj")"
+    printf 'overnight is off for %s' "$(basename "$proj")"
+    [ "$scope" = "session" ] && printf ', %s' "$(_felix_overnight_whose "$sid")"
+    printf '\n\n'
     printf 'A night is a duration a person grants, not a setting. It changes what a\n'
     printf 'session does when something stops it — write the decision down and keep\n'
     printf 'working, rather than wait for somebody asleep — and changes nothing about\n'
-    printf 'what may stop it.\n\n'
+    printf 'what may stop it. It belongs to the session that starts it.\n\n'
     printf '  felix overnight --start                  %s hours, %s continuations\n' \
       "$FELIX_OVERNIGHT_DEFAULT_HOURS" "$FELIX_OVERNIGHT_DEFAULT_TURNS"
     printf '  felix overnight --start --hours 10       longer, up to %s\n' "$FELIX_OVERNIGHT_MAX_HOURS"
     printf '  felix overnight --report                 the morning page\n\n'
   fi
-  felix_overnight_report "$proj"
+  felix_overnight_report "$proj" "$sid"
 }
 
 # Does a check fail when the thing it protects is broken?
@@ -1835,12 +1960,24 @@ cmd_qualify() {
   done
   root="$(felix_repo_root "$PWD")"
 
-  local rows; rows="$(felix_qualify_rows "$proj")"
+  local rows mal
+  rows="$(felix_qualify_rows "$proj")"
+  mal="$(felix_qualify_malformed "$proj")"
   printf 'qualification for %s\n\n' "$(basename "$proj")"
+  # Before the empty-table answer, so a table whose every row is malformed says
+  # which rows and why rather than reading as one that declares nothing.
+  if [ -n "$mal" ]; then
+    printf 'rows that cannot be read as a control\n\n'
+    printf '%s\n' "$mal" | awk -F'\t' '{ printf "  %-16s MALFORMED  %s\n", $1, $2 }'
+    printf '\nA malformed row is a control nobody is applying, so it is not run, and\n'
+    printf 'silence about it would read as a control that passed. Each control has\n'
+    printf 'one verdict: violation, alternate and decoupled_violation fail; the other\n'
+    printf 'three pass. A row may not choose another.\n\n'
+  fi
   if [ -z "$rows" ]; then
     printf 'No checker here is qualified, because %s/qualification.tsv\n' "$proj"
-    printf 'declares nothing. Every check this project runs is currently trusted\n'
-    printf 'on the strength of having been written.\n\n'
+    printf 'declares no control that can be run. Every check this project runs is\n'
+    printf 'currently trusted on the strength of having been written.\n\n'
     printf '  checker <TAB> command <TAB> control <TAB> expect <TAB> mutation [<TAB> premise]\n\n'
     printf 'Six controls per checker, from the conformance amendments: violation,\n'
     printf 'restoration, irrelevant, alternate, decoupled_violation and\n'
@@ -1849,14 +1986,6 @@ cmd_qualify() {
     printf 'the control cannot be staged in this checkout and it is reported as not\n'
     printf 'applying; any other failure is a control that could not run.\n'
     return 1
-  fi
-
-  local mal; mal="$(felix_qualify_malformed "$proj")"
-  if [ -n "$mal" ]; then
-    printf 'rows that name a checker and not enough to run one\n\n'
-    printf '%s\n' "$mal" | awk -F'\t' '{ printf "  %-16s %s field(s)\n", $1, $2 }'
-    printf '\nA row missing its mutation is a control nobody is applying, and\n'
-    printf 'silence about it reads as a control that passed.\n\n'
   fi
 
   local out held=0 unrun=0 total=0 inapp=0 unshown
@@ -1957,11 +2086,16 @@ cmd_qualify() {
     fi
   fi
   if [ "$gate" -eq 1 ]; then
-    [ "${held:-0}" -eq 0 ] && [ "${unrun:-0}" -eq 0 ] && [ -z "${unshown% }" ] && return 0
+    # A malformed row refuses too. It was written as a control, so by the
+    # ratchet it binds, and it cannot be met because it is never run. Running it
+    # is what let a violation expecting `pass` read as met.
+    [ "${held:-0}" -eq 0 ] && [ "${unrun:-0}" -eq 0 ] && [ -z "${unshown% }" ] \
+      && [ -z "$mal" ] && return 0
     if [ "${held:-0}" -gt 0 ] || [ "${unrun:-0}" -gt 0 ]; then
       printf '\nA declared control that does not hold is this check reporting a\n'
       printf 'property the tree does not have. Fix the checker, or delete the\n'
-      printf 'control and say in the diff that it is no longer claimed.\n'
+      printf 'control and say in the diff that it is no longer claimed; felix merge\n'
+      printf 'stops that deletion for a person to read.\n'
     fi
     return 1
   fi
@@ -2922,6 +3056,10 @@ cmd_bootstrap() {
   slug="$(felix_repo_slug "$root")"
   eco="$(felix_guess_ecosystem "$root")"
   branch="$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+  # The file the repair loop and the auto-merge streak read the gate's runs
+  # from, so the one this looks for and writes. Resolved before anything is
+  # printed: a refused gate_workflow is a fact about the project to fix first.
+  local gwf; gwf="$(felix_gate_workflow "$proj")" || die "$gwf"
   # The Felix checkout, not the directory this script happens to sit in. #65:
   # `felix_repo_slug "$FELIX_ROOT"` asked git for a remote inside the running
   # engine, which from the deployed CLI is the plugin cache — no remote, so this
@@ -2935,18 +3073,29 @@ cmd_bootstrap() {
   local esrc; esrc="$(felix_engine_source "$FELIX_ROOT" "$FELIX_HOME_DIR")" || esrc=""
   felix_repo=""
   [ -n "$esrc" ] && felix_repo="$(felix_repo_slug "$esrc")"
+  # The commit CI checks Felix out at, from the same checkout as the slug, and
+  # holding this project when the project lives in that checkout. Physical
+  # paths on both sides: macOS spells /var as /private/var, and git reports
+  # the resolved form.
+  local etop pdir prel="" felix_ref
+  etop="$(git -C "$esrc" rev-parse --show-toplevel 2>/dev/null)" || etop=""
+  pdir="$(cd "$proj" 2>/dev/null && pwd -P)" || pdir=""
+  case "$pdir" in "$etop"/?*) [ -n "$etop" ] && prel="${pdir#"$etop"/}" ;; esac
+  felix_ref="$(felix_bs_pin_ref "$esrc" "$prel")" || felix_ref=""
+  local ref_none="none: no commit of the engine checkout that origin's default branch holds${prel:+ with $prel in it}; the workflow gets {{FELIX_REF}} to fill"
 
   printf 'repo:        %s\n' "${slug:-no github remote}"
   printf 'ecosystem:   %s\n' "$eco"
-  printf 'felix repo:  %s\n\n' "${felix_repo:-none, CI cannot fetch the harness}"
+  printf 'felix repo:  %s\n' "${felix_repo:-none, CI cannot fetch the harness}"
+  printf 'felix ref:   %s\n\n' "${felix_ref:-$ref_none}"
 
   local todo=0
   _bs() {  # name, already-satisfied, description
     if [ "$2" = "yes" ]; then printf '  [x] %-12s %s\n' "$1" "$3"
     else printf '  [ ] %-12s %s\n' "$1" "$3"; todo=$((todo+1)); fi
   }
-  _felix_bs_have_workflow "$root" && w=yes || w=no
-  _bs ci-workflow "$w" ".github/workflows/gate.yml calling felix gate"
+  _felix_bs_have_workflow "$root" "$gwf" && w=yes || w=no
+  _bs ci-workflow "$w" ".github/workflows/$gwf calling felix gate"
   if [ -n "$slug" ]; then
     _felix_bs_have_labels "$slug" && l=yes || l=no
     _bs labels "$l" "escalation and risk labels the repair loop applies"
@@ -2966,13 +3115,14 @@ cmd_bootstrap() {
   fi
 
   printf '\napplying\n'
-  if ! _felix_bs_have_workflow "$root"; then
+  if ! _felix_bs_have_workflow "$root" "$gwf"; then
     if [ -z "$felix_repo" ]; then
       printf '  skipped    ci-workflow (Felix has no remote for CI to fetch)\n'
     else
       mkdir -p "$root/.github/workflows"
-      felix_bs_render_workflow "$eco" "$felix_repo" > "$root/.github/workflows/gate.yml"
-      printf '  wrote      .github/workflows/gate.yml (review, then commit it)\n'
+      felix_bs_render_workflow "$eco" "$felix_repo" "$felix_ref" > "$root/.github/workflows/$gwf"
+      printf '  wrote      .github/workflows/%s (review, then commit it)\n' "$gwf"
+      [ -n "$felix_ref" ] || printf "             its ref: is {{FELIX_REF}}; set the full sha of a commit on %s's default branch first\n" "$felix_repo"
     fi
   fi
   if [ -n "$slug" ] && ! _felix_bs_have_labels "$slug"; then
@@ -3125,6 +3275,7 @@ cmd_unattended() {
   command -v gh >/dev/null 2>&1 || die "felix unattended needs the gh CLI"
   local repo; repo="$(felix_repo_slug "$(felix_repo_root "$PWD")")"
   [ -n "$repo" ] || die "no github remote"
+  local gwf; gwf="$(felix_gate_workflow "$proj")" || die "$gwf"
 
   local st switch key dry dryfail streak need
   st="$(felix_unattended_state "$repo")"
@@ -3132,7 +3283,7 @@ cmd_unattended() {
   key="$(printf '%s\n' "$st" | awk -F'\t' '$1=="key"{print $2}')"
   dry="$(printf '%s\n' "$st" | awk -F'\t' '$1=="dryruns"{print $2}')"
   dryfail="$(printf '%s\n' "$st" | awk -F'\t' '$1=="dryfails"{print $2}')"
-  streak="$(felix_automerge_streak "$(felix_automerge_history "$repo")")"
+  streak="$(felix_automerge_streak "$(felix_automerge_history "$repo" "$gwf")")"
   need="$FELIX_AUTOMERGE_REQUIRED"
 
   printf 'repo:  %s\n\n' "$repo"
@@ -3294,9 +3445,10 @@ cmd_automerge() {
   command -v gh >/dev/null 2>&1 || die "felix automerge needs the gh CLI"
   local repo; repo="$(felix_repo_slug "$(felix_repo_root "$PWD")")"
   [ -n "$repo" ] || die "no github remote"
+  local gwf; gwf="$(felix_gate_workflow "$proj")" || die "$gwf"
 
   local history streak need
-  history="$(felix_automerge_history "$repo")"
+  history="$(felix_automerge_history "$repo" "$gwf")"
   streak="$(felix_automerge_streak "$history")"
   need="$FELIX_AUTOMERGE_REQUIRED"
 
@@ -3642,15 +3794,35 @@ EOF
 }
 
 cmd_repair() {
-  resolve_or_die; local proj="$PROJ"
+  # 4, not resolution's usual 2, which here is the ceiling. The statuses are
+  # listed in lib/repair.sh.
+  resolve_or_die 4; local proj="$PROJ"
   _felix_repair_require_gh || return 1
-  local repo branch latest run_id status conclusion attempts
+  local repo branch latest run_id status conclusion attempts gwf
   repo="$(git remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##')"
   [ -n "$repo" ] || die "no github remote; felix repair supports GitHub Actions only"
+  gwf="$(felix_gate_workflow "$proj")" || die "$gwf"
   branch="$(felix_repair_branch)"
+  # A detached checkout names its branch HEAD, which no run is on, and "no runs
+  # yet" below is nothing to repair: a green job over a failure nobody read.
+  [ -n "$branch" ] && [ "$branch" != "HEAD" ] \
+    || die "no branch is checked out here, so there is no branch whose gate runs to read. Check out the branch whose run failed."
 
-  latest="$(felix_repair_latest "$branch" "$repo")"
-  [ -n "$latest" ] || { printf 'No CI runs for %s yet.\n' "$branch"; return 0; }
+  # Unreadable is not "no runs". gh fails on a workflow the repository does not
+  # have and on a network that does not answer, and both printed nothing, which
+  # this read as nothing to repair: a claim about CI that nothing had checked.
+  latest="$(felix_repair_latest "$branch" "$repo" "$gwf")" || {
+    printf 'Could not read the %s runs for %s: that workflow is not on %s, or gh\n' "$gwf" "$branch" "$repo"
+    printf 'could not answer. A project whose gate runs in another workflow names it as\n'
+    printf 'gate_workflow in its project.json. Nothing is repaired from a run nobody read.\n'
+    return 1
+  }
+  # Nothing to repair exits 5, its own status, because 0 is a brief to act on
+  # and the unattended template reads the status and nothing else. All three
+  # cases below exited 0 until 2026-09-23, so a dispatch on a green branch, or
+  # a gate run started after the failure the template was woken for, would have
+  # spent the budget and handed a model a brief saying nothing was wrong.
+  [ -n "$latest" ] || { printf 'No %s runs for %s yet.\n' "$gwf" "$branch"; return 5; }
   run_id="$(printf '%s' "$latest" | cut -f1)"
   status="$(printf '%s' "$latest" | cut -f2)"
   conclusion="$(printf '%s' "$latest" | cut -f3)"
@@ -3659,19 +3831,55 @@ cmd_repair() {
 
   if [ "$status" != "completed" ]; then
     printf '\nStill running. Wait for it rather than guessing at the failure.\n'
-    return 0
+    return 5
   fi
-  if [ "$conclusion" = "success" ]; then
-    printf '\nGreen. Nothing to repair.\n'
-    return 0
-  fi
+  # Repair acts only on what its ceiling counts, and failure and timed_out
+  # are what it acts on. Until 2026-09-23 only success was caught here and the
+  # rest fell through to a brief, including conclusions felix_repair_attempts
+  # then stopped at, so the ceiling read zero however many failures sat behind
+  # the run. A run that completed without failing is nothing to repair.
+  # startup_failure did fail, but the gate never ran and no step left a log,
+  # so it is refused, and so is a conclusion this code does not know, rather
+  # than guessed at.
+  case "$conclusion" in
+    failure|timed_out) ;;
+    success)
+      printf '\nGreen. Nothing to repair.\n'
+      return 5 ;;
+    cancelled|skipped|neutral|stale|action_required)
+      printf '\nThe gate run ended %s, which is not a failure. Nothing to repair;\n' "$conclusion"
+      printf 'the next gate run decides.\n'
+      return 5 ;;
+    startup_failure)
+      printf '\nThe gate run failed to start, so no step ran to leave a log. The gate\n'
+      printf 'workflow itself needs a look. Nothing is repaired from a run nobody read.\n'
+      return 1 ;;
+    *)
+      printf '\nThe gate run ended %s, a conclusion felix repair does not know, so\n' "$conclusion"
+      printf 'whether it failed is not guessed at. Nothing is repaired from a run nobody read.\n'
+      return 1 ;;
+  esac
 
-  attempts="$(felix_repair_attempts "$branch" "$repo")"
+  # A count that could not be read is not zero attempts, which is what it was
+  # read as: every time gh did not answer, the ceiling reported itself unspent.
+  # It stops here with the ceiling's own status, because what could not be
+  # shown is that the bound holds, and a caller that honours the ceiling
+  # honours this without having to learn a new code.
+  attempts="$(felix_repair_attempts "$branch" "$repo" "$gwf")" || {
+    printf 'attempts: unreadable\n\n'
+    printf 'CEILING UNKNOWN. The %s runs on %s could not be counted, so the ceiling\n' "$gwf" "$branch"
+    printf 'cannot be shown unspent: gh did not answer, or its newest runs held no\n'
+    printf 'success and fewer failures than the ceiling. Not patching past a bound\n'
+    printf 'nobody read; run this again once gh answers or the gate has passed, or\n'
+    printf 'escalate:\n\n'
+    printf '  gh pr edit --repo %s --add-label needs-founder\n' "$repo"
+    return 2
+  }
   printf 'attempts: %s of %s\n' "$attempts" "$FELIX_REPAIR_MAX"
 
   if [ "$attempts" -ge "$FELIX_REPAIR_MAX" ]; then
     printf '\nCEILING REACHED. Stop patching.\n\n'
-    printf '%s consecutive failures means the diagnosis is wrong, not the patch.\n' "$attempts"
+    printf '%s failures since the gate last passed means the diagnosis is wrong, not the patch.\n' "$attempts"
     printf 'Escalate instead of trying again:\n\n'
     printf '  gh pr edit --repo %s --add-label needs-founder\n\n' "$repo"
     printf 'Then write what was tried and why each attempt failed into\n'
@@ -3683,7 +3891,16 @@ cmd_repair() {
   # change and telling it afterwards not to touch anything is the wrong order:
   # by then it has a plan.
   local log_text implicated sev
-  log_text="$(felix_repair_excerpt "$run_id" "$repo")"
+
+  # An excerpt that came back empty implicated no path, so the red-path check
+  # below never ran, and the brief named no path and carried no failing output.
+  # gh not answering, a log GitHub no longer holds, and a log with no failed
+  # step in it all read that way, and none of them is a brief.
+  log_text="$(felix_repair_excerpt "$run_id" "$repo")" || {
+    printf '\nThe log of run %s could not be read: gh did not answer, GitHub no longer\n' "$run_id"
+    printf 'holds it, or no failed step left one. Nothing is repaired from a run nobody read.\n'
+    return 1
+  }
   implicated="$(felix_incident_paths "$(felix_repo_root "$PWD")" "$log_text")"
   if [ -n "$implicated" ] && [ -f "$proj/risk.tsv" ]; then
     sev="$(felix_incident_severity "$proj" "$implicated")"
@@ -3860,7 +4077,7 @@ cmd_lesson() {
 }
 
 cmd_handoff() {
-  resolve_or_die; local proj="$PROJ" root gate note="" was="" words="" replace=0
+  resolve_or_die; local proj="$PROJ" root gate note="" was="" words="" replace=0 mode="" section="" base=""
   # #127. The catch-all used to shift anything it did not know, so
   # `felix handoff "what was in progress"` — the invocation everyone types —
   # dropped the one line git cannot rebuild and printed success over an older
@@ -3870,11 +4087,22 @@ cmd_handoff() {
     case "$1" in
       --was)     need_value "$@"; was="$2"; shift 2 ;;
       --replace) replace=1; shift ;;
+      --section) need_value "$@"; mode="${mode:+both}${mode:-section}"; section="$2"; shift 2 ;;
+      --rotate)  mode="${mode:+both}${mode:-rotate}"; shift ;;
+      --check)   mode="${mode:+both}${mode:-check}"; shift ;;
+      --base)    need_value "$@"; base="$2"; shift 2 ;;
       --)        shift; words="${words:+$words }$*"; break ;;
-      -*)        die "usage: felix handoff [--was \"what was in progress\" | what was in progress] [--replace]" ;;
+      -*)        die "usage: felix handoff [--was \"what was in progress\" | what was in progress] [--replace] | --section FILE | --rotate | --check [--base REF]" ;;
       *)         words="${words:+$words }$1"; shift ;;
     esac
   done
+  if [ -n "$mode" ]; then
+    case "$mode" in *both*) die "felix handoff takes one of --section, --rotate and --check at a time" ;; esac
+    [ -z "$was$words" ] && [ "$replace" = 0 ] \
+      || die "--section, --rotate and --check are about the repository's HANDOFF.md, and take no note"
+    _cmd_handoff_sections "$mode" "$section" "$base"; return $?
+  fi
+  [ -n "$base" ] && die "--base goes with --section, --rotate or --check"
   [ -n "$was" ] && [ -n "$words" ] \
     && die "usage: felix handoff [--was \"what was in progress\" | what was in progress] [--replace] — the note was given twice"
   note="${was:-$words}"
@@ -3922,6 +4150,43 @@ cmd_handoff() {
   fi
   printf '  [ ] gate green?                   felix gate\n'
   printf '  [ ] commit the project directory in Felix so this survives the machine\n'
+}
+
+# The repository's HANDOFF.md, kept as sections (lib/handoff.sh). Not the
+# memory handoff above: that one is the state of a tree and is not direction.
+# A session adds its section as a file of its own, and the ids, the archive
+# and the index are derived from the order sections landed on the base, so no
+# two sessions ever write the same path.
+_cmd_handoff_sections() {
+  local mode="$1" file="$2" base="$3" root out rc
+  root="$(felix_repo_root "$PWD")"
+  [ -n "$base" ] || base="$(felix_base_ref "$root" main 2>/dev/null)" || base=""
+  case "$mode" in
+    section)
+      out="$(felix_handoff_section "$root" "$file" "$base")" || exit 1
+      printf 'wrote %s\n\n' "$out"
+      printf 'Commit it on this branch. It lands as a file no other session writes, so\n'
+      printf 'it cannot collide with theirs, and the session start names it until\n'
+      printf 'felix handoff --rotate folds it into HANDOFF.md and gives it an id.\n'
+      ;;
+    rotate)
+      [ -f "$root/$FELIX_HANDOFF_FILE" ] || die "no $FELIX_HANDOFF_FILE in $root"
+      out="$(felix_handoff_rotate "$root" "$base")" || die "nothing folded: $out"
+      printf '%s\n' "$out" | awk -F'\t' 'NF == 2 { printf "  %-6s %s\n", $1, $2; next } { print "  " $0 }'
+      # Read back at once, by the check the gate runs, so a fold that wrote
+      # something the check refuses is said here and not at the gate.
+      out="$(felix_handoff_check "$root" "$base")"; rc=$?
+      [ "$rc" -eq 0 ] || { printf '\nand the check refuses what it wrote:\n'; printf '%s\n' "$out" | sed 's/^/  /'; exit 1; }
+      printf '\nThe check reads it back clean. Commit HANDOFF.md, %s/ and the removed\n' "$FELIX_HANDOFF_DIR"
+      printf 'pending files as one change.\n'
+      ;;
+    check)
+      out="$(felix_handoff_check "$root" "$base")"; rc=$?
+      [ -z "$out" ] || printf '%s\n' "$out" | awk -F'\t' '{ printf "  %-14s %s\n", $1, $2 }'
+      [ "$rc" -eq 0 ] && printf 'handoff: HANDOFF.md and %s/ are what the fold writes\n' "$FELIX_HANDOFF_DIR"
+      return "$rc"
+      ;;
+  esac
 }
 
 

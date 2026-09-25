@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Is every table in this tree declared, and is every row of it a row?
+#
+#   schema-check [<dir>]         any directory inside the worktree to check;
+#                                default: the one it runs in. The whole worktree
+#                                containing it is checked, against that
+#                                worktree's own schemas.tsv.
+#
+#   exit 0  every table here has a schema row and lib/table.sh accepts it
+#   exit 1  a *.tsv no row declares, a refused row or file, an empty table
+#           whose row says emptiness is refused, a memory store sitting in the
+#           tree, a table that cannot be examined, or a malformed row in
+#           schemas.tsv itself
+#   exit 2  cannot examine: not a git worktree, no readable schemas.tsv, or no
+#           table at all. Never read as clean.
+#
+# Enumerated, never listed. The files come from git, tracked and untracked
+# alike, less what .gitignore excludes: a table somebody created this session
+# and has not added is in the tree the gate certifies, so it is in the tree
+# this checks. A file is a table when schemas.tsv has a row for its basename,
+# whatever it is called, or when its name ends in .tsv; a .tsv with no row
+# fails here rather than being skipped, which is the check reporting its own
+# gap. A check that looks only at the tables somebody remembered is the list
+# that stops matching what exists, which is how the executable check once
+# missed four of seven hooks.
+#
+# The reverse is reported and does not fail. A tree row nothing here is named
+# is either a table no project has written yet or one a published copy of the
+# engine leaves behind, and both are legitimate; it is said, because a row that
+# describes nothing checks nothing.
+#
+# The schema is the one in the tree being gated, as every other gate check
+# reads its tables from the tree it stands in. A branch that loosens a row
+# there and the table with it passes here, and stops at the merge boundary:
+# schemas.tsv is in FELIX_ESCAPE_TABLES, and removing or changing a row of it
+# fires `verifier`. The code that judges is this engine's lib/table.sh.
+set -u
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${1:-}"
+if [ -z "$ROOT" ]; then
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { printf 'schema-check: cannot examine: %s is not inside a git worktree\n' "$PWD"; exit 2; }
+fi
+cd "$ROOT" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1 \
+  || { printf 'schema-check: cannot examine: %s is not a git worktree\n' "$ROOT"; exit 2; }
+ROOT="$(git rev-parse --show-toplevel)" && cd "$ROOT" || exit 2
+
+SCHEMAS="engine/harness/templates/schemas.tsv"
+[ -f "$SCHEMAS" ] && [ -r "$SCHEMAS" ] \
+  || { printf 'schema-check: cannot examine: no readable %s in %s\n' "$SCHEMAS" "$ROOT"; exit 2; }
+
+# shellcheck source=../lib/table.sh
+. "$HERE/lib/table.sh"
+
+# name <TAB> lives, one per schema row.
+DECLARED="$(felix_table_rows "$SCHEMAS" | cut -f1,2)"
+
+# lives <TAB> path for every file that is a table: declared by basename, or
+# named *.tsv (lives `none`). core.quotePath=false keeps non-ASCII names as
+# they are; a name git still quotes, for a tab or a newline in it, comes back
+# wrapped in quotes. It is classified by the name inside them, so it is not
+# skipped for ending in a quote, and passed on quoted to be refused below as a
+# name no reader can open by that string.
+TABLES="$(git -c core.quotePath=false ls-files --cached --others --exclude-standard 2>/dev/null \
+  | LC_ALL=C sort -u \
+  | D="$DECLARED" LC_ALL=C awk '
+      BEGIN { n = split(ENVIRON["D"], d, "\n"); for (i = 1; i <= n; i++) { split(d[i], c, "\t"); lives[c[1]] = c[2] } }
+      { p = $0; if (p ~ /^".*"$/) p = substr(p, 2, length(p) - 2)
+        b = p; sub(/.*\//, "", b)
+        if (b in lives) print lives[b] "\t" $0
+        else if (p ~ /\.tsv$/) print "none\t" $0 }')"
+[ -n "$TABLES" ] || { printf 'schema-check: cannot examine: %s holds no table\n' "$ROOT"; exit 2; }
+
+OUT=""
+add() { OUT="${OUT:+$OUT
+}$1"; }
+
+while IFS= read -r line; do
+  [ -n "$line" ] && add "$SCHEMAS:$line"
+done <<EOF
+$(felix_table_schema_malformed "$SCHEMAS" | sed 's/	/	schema-/')
+EOF
+
+N=0
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  lives="${entry%%	*}"; f="${entry#*	}"
+  N=$((N+1))
+  case "$f" in
+    \"*) add "$(printf '%s:-\tunexaminable\tgit quotes this name, so no reader opens it by what it says' "$f")"; continue ;;
+  esac
+  case "$lives" in
+    none)   add "$(printf '%s:-\tno-schema\tno row in %s declares %s; add one in the same commit' "$f" "$SCHEMAS" "${f##*/}")"
+            continue ;;
+    memory) add "$(printf '%s:-\tmemory-tracked\t%s lives in the memory root, and a copy in the tree publishes it' "$f" "${f##*/}")"
+            continue ;;
+  esac
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    add "$(printf '%s:-\tmissing\ttracked, and not in the working tree' "$f")"
+    continue
+  fi
+  res="$(felix_table_check "$SCHEMAS" "$f")"; rc=$?
+  case "$rc" in
+    0) ;;
+    1) add "$res" ;;
+    *) add "$(printf '%s:-\tunexaminable\t%s' "$f" "$(printf '%s' "$res" | cut -f3 | head -1)")" ;;
+  esac
+done <<EOF
+$TABLES
+EOF
+
+# Tree rows nothing here is named: said, never failed. Matched on the name
+# inside any quotes git put round it, so a table refused above for its name is
+# not also reported as absent; once per name, however many rows repeat it.
+NOTES=""
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  printf '%s\n' "$TABLES" | N="$name" LC_ALL=C awk -F'\t' '
+      { p = $2; if (p ~ /^".*"$/) p = substr(p, 2, length(p) - 2); sub(/.*\//, "", p)
+        if (p == ENVIRON["N"]) { found = 1; exit } }
+      END { exit !found }' \
+    || NOTES="${NOTES}  note  $name is declared and nothing here is named that
+"
+done <<EOF
+$(printf '%s\n' "$DECLARED" | LC_ALL=C awk -F'\t' '$2 == "tree" { print $1 }' | LC_ALL=C sort -u)
+EOF
+
+if [ -n "$OUT" ]; then
+  printf '%s\n' "$OUT"
+  printf 'schema-check: %s refusal(s) across %s table(s)\n' "$(printf '%s\n' "$OUT" | grep -c .)" "$N"
+  printf '%s' "$NOTES"
+  exit 1
+fi
+printf 'schema-check: %s table(s), every one declared and every row accepted\n' "$N"
+printf '%s' "$NOTES"
+exit 0

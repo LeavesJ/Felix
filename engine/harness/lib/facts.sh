@@ -68,7 +68,7 @@ felix_probe_class() {
 # while reporting a clean run is worse than no log, because it is trusted.
 felix_probes_record() {
   local proj="$1" root="$2" tid="${3:-}" rows="$4"
-  local dir log stamp line pred grounds state count detail probe source before after n
+  local dir log stamp line pred grounds state count detail probe source before row mine="" n
   dir="$(felix_mem_dir "$proj")"
   mkdir -p "$dir" 2>/dev/null || return 1
   log="$dir/facts.log"
@@ -76,7 +76,9 @@ felix_probes_record() {
 
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   [ -n "$tid" ] || tid="unknown-tree"
-  before="$(wc -l < "$log" 2>/dev/null | tr -dc '0-9')"; [ -n "$before" ] || before=0
+  # A byte offset, not a line count: it is where this call's rows begin, since
+  # the log only grows, and it is what the confirmation below reads from.
+  before="$(wc -c < "$log" 2>/dev/null | tr -dc '0-9')"; [ -n "$before" ] || before=0
   n=0
 
   while IFS= read -r line; do
@@ -89,19 +91,40 @@ felix_probes_record() {
     probe="$(printf '%s\n' "$line" | cut -f6)"
     source="$(printf '%s\n' "$line" | cut -f7)"
     n=$((n + 1))
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf -v row '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
       "$stamp" "$tid" "$pred" "$(felix_probe_class "$state")" \
-      "$state" "$count" "${grounds:--}" "$probe" "${source:--}" >> "$log" || return 1
+      "$state" "$count" "${grounds:--}" "$probe" "${source:--}"
+    # One row per append, so each lands whole beside another writer's rows.
+    printf '%s\n' "$row" >> "$log" || return 1
+    mine="$mine$row
+"
   done <<EOF
 $rows
 EOF
 
   [ "$n" -gt 0 ] || return 0
-  after="$(wc -l < "$log" 2>/dev/null | tr -dc '0-9')"; [ -n "$after" ] || after=0
-  # Counted rather than trusted. `>>` on a full disk, a read-only volume or a
+  # Confirmed rather than trusted. `>>` on a full disk, a read-only volume or a
   # path that stopped being a file reports through an exit status this loop can
-  # miss inside a subshell; the line count cannot be misread.
-  [ "$((after - before))" -eq "$n" ]
+  # miss inside a subshell. A symlink to /dev/null misses it entirely: the append
+  # succeeds and nothing arrives.
+  #
+  # So every row this call wrote must be found in the bytes appended since it
+  # began, as many times as it wrote it. This used to count the file's growth
+  # instead, and growth is not this call's to own: a second `felix gate` on
+  # the same project, from another worktree or clone, appends to this log at
+  # the same time, and its rows made a clean run of each read as a failed write.
+  # Nor do the stamp and tree id identify a call. Two gates on one tree
+  # in one second write the same values in both columns.
+  #
+  # One limit, stated because it is real: a row that another writer also wrote,
+  # identical in every column, cannot be told from this call's own. Such a row
+  # records the same fact at the same second on the same tree, so the log holds
+  # that fact either way.
+  { printf '%s\n' "$mine"; tail -c "+$((before + 1))" "$log" 2>/dev/null; } \
+    | awk -v n="$n" '
+        !sep { if ($0 == "") sep = 1; else want[$0]++; next }
+        want[$0] > 0 { want[$0]--; got++ }
+        END { exit !(got == n) }'
 }
 
 # What changed since the last tree this was asked about.

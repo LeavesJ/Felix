@@ -9,18 +9,39 @@ system that does whatever implementation takes — choosing tooling, installing
 it, tracking what happened, correcting course — so the founder is left with
 "what should we build next" and "should we add this".
 
-Later, when the revenue, customer and company systems exist, Felix becomes one
-sub-OS reporting to a chief agent. Design its surfaces so something other than
-a human can drive them.
+Felix is a product for other people's projects, not only the founder's own.
+Decided 2026-09-22, this replaces "Phase 1 of the guidebook and nothing past
+it" as the statement of what Felix is for. It is built first, and best, on
+Claude Code, and is host-independent by design: what it decides must not
+depend on which agent did the work, and a second host comes once Claude Code
+is right. So judge a change by whether it survives a stranger adopting it —
+what it installs, where its ledger lives, whether its verdict holds on their
+repository — and not only by whether it works here.
 
-Phase 1 of the guidebook and nothing past it. Billing, customers, support and
-company administration are later phases owned by other systems; a Stripe row in
-a template is a dormant capability, not a direction Felix grows in.
+Felix still governs engineering and nothing past it. Billing, customers,
+support and administration of the projects it governs are not its work; a
+Stripe row in a template is a dormant capability, not a direction Felix grows
+in. Design its surfaces so something other than a human can drive them.
 
 ## The split
 
 **The founder owns what gets built.** Product thesis, vision, prioritisation,
 pitching, and approval at the risk boundaries.
+
+**What waits for the founder's yes is direction, and only direction.** Some
+documents change what Felix is, who it is for, or the order it is built in:
+- a roadmap, or a change to one;
+- this charter's account of what Felix is and of this split;
+- an amendment that overrides the founder's own architecture text.
+
+Such a document is shown to the founder and merged only after a yes. Once it
+lands, the founder gives the delivery one word: yes, partial or no.
+
+Nothing else waits. Engineering, fixes, tables, action items, handoffs, and
+documents that only record what the founder said all merge on green, as
+before. Asking for a yes on any of those is a needless stop, the most common
+way the founder's time went into the agent's job. Decided 2026-09-23, after a
+roadmap merged and was withdrawn four minutes later.
 
 **Felix owns how it gets built, optimally.** Which MCP, which plugin, which
 skill, which agent, in which order, in one context or several. Then the whole
@@ -32,9 +53,22 @@ If the founder is thinking about tooling, Felix has failed at its job.
 **Stealth in the middle.** A session should hear from Felix at its start and at
 its end, and otherwise not at all. Everything between is either invisible —
 context handed to the model, records written to disk — or a refusal, which by
-definition had to interrupt. Status belongs in the monitor, where somebody can
-go and look; it does not belong in a founder's session. A report nobody asked
-for is the same defect as a decision nobody needed to make.
+definition had to interrupt. Status reaches the founder at the end, in the
+session's closing notice, because nobody opened the monitor to find it; the
+monitor stays as the deeper page for anyone who wants more (decided
+2026-09-23). Status does not belong in the middle of a founder's session. A
+report nobody asked for is the same defect as a decision nobody needed to make.
+
+**One exception, allowed by the founder on 2026-09-23 and deliberately
+narrow.** A session whose hooks run an older Felix than the one installed may
+be told so on the person's screen once in its life:
+- at a stop where Felix says nothing else;
+- as a line that starts no model turn;
+- naming `/reload-plugins`.
+
+It is argued in `docs/2026-09-23-restart-moments-scope.md`, and it stays off
+until the person has seen the line render. Any other mid-session line needs
+that decision taken again.
 
 One honest limit on "arrange the tooling": Claude Code cannot mount an MCP
 server or switch on a plugin mid-session. Within a session Felix names what to
