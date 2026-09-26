@@ -167,7 +167,9 @@ felix_overnight_nights() {   # proj -> ids
 felix_overnight_field() {   # proj, field-number [, sid] -> value
   local f; f="$(_felix_overnight_state "$1" "${3:-}")" || return 1
   [ -f "$f" ] || return 1
-  cut -f"$2" < "$f" 2>/dev/null | head -1
+  # sed -n 1p, not head -1: head stops reading after one line, and a cut still
+  # writing would die of SIGPIPE, which pipefail hands the callers as no night.
+  cut -f"$2" < "$f" 2>/dev/null | sed -n 1p
 }
 
 felix_overnight_now() { date +%s; }

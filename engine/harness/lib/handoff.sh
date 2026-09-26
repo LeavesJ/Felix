@@ -119,7 +119,7 @@ felix_handoff_pending_problem() {
   h="$(head -1 "$1" 2>/dev/null)"
   case "$h" in '### '*) ;; *) printf 'does not open with a "### <title>" heading'; return 0 ;; esac
   h="${h#'### '}"
-  if printf '%s' "$h" | LC_ALL=C grep -qE '^[0-9][0-9a-z]*\. '; then
+  if LC_ALL=C grep -qE '^[0-9][0-9a-z]*\. ' <<<"$h"; then
     printf 'carries an id in its heading, and ids are given when it is folded in'; return 0
   fi
   [ -n "$h" ] || { printf 'has an empty title'; return 0; }
@@ -227,7 +227,7 @@ felix_handoff_section() {
   h="$(head -1 "$src")"
   case "$h" in '### '*) ;; *) printf '%s must open with a "### <title>" heading\n' "$src" >&2; return 1 ;; esac
   title="${h#'### '}"
-  if printf '%s' "$title" | LC_ALL=C grep -qE '^[0-9][0-9a-z]*\. '; then
+  if LC_ALL=C grep -qE '^[0-9][0-9a-z]*\. ' <<<"$title"; then
     id="${title%%. *}"; title="${title#*. }"
   fi
   [ -n "$title" ] || { printf '%s has an empty title\n' "$src" >&2; return 1; }

@@ -158,6 +158,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           path: repo
+          # The job's token stays out of repo/.git/config, where the pull
+          # request's own code, which the gate runs, could read it. This job
+          # pushes nothing, so nothing after the fetch needs it.
+          persist-credentials: false
 
       # Felix at a pinned commit, decided 2026-09-23. With no ref this took
       # Felix's default branch as it stood when the job ran, so a verdict here
@@ -165,8 +169,9 @@ jobs:
       # reviewed by nobody here, redefined green for this repository. Branch
       # protection, the auto-merge streak and the repair ceiling read these
       # runs as evidence about this repository, which runs graded by different
-      # engines are not. The job holds a read token and a key that reads Felix,
-      # and no model key, so the case is the verdict, not the credentials.
+      # engines are not. The job fetches with a read token and a key that
+      # reads Felix, keeps neither past its checkouts, and holds no model key,
+      # so the case is the verdict, not the credentials.
       #
       # The pin sits in this file because Felix does not merge a pull request
       # that edits a workflow; a person does. Such a pull request can still
@@ -193,6 +198,11 @@ jobs:
           ref: '${felix_ref}'
           ssh-key: \${{ secrets.FELIX_DEPLOY_KEY }}
           path: felix
+          # Once the fetch is done, the key file under \$RUNNER_TEMP and the
+          # core.sshCommand in felix/.git/config that names it are removed,
+          # so the pull request's code finds neither. Nothing after this talks
+          # to Felix's remote: the engine is read from disk.
+          persist-credentials: false
 
 $(_felix_bs_setup_block "$eco")
       - name: Confirm the governing project

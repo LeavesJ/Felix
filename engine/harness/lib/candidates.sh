@@ -78,6 +78,8 @@ _felix_candidates_answer_epoch() {
 # a refused row says what to change.
 felix_candidates_rules() {
   local proj="$1" root="$2" f line n name cls applies ev grounds reason g bad preds admitted
+  local nl='
+'
   f="$(felix_candidates_answer_path "$proj")"
   [ -f "$f" ] || return 0
   preds="$(felix_probe_rows "$proj" 2>/dev/null | cut -f1 | LC_ALL=C sort -u)"
@@ -89,12 +91,15 @@ felix_candidates_rules() {
     if [ "$n" -ne 7 ]; then
       printf 'refuse\t%s\t%s fields where the shape has 7\n' "${name:-(unnamed)}" "$n"; continue
     fi
-    if ! printf '%s' "$name" | grep -qE '^[a-z][a-z0-9_]*$'; then
+    if ! grep -qE '^[a-z][a-z0-9_]*$' <<<"$name"; then
       printf 'refuse\t%s\tnot a name: an obligation is lowercase letters, digits and underscores\n' "${name:-(unnamed)}"; continue
     fi
-    if printf '%s\n' "$admitted" | grep -qxF "$name"; then
-      printf 'refuse\t%s\talready admitted in obligations.tsv\n' "$name"; continue
-    fi
+    # Membership by case, not a pipe into grep -q: grep stops at the first
+    # match, and a printf still writing a long list dies of SIGPIPE, which
+    # pipefail reads as absent. The quoted name matches only itself.
+    case "$nl$admitted$nl" in
+      *"$nl$name$nl"*) printf 'refuse\t%s\talready admitted in obligations.tsv\n' "$name"; continue ;;
+    esac
     cls="$(printf '%s\n' "$line" | cut -f2)"
     case "$cls" in
       *_BLOCKING) printf 'refuse\t%s\tclass %s may not block: a single model finding is advisory only, and a person admits it with the class they can defend\n' "$name" "$cls"; continue ;;
@@ -110,7 +115,7 @@ felix_candidates_rules() {
     grounds="$(printf '%s\n' "$line" | cut -f5)"
     bad=""
     for g in $(printf '%s' "$grounds" | tr ',' ' '); do
-      printf '%s\n' "$preds" | grep -qxF "$g" || bad="$g"
+      case "$nl$preds$nl" in *"$nl$g$nl"*) ;; *) bad="$g" ;; esac
     done
     [ -z "$grounds" ] && bad="-"
     if [ -n "$bad" ]; then

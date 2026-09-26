@@ -5,18 +5,20 @@
   <img src="assets/felix-lockup-light.svg" alt="Felix" width="340">
 </picture>
 
-### Your agent says the work is done. Felix checks.
+### Two questions an agent shouldn't answer alone: what the work needs, and whether it's done.
 
-Felix exists so a coding agent isn't the only judge of whether its own work is done.<br>
-Today it's a plugin for Claude Code, Anthropic's coding agent. When an agent that changed your code<br>
-tries to finish before it has passed your project's checks, Felix sends it back once and says what's missing.
+Felix is a Claude Code plugin. For what the work needs, it sets a project up with a starter set of plugins,<br>
+reads the plugins it finds before installing them, and reports when an obligation, something the project owes,<br>
+names a checker the project hasn't set up. For whether it's done: when an agent that changed your code<br>
+tries to stop before your project's checks have passed on that code, Felix sends it back once,<br>
+and `felix merge` won't take a branch without a current pass.
 
 [![suite](https://img.shields.io/github/actions/workflow/status/LeavesJ/Felix/suite.yml?branch=main&style=flat-square&label=suite)](https://github.com/LeavesJ/Felix/actions/workflows/suite.yml)
 [![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-2bb8ad?style=flat-square)](#install)
 [![written in bash](https://img.shields.io/badge/written_in-bash-0e1c20?style=flat-square)](engine/harness)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-0e1c20?style=flat-square)](https://github.com/LeavesJ/Felix/blob/main/LICENSE)
 
-**[How it works](#how-it-works)** &nbsp;·&nbsp; **[One change, start to finish](#one-change-start-to-finish)** &nbsp;·&nbsp; **[Try it](#try-it)** &nbsp;·&nbsp; **[Why you might not want it](#why-you-might-not-want-felix)** &nbsp;·&nbsp; **[Status](#status)** &nbsp;·&nbsp; **[Install](#install)**
+**[How it works](#how-it-works)** &nbsp;·&nbsp; **[One change, start to finish](#one-change-start-to-finish)** &nbsp;·&nbsp; **[Try it](#try-it)** &nbsp;·&nbsp; **[Why you might not want it](#why-you-might-not-want-felix)** &nbsp;·&nbsp; **[Status](#status)** &nbsp;·&nbsp; **[Where it's going](#direction)** &nbsp;·&nbsp; **[Install](#install)**
 
 </div>
 
@@ -43,9 +45,17 @@ their transcripts and Felix's logs, Felix held an agent's attempt to stop 206
 times. All but three had one of three causes. In 135 the gate had last run on a
 different tree. In 39 it had never run in that checkout, which is where a fresh
 worktree starts. In 29 it had failed on the exact tree the agent was stopping
-on. Sent back, the agent reran the gate roughly 130 times, so not every hold
-led to a rerun, and at least 15 of those runs failed. Without the hold, it would have stopped before running any
+on. Sent back, the agent reran the gate about 130 times, and at least 15 of
+those runs failed. Without the hold, it would have stopped before running any
 of them.
+
+An agent once shipped a deployment of mine with its tests green and no rate
+limiting. The tests weren't the problem. Nobody, me included, had thought to
+ask for a rate limit, and a gate can only hold an agent to checks someone
+wrote. So Felix is designed with a second half, which comes before any check
+runs: working out what a project owes, and finding something that can check
+it. [One change, start to finish](#one-change-start-to-finish) follows both
+halves through a single change.
 
 I built Felix for my own work, which is one person, a handful of repositories,
 and agents doing most of the engineering. Most of Felix was written by the
@@ -103,8 +113,8 @@ and dated, merged by a person; a session cannot grant itself one.
 ## One change, start to finish
 
 Say your app moves money between friends, and you ask an agent to add
-transfers. Here is that change followed through, with what Felix does today
-marked at each step.
+transfers. Here is that change followed through, with what Felix does marked
+at each step.
 
 1. **A risk nobody wrote down.** If the app retries after a dropped connection,
    or someone taps Send twice, the same payment could go through twice. The
@@ -115,12 +125,13 @@ marked at each step.
    only report that it couldn't look, and Felix treats "couldn't check" the
    same as "failed". The gate fails, the agent is sent back, and `felix merge`,
    Felix's own command for merging a branch, won't merge it. *Built. A person
-   writes the obligation and its check. An AI model can suggest obligations,
-   only advisory ones that never block, and none has been accepted into a
-   project yet.*
-3. **Finding something that can check it (not built).** Felix would work out
-   for itself that transfers need this check, and find or build something that
-   can run it. *Today a person writes the test.*
+   writes the obligation and its check, and an AI model can suggest more,
+   as advice that never blocks.*
+3. **Finding something that can check it.** The obligation names the checker
+   it needs, and `felix obligations` says whether the project declares that
+   checker in full, declares it short of some of the controls `felix qualify`
+   asks for, or doesn't declare it at all. *The report is built, and a person
+   writes the test ([what comes next](#direction)).*
 4. **A proof tied to the exact code.** Someone writes a test that sends the
    same payment twice at once and checks that only one goes through. The gate
    runs it and passes, and the receipt names the exact tree the pass was for.
@@ -131,24 +142,32 @@ marked at each step.
    the diff or a database migration, goes to a person whatever the tests say.
    *Built, but only when you merge with `felix merge`. GitHub's `gh pr merge`
    skips all of it, and so does GitHub's auto-merge, which `felix automerge
-   --enable` turns on for a repository. Deploying isn't built: Felix stops at
-   the merge.*
+   --enable` turns on for a repository. Felix's part ends at the merge.*
 6. **The proof goes stale.** Next week someone changes the transfer logic. The
    old receipt was about the old code, so it stops counting. An agent that
    edits that code and tries to finish is sent back once to run the gate again, and `felix merge` won't
    take the branch until it passes on the new code. *Built.*
 
-Steps 2, 4, 5 and 6 are one loop: write down what must be true, count what
-nobody could check as not done, tie every proof to the exact code it checked,
-let only a current proof through Felix's merge, and throw the proof away when
-the code moves. Felix calls that loop the **trust plane**: the part that
-decides whether finished work can be believed. It's most of what runs today.
-Step 3, working out what a project needs and finding the tools and agents that
-can supply it, is the **capability plane**. Of that half, Felix today installs
-a starter set of plugins for a project, finds new plugins and reads their
-contents before installing any, suggests a tool the first time a session's
-prompt matches one of its routes, and records which tools sessions use. Choosing and running the agents a
-task needs is designed, not built.
+Felix is designed in two halves. Steps 2, 4, 5 and 6 are one loop: write down
+what must be true, count what nobody could check as not done, tie every proof
+to the exact code it checked, let only a current proof through Felix's merge,
+and throw the proof away when the code moves. Felix calls that loop the
+**trust plane**: the part that decides whether finished work can be believed.
+Step 3 is the **capability plane**: working out what a project needs, and
+supplying the tools and agents that can do it. Without it, the trust plane
+holds an agent only to what someone thought to write down, and step 1's risk
+is one nobody did.
+
+On the capability side, Felix installs a starter set of plugins, at user
+scope, when it sets a project up, and finds new plugins and reads their
+contents before installing any. When a checkout grows something new, like a
+`Cargo.toml`, Felix adds the catalogue's rows for it, here rust-analyzer, and
+installs nothing. An AI model can be
+asked to propose obligations, advisory ones only, and an obligation can name
+the checker it needs, with Felix reporting whether one is declared. Felix also
+suggests a tool the first time a session's prompt matches one of its routes,
+and records which tools sessions use. [Where it's going](#direction) covers
+the rest of this half.
 
 All of it runs inside the agent's session or on your machine, so it catches an
 agent that forgets, not one working to get round it ([why you might not want
@@ -158,9 +177,9 @@ Felix](#why-you-might-not-want-felix)).
 
 | Guard | What it does |
 |:---|:---|
-| **The merge escapes** | `felix merge` picks out the changes a revert can't undo and leaves them for a person: a credential in the added lines, a change to a CI workflow (workflows run with the repository's secrets), a change to the autonomy grant or the exception table, a migration or destructive SQL, and a change that removes rows from an enforcing table kept in the repository being merged, which today means only Felix's own ([escape.sh](engine/harness/lib/escape.sh)). Only on the `felix merge` path. `gh pr merge` skips it |
-| **The judge on main** (Felix's own repository) | At merge, a change to Felix itself is judged by the copy of Felix on main, never by the candidate ([resolve.sh](engine/harness/lib/resolve.sh)). That rule came from one day on which nine engine changes in a row were each deployed before being judged, so each one judged itself. `felix gate` doesn't pin its judge yet |
-| **Checker qualification** | For each checker a project declares, `felix qualify` plants every mutation its table names, each under one of six kinds of control, and requires the checker to fail or pass as that kind demands. A checker missing any of the six kinds is reported, not refused ([qualify.sh](engine/harness/lib/qualify.sh)). So far only Felix's own checkers are declared |
+| **The merge escapes** | `felix merge` picks out the changes a revert can't undo and leaves them for a person: a credential in the added lines, a change to a CI workflow (workflows run with the repository's secrets), a change to the autonomy grant or the exception table, a migration or destructive SQL, and a change that removes rows from an enforcing table kept in the repository being merged, which means Felix's own, since other projects keep their tables in Felix's home ([escape.sh](engine/harness/lib/escape.sh)). Only on the `felix merge` path. `gh pr merge` skips it |
+| **The judge on main** (Felix's own repository) | At merge, a change to Felix itself is judged by the copy of Felix on main, never by the candidate ([resolve.sh](engine/harness/lib/resolve.sh)). That rule came from one day on which nine engine changes in a row were each deployed before being judged, so each one judged itself |
+| **Checker qualification** | For each checker a project declares, `felix qualify` plants every mutation its table names, each under one of six kinds of control, and requires the checker to fail or pass as that kind demands. A checker missing any of the six kinds is reported, not refused ([qualify.sh](engine/harness/lib/qualify.sh)) |
 | **Plugin discovery** | Plugins Felix finds on its own are fetched, at the catalogue's pinned commit where it lists one, and read before anything installs. The install fetches its own copy, and Felix compares the two afterwards and reports a difference rather than undoing it. A hook, a floating version or an interpolated secret marks one high risk, and high risk never installs ([discover.sh](engine/harness/lib/discover.sh)). That check says of itself that it "catches carelessness, not an attacker" |
 | **The deny table** | Before a Bash, Edit, Write, Read, NotebookEdit or WebFetch call runs, Felix matches its command, file path or URL against the project's `deny.tsv` and refuses a match with its reason ([deny.sh](engine/harness/lib/deny.sh)). It matches spellings, not intent, and skips a rule broad enough to catch ordinary work. `felix new` writes no table, so a new project refuses nothing |
 
@@ -282,6 +301,14 @@ gets you part of the way. Felix adds three things that hook doesn't have:
    An edit to any of those makes the old pass stop counting. (Git-ignored files
    aren't part of it, and past 500 untracked files only their count is.)
 
+Those three are part of the trust plane. None of them, and nothing in CI,
+decides what should be checked at all. That is the capability plane. `felix
+obligations --request` writes a request for a session's model to say what a
+project owes, and `felix obligations` reads the answer back. It keeps each
+proposal that passes its checks as advice that never blocks, and refuses one
+that asks to block rather than quietly downgrading it. Admitting an obligation
+is left to a person.
+
 ## Why you might not want Felix
 
 > [!IMPORTANT]
@@ -356,7 +383,7 @@ private. If you want a mature, general agent framework, this isn't one.
 | State | What |
 |:---|:---|
 | **In daily use** on my projects | The Stop hold, receipts and their staleness, the merge escapes, obligations with UNKNOWN blocking (on Felix's own project; the others hold only the one row `felix new` seeds), project setup (commissioning), the deny table, checker qualification on Felix's own checks, plugin discovery, and the ledger of which tools sessions used |
-| **Built, little or no real use** | Exceptions: none granted yet, and read only for Felix's own project. The unattended repair workflow (never run on real input). Obligations proposed by a model, only advisory ones: run on two real projects as of September 23, with 22 proposed and none admitted yet. Admitting one means copying it into the project's obligations table, which is left to a person but not enforced |
+| **Built, little or no real use** | Exceptions: none granted yet, and read only for Felix's own project. The unattended repair workflow (never run on real input). Obligations proposed by a model, only advisory ones: run on two real projects as of September 23, with 22 proposed and none admitted yet. Admitting one means copying it into the project's obligations table, which is left to a person but not enforced. An obligation naming the checker it needs, reported by `felix obligations` and read by no verdict: two rows, both on Felix's own project, and neither checker declared yet |
 | **Partial** | Pinning the judge to main covers `felix merge` but not `felix gate`. `felix automerge` only counts a streak of clean merges and, with `--enable`, turns on GitHub's auto-merge, whose merges skip `felix merge`. The staleness hash depends on which `git` is on PATH, so the same tree can read stale in another environment |
 | **Designed, not built** | `felix dispatch`, which runs each worker as a restricted headless session with only the tools its task needs, and records what it did |
 | **Absent** | Sandboxing, time-limited tool grants and revocation, and support for any host but Claude Code |
@@ -368,18 +395,38 @@ private. If you want a mature, general agent framework, this isn't one.
 Felix is meant to grow into the layer between you and your agents: you say
 what you want and make the calls that are yours, workers do the engineering in
 short sessions with narrow permissions, and something other than the worker
-decides what counts as done. Today the check runs inside the agent's own
-session, so a worker can get past it.
+decides what the work needs and what counts as done. Today the check runs
+inside the agent's own session, so a worker can get past it.
 
-The next step joins the two planes. An obligation will name the kind of
-checker it needs, and stay unmet until a checker that has passed Felix's
-qualification, including showing it can fail, is attached. `felix dispatch`
-comes later. It would launch each worker as a headless session with only the
-tools its task needs, keep its record as the handoff, and so move the check
-outside the worker. Its first version would launch Claude Code, though the
-shape isn't specific to Claude. The bet is on models getting better: as
-workers take on more of each instruction, it matters more that something other
-than the worker decides what counts as done.
+The next step joins the two planes. An obligation can already name the
+checker it needs, and `felix obligations` reports whether one is declared,
+but nothing that decides whether the obligation is met reads that yet. Next,
+the obligation will stay unmet until a checker that has passed Felix's
+qualification, including showing it can fail, is attached.
+
+The rest of the capability plane is being built alongside, and none of it
+will be called built until it has been shown working. Three things come
+first:
+
+1. **A test of what a model finds.** Omissions of the kind the [missing rate
+   limit](#the-failure-it-exists-for) was will be planted in test projects,
+   and a model asked what each project owes will be measured against a plain
+   Claude Code session. If it finds nothing the plain session misses, Felix
+   will narrow to the obligations people name.
+2. **A retire list keyed to what Felix installed.** Today the ledger records a
+   zero for every declared tool no session used, but proposes retiring one
+   only if a route pointed sessions at it, so a tool no route names is never
+   proposed.
+3. **A dry run of dispatch.** It will print how a task would be launched, with
+   only the tools that task needs, and start nothing.
+
+`felix dispatch` itself comes after those. It would launch each worker as a
+headless session with only the tools its task needs, keep its record as the
+handoff, and so move the check outside the worker. Its first version would
+launch Claude Code, though the shape isn't specific to Claude. The bet is on
+models getting better: as workers take on more of each instruction, it
+matters more that something other than the worker decides what the work needs
+and what counts as done.
 
 Two things here aren't new. [AI-SDLC](https://ai-sdlc.io) also binds verdicts
 to commits, and GitHub's
@@ -396,9 +443,9 @@ Installing changes your setup, so read this part first:
   project's constitution and handoff to read, recorded lessons that match a
   prompt, and a note to each subagent. It logs the first 160 bytes of each prompt, and up to 200
   beside anything Felix says, to the project's memory directory. It suggests a
-  tool the first time a session's prompt matches one of its routes, advice a
-  blind study put at about 2% precision ([see Reference](#ideas-it-dropped)). It clones candidate plugins
-  once a week to read them, and adds catalogue rows for tools it detects.
+  tool the first time a session's prompt matches one of its routes. It clones
+  candidate plugins once a week to read them, and adds catalogue rows for
+  tools it detects.
 - The clone you install from becomes Felix's home, the directory that holds
   each project's rules, and `~/.felix-home` names it. The clone is registered
   as a local plugin marketplace and is itself governed as the project `felix`.
@@ -579,15 +626,25 @@ and those assumptions go stale. An outside review put that question to Felix:
 if the model were ten times better tomorrow, which parts would still need to
 exist?
 
-The rules and the judge. Receipts bound to a tree, UNKNOWN blocking,
-exceptions meant to take effect only when a person merges them, the merge escapes, checks that
-must prove they can fail, and the record of every hold, deny-table refusal
-and escape. A smarter model
-still shouldn't grade its own work. The parts that compensate for today's
-models should go, starting with keyword routing, which the study above already
-demoted, along with the reminders to read the handoff and the notes injected
-into subagents. As [the limits](#why-you-might-not-want-felix) say, none of
-this has been tested against a capable agent trying to get round it.
+On the trust side, the rules and the judge. Receipts bound to a tree, UNKNOWN
+blocking, exceptions meant to take effect only when a person merges them, the
+merge escapes, checks that must prove they can fail, and the record of every
+hold, deny-table refusal and escape. A smarter model still shouldn't grade its
+own work.
+
+On the capability side, the parts that bear on what a worker is given and held
+to: reading a plugin Felix discovers before it's installed, because a plugin
+declares no permissions and installing one lets it run code, an obligation
+naming the checker it needs, and the record of which tools sessions actually
+reach. So would giving each worker only the tools its task needs. However
+good the model gets, it shouldn't choose its own permissions or vouch for the
+code it brings in.
+
+The parts that compensate for today's models should go: keyword routing,
+which the study above already demoted, along with the reminders to read the
+handoff and the notes injected into subagents. Routing was only one part of
+the capability plane. As [the limits](#why-you-might-not-want-felix) say,
+none of this has been tested against a capable agent trying to get round it.
 
 </details>
 

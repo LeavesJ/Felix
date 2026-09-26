@@ -1372,7 +1372,8 @@ felix_plugin_description() {
 #   refuse   medium or high
 #   already  named in stack.tsv, whatever the tier
 felix_discover_adopt() {
-  local proj="$1" home="$2" tpl="${3:-}" cache name cap risk digest declared
+  local proj="$1" home="$2" tpl="${3:-}" cache name cap risk digest declared nl='
+'
   cache="$(_felix_discover_cache "$proj" "$home").tsv"
   felix_discover_cache_current "$proj" "$home" "$tpl" || return 0
 
@@ -1402,11 +1403,13 @@ felix_discover_adopt() {
 
     # Self-contained on purpose: this file is sourced alone by the suite, and a
     # helper from a sibling lib turns that into a runtime error rather than a
-    # failing assertion. grep without -q for the usual reason — a consumer that
-    # exits on its first match kills the producer under `set -o pipefail`.
-    if printf '%s\n' "$declared" | grep -xF "$name" >/dev/null 2>&1; then
-      printf 'already\t%s\t%s\t%s\n' "$name" "$cap" "$risk"; continue
-    fi
+    # failing assertion. A case, not a pipe into grep. Dropping -q did not avoid
+    # the race it was dropped for: GNU grep writing to /dev/null stops at its
+    # first match all the same, and pipefail reads the printf it cut off as a
+    # name not yet declared, which is then declared twice.
+    case "$nl$declared$nl" in *"$nl$name$nl"*)
+      printf 'already\t%s\t%s\t%s\n' "$name" "$cap" "$risk"; continue ;;
+    esac
     # A cache row was tiered by this engine reading what the candidate ships,
     # so the policy is asked as OBSERVED. `hold` and `refuse` both read
     # `refuse` here: this command's caller can only declare or not, and the

@@ -10,12 +10,16 @@
 # Whether it is DISCHARGED is the evidence command's verdict: exit 0 holds, 1
 # fails, 2 cannot examine. Its output is the coverage report.
 #
-# obligation	class	pathway	applies	evidence	grounds	reason
+# obligation	class	pathway	applies	evidence	grounds	reason	needs
 #
 # class:    INFO ADVISORY TASK_BLOCKING RELEASE_BLOCKING AUTHORITY_BLOCKING
 # pathway:  deterministic witness corroborated probabilistic unknown
 #           (probabilistic is advisory only and may not carry a blocking class)
 # grounds:  probe predicate(s) from probes.tsv the applicability rests on, or -
+# needs:    optional; the checker id(s) from qualification.tsv that would
+#           discharge the row, comma separated, or -. felix obligations says
+#           whether each is declared with every control, short of some, or
+#           absent. Report only: it changes no verdict.
 #
 # The first obligation every plugin owes: each lifecycle moment it has taken a
 # stance on is wired the way the stance says, and no moment is wired without a

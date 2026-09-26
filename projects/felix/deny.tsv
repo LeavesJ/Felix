@@ -4,7 +4,18 @@
 # and should be equally slow to invent rules for them; these are two its own
 # constitution already states and nothing enforced.
 #
-# tool	extended-regex	reason
+# tool	extended-regex	reason	scope
+#
+# A fourth column, `checkout`, says a row protects the governed checkout and
+# nothing else: a match is passed over when everything the matched command acts
+# on is a throwaway fixture under /tmp or $TMPDIR, and stands otherwise,
+# including whenever that cannot be told (lib/where.sh). The rows below
+# carrying it guard three things: the binding (four rows, since #311 split one
+# row by how a command writes), the remote-tracking refs and the remote. On
+# 2026-09-23 those three were most of the refusals the hooks had logged: a
+# fixture repository bound with `printf ... > .felix`, a fresh `git init`
+# given a remote, a scratch clone's remote-tracking refs moved. Each protects
+# this checkout's binding, remote or refs, and no fixture's.
 Bash	git push ([^;&|]* )?(--force|-f)( |$)	force push drops commits, and Felix's history is the audit trail
 Bash	git commit ([^;&|]* )?--no-verify	--no-verify is how a gate stops being a gate. Fix the tree instead
 #
@@ -27,9 +38,50 @@ Edit	(^|/)\.felix(-home)?$	this file decides whether Felix is enforcing anything
 # the line after the name, so a quoted marker and a marker followed by `;`
 # both walked past it. A row that ordinary redirect spellings step around is
 # a row that refuses only the person who wrote it.
-Bash	(>|tee|cp |mv |rm |ln |truncate|sed -i|install |dd of=)[^;&|]*["']?\.felix(-home)?["']?([[:space:];&|)]|$)	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home
 #
-# The third row is not about damage to the tree. It is about a command shape
+# It was one row until 2026-09-23, and that row refused reads. Its verbs had
+# no word start, so the `ln ` in `grep -rln '\.felix'` was a link; its `>`
+# matched `2>/dev/null` and ran on to a later READ of the pointer, in the
+# `tr -d '[:space:]' 2>/dev/null < "$HOME/.felix-home"` the engine itself
+# resolves the home with; and `cp .felix /tmp/backup` copies the marker
+# somewhere else. Each was reproduced with argv-logging shims and a hash of
+# the marker and the pointer, and each is in the logged refusals. So a row
+# for each way a command writes a file:
+#
+#   - a redirect writes its own target word, so the marker must be that word,
+#     quoted or not, and not something later in the command. A target quoted
+#     round a blank is still one word, and the second reading in lib/deny.sh
+#     drops its quotes, so the second redirect row lets the target run across
+#     blanks: only where the `>` is an operator (at the start of a line, or
+#     after a blank, a digit, `;`, `&`, `|` or `(`), only over pieces that
+#     start with no `-` and hold no quote, where every piece after the first
+#     starts with no `/`, `~`, `$` or `.`, each of which begins a path of its
+#     own, and only to a marker that ends a path;
+#   - tee, mv, rm, truncate and sed -i write the files they name, so the
+#     marker among their operands is a write, unless a `<` before it makes
+#     it what they read; dd writes the file its of= names;
+#   - cp, scp, ln and install write their last operand, so the marker is a
+#     write there, and a read before it unless that last operand is a
+#     directory, where the copy lands as a marker of its own: `.`, `..`, or a
+#     path ending in `/`. A directory named without the slash cannot be told
+#     from a file by reading the command, and is let through.
+#
+# A verb is a word, never the tail of one: it starts a line, or the character
+# before it is not a letter, digit, `_`, `.` or `-`, so `-rln` and `-ln` are
+# flags again. A row reads the payload's JSON string, where a line break or a
+# tab is a backslash and an `n`, `r` or `t`, so those are named on their own,
+# at the start of a verb and at the end of a marker, and only unescaped: a
+# `\n` typed inside quoted text arrives as two backslashes and an `n`, and is
+# no line break. The first drafts of these rows let a write on a later line,
+# or on a tab-indented one, go through, which the old row had refused. A
+# comment may follow the last operand. scp is named because the old row
+# caught it only as the tail `cp `.
+Bash	>[>|]?[[:space:]]*(["'][^"']*|("[^"]*"|'[^']*'|[^[:space:];&|<>"'])*(["'][^[:space:]"']*)?)\.felix(-home)?["']?([[:space:];&|)]|$|\\[nrt])	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home	checkout
+Bash	(^|[[:space:];&|(]|[0-9]|(^|[^\\])(\\\\)*(\\[nrt])+)>[>|]?[[:space:]]*[^-[:space:];&|<>"'][^[:space:];&|<>"']*([[:space:]]+[^-/~$.[:space:];&|<>"'][^[:space:];&|<>"']*)*[[:space:]]+[^-/~$.[:space:];&|<>"'][^[:space:];&|<>"']*/\.felix(-home)?([[:space:];&|)]|$|\\[nrt])	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home	checkout
+Bash	(^|[^[:alnum:]_.-]|(^|[^\\])(\\\\)*(\\[nrt])+)(((tee|mv|rm|truncate)[[:space:]]|sed -i)[^;&|<]*|dd[[:space:]]([^;&|]*[[:space:]])?of=["']?[^[:space:];&|]*)["']?\.felix(-home)?["']?([[:space:];&|)]|$|\\[nrt])	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home	checkout
+Bash	(^|[^[:alnum:]_.-]|(^|[^\\])(\\\\)*(\\[nrt])+)(s?cp|ln|install)[[:space:]][^;&|]*["']?\.felix(-home)?["']?([[:space:]]+([^;&|]*[[:space:]])?["']?([^[:space:];&|]*/|\.\.?)["']?)?([[:space:]]+[0-9]*[<>][^;&|]*)?([[:space:]]*([;&|)]|$|\\[nrt])|[[:space:]]+#)	rewriting the binding by hand is how the floor gets switched off in one line; use felix new or felix install --home	checkout
+#
+# The next row is not about damage to the tree. It is about a command shape
 # that hangs the session that ran it, which this project learned on 2026-09-12
 # after 22 of them in one session left spinning shells and 34 stray helper
 # processes behind, some alive for more than a day.
@@ -53,6 +105,6 @@ Bash	read -t [0-9]+ [^;&|]*< <\(	a timed read from a process substitution never 
 # over command text refuses the spellings it names and no other; branch
 # protection on the remote is the rule that cannot be evaded from here at
 # all, and until it exists these are the floor, not the wall.
-Bash	git( +-[^ ]+( +[^ ]+)?)* +(update-ref|symbolic-ref|fetch|push)[^;&|]*refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it
-Bash	git( +-[^ ]+( +[^ ]+)?)* +remote +(add|set-url|rename|remove|rm)( |$)	the remote is where the person is; a session that rewrites it chooses what refs/remotes/origin/main means
+Bash	git( +-[^ ]+( +[^ ]+)?)* +(update-ref|symbolic-ref|fetch|push)[^;&|]*refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it	checkout
+Bash	git( +-[^ ]+( +[^ ]+)?)* +remote +(add|set-url|rename|remove|rm)( |$)	the remote is where the person is; a session that rewrites it chooses what refs/remotes/origin/main means	checkout
 Bash	git( +-[^ ]+( +[^ ]+)?)* +push[^;&|]* \+?([^ ]*:)?(refs/heads/)?main([[:space:];&|)]|$)	main is merged through felix merge and a person, never pushed from a session; the exception table is read from it

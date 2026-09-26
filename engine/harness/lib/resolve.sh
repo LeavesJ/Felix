@@ -748,8 +748,11 @@ felix_kernel_dir() {
 felix_marketplace_root() {
   local reg="${1:-$HOME/.claude/plugins/known_marketplaces.json}"
   [ -f "$reg" ] || return 0
+  # sed -n 1p, not head -1: head stops reading after one line, and a sed still
+  # writing would die of SIGPIPE, which pipefail hands a caller that tests the
+  # status as no marketplace.
   sed -n '/"felix"[[:space:]]*:[[:space:]]*{/,/^  }/p' "$reg" 2>/dev/null \
-    | sed -n 's/.*"installLocation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+    | sed -n 's/.*"installLocation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n 1p
 }
 
 # Whether this engine is one Claude Code could ever install from.

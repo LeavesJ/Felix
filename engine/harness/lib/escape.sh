@@ -159,8 +159,10 @@ _felix_escape_confined() {
            } | grep -E '^[-+]' | grep -vE '^(\+\+\+|---)')"
   [ -n "$hunk" ] || return 1
 
-  # Any line outside the confine means the row fires.
-  printf '%s\n' "$hunk" | grep -qvE "$confine" && return 1
+  # Any line outside the confine means the row fires. A here-string, not a
+  # pipe: grep -q stops at the first such line, and a printf still writing a
+  # long hunk dies of SIGPIPE, which pipefail reads as every line confined.
+  grep -qvE "$confine" <<<"$hunk" && return 1
 
   plus="$(printf '%s\n' "$hunk"  | grep '^+' \
           | sed -E 's/^\+[^A-Za-z0-9]*([A-Za-z0-9._-]+).*/\1/' | LC_ALL=C sort)"
@@ -270,16 +272,16 @@ felix_escapes() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
 
-    printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_EXECUTE" \
+    grep -qE "$FELIX_ESCAPE_EXECUTE" <<<"$f" \
       && printf 'execute\t%s\tmerging runs this job holding the repository secrets\n' "$f"
 
-    printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_AUTHORITY" \
+    grep -qE "$FELIX_ESCAPE_AUTHORITY" <<<"$f" \
       && printf 'authority\t%s\tmerging grants Felix a power it then holds in every session; a revert does not un-run them\n' "$f"
 
-    printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_EXCEPTION" \
+    grep -qE "$FELIX_ESCAPE_EXCEPTION" <<<"$f" \
       && printf 'exception\t%s\tmerging turns a written row into a grant that clears an obligation, and only a person may give one\n' "$f"
 
-    printf '%s' "$f" | grep -qE "$FELIX_ESCAPE_DURABLE_PATH" \
+    grep -qE "$FELIX_ESCAPE_DURABLE_PATH" <<<"$f" \
       && printf 'durable\t%s\trows already written are not restored by a revert\n' "$f"
 
     # verifier, for the tables that decide what stops. Adding is free — except
@@ -297,7 +299,9 @@ felix_escapes() {
 $paths
 EOF
 
-  [ -n "$added" ] && printf '%s' "$added" | grep -qE "$FELIX_ESCAPE_DURABLE_ADDED" \
+  # A here-string for the reason _felix_escape_confined gives: SQL on an early
+  # line of a long diff would otherwise read as no SQL at all.
+  [ -n "$added" ] && grep -qE "$FELIX_ESCAPE_DURABLE_ADDED" <<<"$added" \
     && printf 'durable\tADDED-LINES\tdestructive SQL in the added lines\n'
 
   # One lookup for the whole diff. `reviewed` is the only channel a verdict can
@@ -332,7 +336,7 @@ EOF
     [ "$channel" = "unknown" ] && channel="declared-unknown"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      printf '%s' "$f" | grep -qE "$pattern" || continue
+      grep -qE "$pattern" <<<"$f" || continue
       [ "$channel" = "reviewed" ] && [ "$reviewed" = "pass" ] && continue
       case "${confine:-}" in
         count:*) _felix_escape_fewer "$root" "$base" "$f" "${confine#count:}" || continue ;;

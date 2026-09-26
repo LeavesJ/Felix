@@ -407,7 +407,9 @@ felix_verify_current() {
     printf 'stale\tthe epoch cannot be read now: epoch.sh is not loaded\n'; return 1
   fi
   comps="$(felix_epoch_components "$proj" "$root" 2>/dev/null)"
-  if printf '%s\n' "$comps" | cut -f2 | grep -qx -- '-'; then
+  # awk, not grep -q, here and in felix_verify_epoch_fields: it reads every
+  # value before it answers, so no writer is cut off for pipefail to misread.
+  if printf '%s\n' "$comps" | cut -f2 | awk '$0 == "-" { u = 1 } END { exit !u }'; then
     printf 'stale\tthe grounded facts cannot be read now, so the receipt cannot be confirmed; run felix gate\n'; return 1
   fi
   now_epoch="$(printf '%s\n' "$comps" | _felix_hash)"
@@ -440,7 +442,7 @@ felix_verify_epoch_fields() {
   fi
   command -v felix_epoch_components >/dev/null 2>&1 || { printf -- '-\t-\n'; return 0; }
   comps="$(felix_epoch_components "$proj" "$root" 2>/dev/null)"
-  if [ -z "$comps" ] || printf '%s\n' "$comps" | cut -f2 | grep -qx -- '-'; then
+  if [ -z "$comps" ] || printf '%s\n' "$comps" | cut -f2 | awk '$0 == "-" { u = 1 } END { exit !u }'; then
     printf -- '-\t-\n'; return 0
   fi
   printf '%s\t%s\n' "$(printf '%s\n' "$comps" | _felix_hash)" \

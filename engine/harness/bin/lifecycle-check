@@ -30,7 +30,10 @@ out="$(felix_coverage_check "$TPL" "$HOOKS")"
 [ -n "$out" ] || { printf 'lifecycle-check: cannot examine: %s/lifecycle.tsv takes no stance on any moment\n' "$TPL"; exit 2; }
 
 printf '%s\n' "$out" | awk -F'\t' '{ printf "  %-13s %-20s %s\n", $1, $2, $3 }'
-if printf '%s\n' "$out" | awk -F'\t' '$1 != "ok"' | grep -q .; then
+# One awk over the report, deciding at its end. A pipe into grep -q can stop
+# before its writer finishes, and under pipefail, which this script does not
+# set, that would read a disagreement as none.
+if awk -F'\t' '$1 != "ok" && $0 != "" { b = 1 } END { exit !b }' <<<"$out"; then
   printf 'lifecycle-check: %s moment(s) where stance and wiring disagree\n' \
     "$(printf '%s\n' "$out" | awk -F'\t' '$1 != "ok"' | grep -c .)"
   exit 1

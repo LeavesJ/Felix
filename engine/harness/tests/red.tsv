@@ -4,5 +4,73 @@
 #   run   <failed>  <passed>  <skipped>        lines counted, not the summary
 #   <assertion name>  <times it failed>        failed names only
 # A base of - means no red run was possible. Reproduce with: tests/red <ref>
-base	27d61d704c4d762c68dbcecc3783173d62dc1726	27d61d704c4d762c68dbcecc3783173d62dc1726	0.49.212
-run	0	3546	5
+base	2b6e2fab9f5da56ede84252e9849e1236c5185f2	2b6e2fab9f5da56ede84252e9849e1236c5185f2	0.49.231
+run	68	3786	5
+a blank line and a comment are still skipped, and an id with digits, _ and - is a checker	1
+a checker that is not an id is malformed, a space, a glob, a capital, a digit or a dash first	1
+a checker that reads its stdin leaves the row after it to run, and that row is held	1
+a held row with a tab in front of it refuses --gate, named malformed	1
+a row loop that gave every verdict and then failed refuses --gate by itself, saying the run did not finish	1
+a row of more than six fields is malformed	1
+a row with a tab in front of its checker is malformed, never skipped as a blank line	1
+a table gone after any read felix qualify --gate makes never passes it	1
+a table moved away for any one read felix qualify --gate makes never passes it	1
+a table rewritten to one that passes, after any read felix qualify --gate makes, leaves the run it read refusing on its held control	1
+a table that cannot be read names no control missing, rather than all six, and exits 2	1
+a table whose lines end in a bare carriage return is malformed, never one row with the rest unread	1
+and a run over a met control exits 0 only with a clean run's output, its shortfall included, and otherwise says what could not be read or worked out	1
+and a run whose one checker is never shown failing here never exits 0 either	1
+and claims neither a check no row qualifies nor that every check has one	1
+and counts nothing it could not read	1
+and felix gate fails qualified showing each such row MALFORMED under it	1
+and its summary line ends saying what would discharge them could not be read	1
+and leaves off the table of what would discharge each	1
+and missing_controls says on stderr which table could not be read	1
+and missing_controls says so without the caller's pipefail	1
+and names none of demo's controls missing	1
+and needs says on stderr which table could not be read	1
+and needs says so without the caller's pipefail	1
+and never counts across 0 checkers nor names a file of the checkout	1
+and none of those rows is run	1
+and one that finished having given 1 verdict of 2 refuses by itself, saying 1 of 2 ran	1
+and over a felix qualify --gate killed before it said anything, qualified FAIL still says where to read why	1
+and plain felix qualify exits 2 when the roster gap could not be read	1
+and plain felix qualify over it does the same	1
+and says it ran 1 of the 2 controls, exiting 1	1
+and says why, that it declares no control that can be run	1
+and shows that row held	1
+and so does a held row after a bare carriage return	1
+and so does a mutation that reads its stdin	1
+and so is a row ending in a carriage return and a newline	1
+and so without the caller's pipefail	1
+and that is the one line missing_controls writes there	1
+and that is the one line needs writes there	1
+and that is the one line ungoverned writes there	1
+and the gate's summary counts nothing it could not read	1
+and the gate's summary line ends saying what would discharge them could not be read	1
+and the same when the read that fails is an earlier one, with a later one read	1
+and ungoverned says on stderr which table could not be read	1
+and ungoverned says so without the caller's pipefail	1
+and whichever read fails, felix gate never says across 0 checker(s) nor shows awk's own error	1
+and whichever read plain felix qualify makes fails, it says what could not be read and exits 2	1
+felix gate over a felix qualify --gate whose row loop was killed says under qualified FAIL that the run did not finish and 1 of 2 ran	1
+felix gate over a present, empty table fails qualified and says under it that no checker here is qualified	1
+felix gate over a table it cannot read fails qualified and says under it that the table could not be read	1
+felix qualify --gate naming a checker with no row refuses, and says no control is declared for it	1
+felix qualify --gate over a table it cannot read runs nothing, says it could not be read naming it, and exits 2	1
+felix qualify --gate reads qualification.tsv exactly once	1
+felix qualify --gate refuses a held row after a checker that reads its stdin	1
+felix qualify --gate refuses rows whose checker is my check or *, rather than running them	1
+felix qualify says which checks have a row could not be read when that read fails	1
+felix_qualify_run over a table it cannot read runs nothing and exits 2, with the caller's pipefail and without	1
+in a UTF-8 locale, a row holding a byte that is not UTF-8 hides no checker after it from felix qualify	1
+in a UTF-8 locale, a row holding a byte that is not UTF-8 is read, and ungoverned names only the unqualified	1
+needs over a table that cannot be read resolves nothing, not every capability absent, and exits 2	1
+needs whose last read of one checker's controls fails prints nothing and exits 2	1
+plain felix qualify reads it once for its controls and at most once more for the roster gap	1
+ungoverned over a table that cannot be read names no reported checker, and exits 2	1
+when the last read felix qualify --gate makes of the table fails, it says the table could not be read and exits 2	1
+whichever awk, tr, cut or sort call felix qualify --gate makes fails, a run over a held control never exits 0	1
+whichever read of the table fails, needs prints nothing, exits 2, and says so in one stderr line naming it	1
+whichever read of the table felix gate's qualified check makes fails, it prints qualified FAIL with a line under it saying what could not be read	1
+whichever read of the table felix qualify --gate makes fails, it runs nothing, says the table could not be read, and exits 2	1

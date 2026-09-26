@@ -619,13 +619,27 @@ cmd_gate() {
     qout="$(cmd_qualify --gate 2>&1)"; qrc=$?
     if [ "$qrc" -eq 0 ]; then
       printf '  %-18s ok\n' qualified | tee -a "$log"
-      # Counted from the table, not from the rendering. Reading the rendered
-      # rows counted the summary line under them as a checker, so one checker
-      # reported as two — a number nobody wrote, in the line that says how much
-      # was checked.
+      # The checkers are counted off the rendered verdict rows by their exact
+      # shape: two spaces, the checker, a control, pass or fail, what came
+      # back, and ok or n/a, which under ok is every row. It was counted off the
+      # rendering once before, loosely, and took the summary line under the rows
+      # for a checker, so one checker read as two; that moved it to a read of
+      # the table of its own. That read, failing, said across 0 checker(s) and
+      # showed awk's error, and a second read is a verdict nobody took: the
+      # count now comes from the run felix qualify --gate made of its one read.
+      #
+      # The checker is what is left of the row once the last four columns are
+      # taken off it, the control named from the six. Taken as one word, a
+      # checker named `my check` matched no row, and six met controls were met
+      # across 0 checkers.
+      local qk
+      qk="$(printf '%s\n' "$qout" | LC_ALL=C awk -v ctl="$FELIX_QUALIFY_CONTROLS" '
+        BEGIN { gsub(/ +/, "|", ctl); tail = " +(" ctl ") +(pass|fail) +[^ ]+ +(ok|n/a)$" }
+        /^  / { c = substr($0, 3)
+                if (sub(tail, "", c) && c != "" && !(c in s)) { s[c] = 1; n++ } }
+        END { print n + 0 }' 2>/dev/null)" || qk="an unknown number of"
       printf '                     %s control(s) met across %s checker(s)\n' \
-        "$(printf '%s\n' "$qout" | grep -cE '  ok$')" \
-        "$(felix_qualify_checkers "$proj" | grep -c .)"
+        "$(printf '%s\n' "$qout" | grep -cE '  ok$')" "$qk"
       # An `ok` that covered less than the table declares says by how much, on
       # the line a reader stops at. Counted off the verdict column, the way the
       # met count above is, and not off the summary sentence: #206 removed a
@@ -636,12 +650,34 @@ cmd_gate() {
       [ "${qna:-0}" -gt 0 ] 2>/dev/null && printf '                     %s did not apply here\n' "$qna"
       # A checker short of the six passes; lib/qualify.sh says why that is
       # reported rather than refused. This is the report, on the same line a
-      # reader stops at, so `ok` is not read as six controls of six.
-      printf '%s\n' "$qout" | grep -E '^  [^ ]+ declares no control for: ' \
+      # reader stops at, so `ok` is not read as six controls of six. A checker
+      # whose declared controls could not be read was said here too, and ok
+      # with that under it passed over a checker nobody knew the controls of;
+      # felix qualify --gate refuses on it now, and it is said under FAIL.
+      printf '%s\n' "$qout" \
+        | grep -E '^  .+ declares no control for: ' \
         | sed 's/^  /                     /'
     else
       printf '  %-18s FAIL\n' qualified | tee -a "$log"
-      printf '%s\n' "$qout" | grep -E 'HELD|UNRUNNABLE|MALFORMED|^never shown failing in this checkout' | head -8 | sed 's/^/  /'
+      # Why, under the FAIL. The lines lifted were held, unrunnable, malformed
+      # and never shown, so a table that could not be read, a present and empty
+      # one, a run cut short and a checker with no row each failed with nothing
+      # under it. Each is lifted now, and a refusal that says none of them
+      # still says where to read why. Its status is not read: head leaving
+      # early is not a failure of what it kept.
+      #
+      # Each is picked by where its word sits, never by the word anywhere in
+      # the line: HELD anywhere took the met rows of a checker named HELDOUT,
+      # eight of them filled the eight lines, and the reason fell below them.
+      # A verdict ends the row, MALFORMED follows the padded checker, and every
+      # line felix qualify says a step failed with begins felix:. The empty
+      # table's sentence runs onto a second line, which is lifted with it.
+      local qwhy
+      qwhy="$(printf '%s\n' "$qout" \
+        | grep -E ' (HELD|UNRUNNABLE)$|^  .* MALFORMED  |^never shown failing in this checkout: |^felix: |^  .*: which controls it declares could not be read$|^only [0-9]+ of [0-9]+ declared control\(s\) ran|^no control is declared for |^No checker here is qualified|^declares no control that can be run' \
+        | head -8)"
+      [ -n "$qwhy" ] || qwhy='felix qualify --gate refused; run it to read why'
+      printf '%s\n' "$qwhy" | sed 's/^/  /'
       [ "$rc" -eq 0 ] && printf '\ngate: FAIL (qualified)\n'
       rc=1
     fi
@@ -661,8 +697,10 @@ cmd_gate() {
     if [ "$orc" -eq 0 ]; then
       # A green that rests on a person's grant is not the green of nothing
       # owed, and the receipt's states carry the word printed here: `excepted`,
-      # so nobody reads a deferred obligation as a discharged one.
-      if printf '%s\n' "$oout" | grep -qE '^[0-9]+ obligation.*; [0-9]+ blocking, [1-9][0-9]* excepted'; then
+      # so nobody reads a deferred obligation as a discharged one. A here-string,
+      # not a pipe: grep -q quits at its match, and pipefail would read the
+      # printf it cut off as no match and print `ok`.
+      if grep -qE '^[0-9]+ obligation.*; [0-9]+ blocking, [1-9][0-9]* excepted' <<<"$oout"; then
         printf '  %-18s excepted\n' obligations | tee -a "$log"
       else
         printf '  %-18s ok\n' obligations | tee -a "$log"
@@ -867,6 +905,11 @@ EOF
   printf '%s\n' "$caps" | grep -v '^$' > "$dir/capabilities" || true
 
   # Keep catalogue rows that are unconditional or whose capability was detected.
+  # Detected is a case over the list, here and for setup.tsv below, not a pipe
+  # into grep -q, which can quit before printf has written the list and leave
+  # a detected capability's rows unseeded.
+  local nl='
+'
   {
     printf '# Declared tooling for %s. Seeded from the catalogue by felix new,\n' "$name"
     printf '# filtered to what this checkout actually shows. Edit freely.\n#\n'
@@ -875,7 +918,7 @@ EOF
     # reading a plugin is OBSERVED; a row with no sixth column is a person's.
     printf '# kind\tname\tsource\trisk\tcapability\tgrounding\n'
     grep -vE '^\s*(#|$)' "$tpl/catalog.tsv" | while IFS=$'\t' read -r k n src r c _kw; do
-      if [ "$c" = "always" ] || printf '%s\n' "$caps" | grep -qxF "$c"; then
+      if [ "$c" = "always" ] || case "$nl$caps$nl" in *"$nl$c$nl"*) true ;; *) false ;; esac; then
         printf '%s\t%s\t%s\t%s\t%s\tDECLARED\n' "$k" "$n" "$src" "$r" "$c"
       fi
     done
@@ -912,7 +955,7 @@ EOF
     printf '# Human steps for %s. Seeded by felix new.\n#\n' "$name"
     printf '# id\ttitle\tcapability\tcheck\n'
     grep -vE '^\s*(#|$)' "$tpl/setup.tsv" | while IFS=$'\t' read -r id title c chk; do
-      if [ "$c" = "always" ] || printf '%s\n' "$caps" | grep -qxF "$c"; then
+      if [ "$c" = "always" ] || case "$nl$caps$nl" in *"$nl$c$nl"*) true ;; *) false ;; esac; then
         printf '%s\t%s\t%s\t%s\n' "$id" "$title" "$c" "${chk//\{\{REPO\}\}/$slug}"
         [ -f "$tpl/setup/$id.md" ] && \
           sed "s|{{REPO}}|$slug|g" "$tpl/setup/$id.md" > "$dir/setup/$id.md"
@@ -1392,8 +1435,10 @@ cmd_merge() {
     # every deploy forces a version bump in engine/.claude-plugin — which cannot
     # touch engine/harness. Testing the wider path told a bump-only branch to
     # bump the version and install main's: advice already followed, and unable
-    # to change the thing being compared.
-    if felix_changed_paths "$root" "$base" | grep -q '^engine/harness/' \
+    # to change the thing being compared. awk, not grep -q: it reads every path
+    # before it answers, so a match early in the list cannot kill the writer
+    # and have pipefail read an engine change as none.
+    if felix_changed_paths "$root" "$base" | awk '/^engine\/harness\// { f = 1 } END { exit !f }' \
          && diff -rq "$root/engine/harness" "$kernel" >/dev/null 2>&1; then
       die "the engine that would judge this is byte-identical to the tree it is judging, so it would be judging itself. Bump the version and install main's, or say plainly that this is unjudged."
     fi
@@ -1960,10 +2005,43 @@ cmd_qualify() {
   done
   root="$(felix_repo_root "$PWD")"
 
-  local rows mal
-  rows="$(felix_qualify_rows "$proj")"
-  mal="$(felix_qualify_malformed "$proj")"
+  # One read of the table, and everything below comes from it: what runs, what
+  # is refused as malformed, what each checker declares, which checkers there
+  # are. This read's status was the only one taken, and the reads after it went
+  # unseen when they failed; a run of no control then counted 0 of 0 held and
+  # passed the gate over a held control, and a table rewritten mid-run could
+  # split one run between two tables (lib/qualify.sh, felix_qualify_snapshot).
+  #
+  # A table that could not be read runs nothing and says so, exit 2, gate or
+  # not. It used to be taken for a table declaring no control that can be run,
+  # which nobody had read it to know. The line is the library's, on stderr,
+  # naming the table; awk's own error is not shown.
+  local snap rows="" mal="" rest line split=0 derr=0 nl=$'\n' tab=$'\t'
   printf 'qualification for %s\n\n' "$(basename "$proj")"
+  if ! snap="$(felix_qualify_snapshot "$proj" 2>/dev/null)"; then
+    _felix_qualify_unread "$proj"
+    printf 'Nothing was run, so no control here is known to hold or not.\n'
+    return 2
+  fi
+  # Split in the shell, so the split has no status to lose: never a pipe into
+  # a reader that can stop before the end (lib/qualify.sh says why). A line
+  # tagged neither way is a snapshot that cannot be trusted, and refuses.
+  rest="$snap"
+  while [ -n "$rest" ]; do
+    line="${rest%%"$nl"*}"
+    case "$rest" in *"$nl"*) rest="${rest#*"$nl"}" ;; *) rest="" ;; esac
+    case "$line" in
+      "R$tab"*) rows="$rows${line#"R$tab"}$nl" ;;
+      "M$tab"*) mal="$mal${line#"M$tab"}$nl" ;;
+      *)        split=1 ;;
+    esac
+  done
+  rows="${rows%"$nl"}"; mal="${mal%"$nl"}"
+  if [ "$split" -eq 1 ]; then
+    printf 'felix: which rows of %s are controls could not be worked out from its one read\n' \
+      "$(_felix_qualify_table "$proj")"
+    return 1
+  fi
   # Before the empty-table answer, so a table whose every row is malformed says
   # which rows and why rather than reading as one that declares nothing.
   if [ -n "$mal" ]; then
@@ -1988,34 +2066,109 @@ cmd_qualify() {
     return 1
   fi
 
-  local out held=0 unrun=0 total=0 inapp=0 unshown
-  out="$(felix_qualify_run "$proj" "$root" "$want")"
+  # How many rows this run is to run: all of them, or the named checker's. A
+  # verdict is owed for each, and --gate passes only when each came back.
+  local c sel=0
+  rest="$rows"
+  while [ -n "$rest" ]; do
+    line="${rest%%"$nl"*}"
+    case "$rest" in *"$nl"*) rest="${rest#*"$nl"}" ;; *) rest="" ;; esac
+    c="${line%%"$tab"*}"
+    if [ -z "$want" ] || [ "$want" = "$c" ]; then sel=$((sel + 1)); fi
+  done
+  # A checker named with no row ran nothing, and 0 of 0 held passed the gate.
+  if [ "$gate" -eq 1 ] && [ "$sel" -eq 0 ]; then
+    printf 'no control is declared for %s in %s, so nothing shows it catching anything.\n' \
+      "$want" "$(_felix_qualify_table "$proj")"
+    return 1
+  fi
+
+  # The run's status is taken, and a run that died part way is kept for what it
+  # did say: it is refused below for the verdicts it never gave.
+  local out held=0 unrun=0 total=0 inapp=0 unshown ctl exp got v
+  if ! out="$(_felix_qualify_run_rows "$rows" "$root" "$want")"; then
+    derr=1
+    printf 'felix: the run of the controls did not finish\n'
+  fi
+  # Rendered and counted in one walk of the verdicts, in the shell. The counts
+  # were four awk calls whose status nobody read, so a count that failed was
+  # empty and read as none held: the rows could say HELD while the count said
+  # 0. Counted here, the number and the rows cannot disagree, and a verdict
+  # that is not one of the four is rendered and counted as held.
   printf '  %-10s %-24s %-7s %-7s %s\n' CHECKER CONTROL EXPECT GOT ''
-  printf '%s\n' "$out" | while IFS=$'\t' read -r c ctl exp got v; do
-    [ -n "${c:-}" ] || continue
+  rest="$out"
+  while [ -n "$rest" ]; do
+    line="${rest%%"$nl"*}"
+    case "$rest" in *"$nl"*) rest="${rest#*"$nl"}" ;; *) rest="" ;; esac
+    case "$line" in *"$tab"*"$tab"*"$tab"*"$tab"*) ;; *) continue ;; esac
+    c="${line%%"$tab"*}";   line="${line#*"$tab"}"
+    ctl="${line%%"$tab"*}"; line="${line#*"$tab"}"
+    exp="${line%%"$tab"*}"; line="${line#*"$tab"}"
+    got="${line%%"$tab"*}"; v="${line#*"$tab"}"
+    [ -n "$c" ] || continue
+    total=$((total + 1))
     case "$v" in
       met)          printf '  %-10s %-24s %-7s %-7s ok\n'         "$c" "$ctl" "$exp" "$got" ;;
-      unrunnable)   printf '  %-10s %-24s %-7s %-7s UNRUNNABLE\n' "$c" "$ctl" "$exp" "$got" ;;
-      inapplicable) printf '  %-10s %-24s %-7s %-7s n/a\n'        "$c" "$ctl" "$exp" "$got" ;;
-      *)            printf '  %-10s %-24s %-7s %-7s HELD\n'       "$c" "$ctl" "$exp" "$got" ;;
+      unrunnable)   printf '  %-10s %-24s %-7s %-7s UNRUNNABLE\n' "$c" "$ctl" "$exp" "$got"
+                    unrun=$((unrun + 1)) ;;
+      inapplicable) printf '  %-10s %-24s %-7s %-7s n/a\n'        "$c" "$ctl" "$exp" "$got"
+                    inapp=$((inapp + 1)) ;;
+      *)            printf '  %-10s %-24s %-7s %-7s HELD\n'       "$c" "$ctl" "$exp" "$got"
+                    held=$((held + 1)) ;;
     esac
   done
-  held="$(printf '%s\n' "$out"  | awk -F'\t' '$5 == "held" { n++ } END { print n+0 }')"
-  unrun="$(printf '%s\n' "$out" | awk -F'\t' '$5 == "unrunnable" { n++ } END { print n+0 }')"
-  inapp="$(printf '%s\n' "$out" | awk -F'\t' '$5 == "inapplicable" { n++ } END { print n+0 }')"
-  total="$(printf '%s\n' "$out" | awk -F'\t' 'NF >= 5 { n++ } END { print n+0 }')"
-  unshown="$(felix_qualify_unshown "$proj" "$out" | tr '\n' ' ')"
+  # felix sets pipefail, so this assignment's status is the awk's and the tr's.
+  if ! unshown="$(felix_qualify_unshown "$proj" "$out" | tr '\n' ' ')"; then
+    derr=1
+    printf '\nfelix: which checkers were never shown failing here could not be worked out\n'
+  fi
 
   # Controls a checker has no row for. Four of six is not qualified, and the two
   # usually missing are the two that separate the marker from the property.
-  local c miss
-  for c in $(felix_qualify_checkers "$proj"); do
+  # Worked out from the rows of the one read above, not a read per checker. When
+  # it cannot be, that is said for the checker it was about, since silence would
+  # read as every control declared and the shortfall line as a gap nobody saw.
+  # It said so under qualified ok, and ok with that under it passed the gate
+  # over a checker nobody knew the controls of; it refuses under --gate now.
+  #
+  # The checkers are the ones in those rows too, and the list is taken with its
+  # status: failing, it listed none, the loop reached no checker and said
+  # nothing, which reads as every control declared. Cut in the C locale,
+  # because BSD cut in a UTF-8 one stops at a byte it cannot decode, and every
+  # checker after that row went unreported the same way.
+  local cs miss
+  if ! cs="$(printf '%s\n' "$rows" | LC_ALL=C cut -f1 | LC_ALL=C sort -u)"; then
+    derr=1
+    printf '\nfelix: which checkers %s declares could not be worked out\n' "$(_felix_qualify_table "$proj")"
+    cs=""
+  fi
+  # Walked a line at a time, as the rows are. An unquoted for split a checker
+  # named `my check` into two checkers declaring nothing, and expanded one
+  # named * into the files in the checkout.
+  rest="$cs"
+  while [ -n "$rest" ]; do
+    c="${rest%%"$nl"*}"
+    case "$rest" in *"$nl"*) rest="${rest#*"$nl"}" ;; *) rest="" ;; esac
+    [ -n "$c" ] || continue
     [ -z "$want" ] || [ "$want" = "$c" ] || continue
-    miss="$(felix_qualify_missing_controls "$proj" "$c" | tr '\n' ' ')"
+    if ! miss="$(_felix_qualify_missing_in "$rows" "$c")" \
+       || ! miss="$(printf '%s\n' "$miss" | tr '\n' ' ')"; then
+      derr=1
+      printf '\n  %s: which controls it declares could not be read\n' "$c"; continue
+    fi
     [ -n "${miss% }" ] && printf '\n  %s declares no control for: %s\n' "$c" "${miss% }"
   done
 
   printf '\n%s of %s control(s) held; %s could not run.\n' "$held" "$total" "$unrun"
+  # Fewer verdicts than rows is not fewer controls met: it is controls nobody
+  # knows about. A run killed after one of two met controls counted 1 of 1, one
+  # killed before its first counted 0 of 0, and both passed the gate. Said in
+  # either mode, refused under --gate.
+  local short=0
+  if [ "$total" -ne "$sel" ]; then
+    short=1
+    printf 'only %s of %s declared control(s) ran; the rest are not known to hold.\n' "$total" "$sel"
+  fi
   # Said only when it happened, and never folded into the held count or the met
   # one: a control whose premise is absent is neither broken nor kept.
   [ "${inapp:-0}" -gt 0 ] && printf '%s did not apply in this checkout: its premise is absent here.\n' "$inapp"
@@ -2063,7 +2216,7 @@ cmd_qualify() {
   # --gate, because this is a gap report and not a verdict: the arming
   # decision above leaves an unqualified checker exactly as it was.
   if [ "$gate" -eq 0 ]; then
-    local rcpt field roster ungov
+    local rcpt field roster ungov prc=0
     rcpt="$(felix_verify_receipt "$root" "$FELIX_HOME_DIR" 2>/dev/null)"
     field="$(printf '%s' "$rcpt" | cut -f6)"
     if [ -z "$rcpt" ]; then
@@ -2077,11 +2230,20 @@ cmd_qualify() {
       # the reader below has one shape to read, whether it is handed a gate
       # log or this roster.
       roster="$(printf '%s\n' "$field" | tr ',' '\n' | sed 's/:/ /; s/^/  /')"
-      ungov="$(felix_qualify_ungoverned "$proj" "$roster" | tr '\n' ' ')"
-      if [ -n "${ungov% }" ]; then
-        printf '\nreported by the last gate and qualified by no row: %s\n' "${ungov% }"
+      # A read of the table that failed is neither answer below, since either
+      # would be false: a gap nobody saw, or no gap. The library names the
+      # table on stderr. It exited 0 as if it had read it; it exits 2 now, the
+      # status of a read that failed, once the rest of the report is said.
+      if ! ungov="$(felix_qualify_ungoverned "$proj" "$roster")"; then
+        printf '\nwhich checks have a row here could not be read\n'
+        prc=2
       else
-        printf '\nEvery check the last gate reported has a row here.\n'
+        ungov="$(printf '%s\n' "$ungov" | tr '\n' ' ')"
+        if [ -n "${ungov% }" ]; then
+          printf '\nreported by the last gate and qualified by no row: %s\n' "${ungov% }"
+        else
+          printf '\nEvery check the last gate reported has a row here.\n'
+        fi
       fi
     fi
   fi
@@ -2089,8 +2251,14 @@ cmd_qualify() {
     # A malformed row refuses too. It was written as a control, so by the
     # ratchet it binds, and it cannot be met because it is never run. Running it
     # is what let a violation expecting `pass` read as met.
-    [ "${held:-0}" -eq 0 ] && [ "${unrun:-0}" -eq 0 ] && [ -z "${unshown% }" ] \
-      && [ -z "$mal" ] && return 0
+    #
+    # So does anything a verdict is worked out from that could not be worked
+    # out, and a run with fewer verdicts than rows. 0 is earned by a verdict
+    # for every selected row, at least one of them, and none of them refusing;
+    # never by counting what came back.
+    [ "$held" -eq 0 ] && [ "$unrun" -eq 0 ] && [ -z "${unshown% }" ] \
+      && [ -z "$mal" ] && [ "$derr" -eq 0 ] && [ "$short" -eq 0 ] \
+      && [ "$total" -ge 1 ] && [ "$total" -eq "$sel" ] && return 0
     if [ "${held:-0}" -gt 0 ] || [ "${unrun:-0}" -gt 0 ]; then
       printf '\nA declared control that does not hold is this check reporting a\n'
       printf 'property the tree does not have. Fix the checker, or delete the\n'
@@ -2105,7 +2273,7 @@ cmd_qualify() {
   printf -- '--gate refuses on a held control, so a checker that stops catching what\n'
   printf 'it caught turns the gate red — and a checker nobody has qualified yet\n'
   printf 'is left exactly as it was.\n'
-  return 0
+  return "$prc"
 }
 
 cmd_coverage() {
@@ -3232,8 +3400,10 @@ cmd_evidence() {
   # the one that gets read. "No evidence gaps" after a scan that never ran is
   # the same false all-clear #56 removed from felix merge, and leaving it here
   # would move it rather than fix it. Exits non-zero regardless of --strict: an
-  # unanswerable question is not a passing report.
-  if printf '%s\n' "$results" | grep -q '^unknown	'; then
+  # unanswerable question is not a passing report. A here-string, not a pipe:
+  # grep -q quits at the first `unknown`, and pipefail would read the printf it
+  # cut off as none, which is that false all-clear again.
+  if grep -q '^unknown	' <<<"$results"; then
     printf '%s\n' "$results" | while IFS=$'\t' read -r st name reason; do
       [ "${st:-}" = "unknown" ] || continue
       printf '  [?] %-14s %s\n' "$name" "$reason"
@@ -3277,12 +3447,16 @@ cmd_unattended() {
   [ -n "$repo" ] || die "no github remote"
   local gwf; gwf="$(felix_gate_workflow "$proj")" || die "$gwf"
 
-  local st switch key dry dryfail streak need
-  st="$(felix_unattended_state "$repo")"
+  local st switch key dry dryfail streak need dispatch tv tl tp
+  st="$(felix_unattended_state "$repo" "$gwf" "$SCRIPT_DIR/templates/unattended.yml")"
   switch="$(printf '%s\n' "$st" | awk -F'\t' '$1=="switch"{print $2}')"
   key="$(printf '%s\n' "$st" | awk -F'\t' '$1=="key"{print $2}')"
   dry="$(printf '%s\n' "$st" | awk -F'\t' '$1=="dryruns"{print $2}')"
   dryfail="$(printf '%s\n' "$st" | awk -F'\t' '$1=="dryfails"{print $2}')"
+  dispatch="$(printf '%s\n' "$st" | awk -F'\t' '$1=="dispatch"{print $2}')"
+  tv="$(printf '%s\n' "$st" | awk -F'\t' '$1=="template"{print $2}')"
+  tl="$(printf '%s\n' "$st" | awk -F'\t' '$1=="template"{print $3}')"
+  tp="$(printf '%s\n' "$st" | awk -F'\t' '$1=="template"{print $4}')"
   streak="$(felix_automerge_streak "$(felix_automerge_history "$repo" "$gwf")")"
   need="$FELIX_AUTOMERGE_REQUIRED"
 
@@ -3297,6 +3471,29 @@ cmd_unattended() {
   printf '  %s %-26s %s run(s), %s errored\n' \
     "$([ "${dry:-0}" -gt 0 ] && [ "${dryfail:-0}" -eq 0 ] && printf '[x]' || printf '[ ]')" \
     "guards exercised" "${dry:-0}" "${dryfail:-0}"
+  # Read from the default branch, not assumed from the template: a deployed
+  # copy is a person's, and it does not move when this engine does.
+  case "$tv" in
+    match)  printf '  [x] %-26s %s is this engine'\''s template, comments aside\n' \
+              "workflow matches template" "$tp" ;;
+    differ) if [ "$tl" = end ]; then
+              printf '  [ ] %-26s %s stops short of this engine'\''s template; copy templates/unattended.yml again\n' \
+                "workflow matches template" "$tp"
+            else
+              printf '  [ ] %-26s %s differs from this engine'\''s template at line %s; copy templates/unattended.yml again\n' \
+                "workflow matches template" "$tp" "$tl"
+            fi ;;
+    absent) printf '  [ ] %-26s no workflow named "unattended repair" on the default branch\n' \
+              "workflow matches template" ;;
+    *)      printf '  [?] %-26s the workflow list, or the deployed file, could not be read\n' \
+              "workflow matches template" ;;
+  esac
+  case "$dispatch" in
+    yes) printf '  [x] %-26s %s takes workflow_dispatch\n' "gate takes a dispatch" "$gwf" ;;
+    no)  printf '  [ ] %-26s %s takes no workflow_dispatch, so a commit the loop pushes cannot be re-gated by one\n' \
+           "gate takes a dispatch" "$gwf" ;;
+    *)   printf '  [?] %-26s %s could not be read from the default branch\n' "gate takes a dispatch" "$gwf" ;;
+  esac
   # Both of these were printf constants, and this is the report somebody reads
   # while deciding whether to switch on a loop that invokes a model unattended
   # (#87). A checklist that manufactures the evidence for its own switch-on is
@@ -3657,7 +3854,16 @@ cmd_maintenance() {
   [ -f "$proj/maintenance.tsv" ] || die "project $(basename "$proj") declares no maintenance routines"
 
   if [ -n "$ran" ]; then
-    _felix_maint_rows "$proj" | cut -f1 | grep -qxF "$ran" \
+    # Read whole, then a case: grep -q on the pipe can quit before the rows are
+    # written, and pipefail reads a routine that exists as missing.
+    local names nl='
+'
+    # A routine name is one line. The case below would take two adjacent
+    # routines as one name, and the log line it wrote would leave the first of
+    # them with no epoch, read as never run.
+    case "$ran" in *"$nl"*) die "a routine name is one line" ;; esac
+    names="$(_felix_maint_rows "$proj" | cut -f1)" \
+      && case "$nl$names$nl" in *"$nl$ran$nl"*) true ;; *) false ;; esac \
       || die "no routine named $ran"
     felix_maint_record "$proj" "$ran"
     printf 'recorded a run of %s\n' "$ran"
@@ -4818,7 +5024,7 @@ cmd_obligations() {
     printf 'This project has admitted no obligation: there is no obligations.tsv,\n'
     printf 'so nothing it owes is written anywhere a merge can read.\n\n'
     printf 'Write %s/obligations.tsv. One row per obligation:\n\n' "$proj"
-    printf '  obligation <TAB> class <TAB> pathway <TAB> applies <TAB> evidence <TAB> grounds <TAB> reason\n\n'
+    printf '  obligation <TAB> class <TAB> pathway <TAB> applies <TAB> evidence <TAB> grounds <TAB> reason [<TAB> needs]\n\n'
     printf 'A template is at %s/templates/obligations.tsv.\n' "$SCRIPT_DIR"
     return 1
   fi
@@ -4827,7 +5033,8 @@ cmd_obligations() {
   if [ -n "$bad" ]; then
     printf 'rows refused\n\n'; printf '%s\n' "$bad" | sed 's/^/  /'
     printf '\nA row needs a name, a class from the set, a pathway from the set and an\n'
-    printf 'evidence contract; and a single probabilistic finding may not block.\n\n'
+    printf 'evidence contract; a single probabilistic finding may not block; and a\n'
+    printf 'needs cell, when there is one, is - or checker ids separated by commas.\n\n'
   fi
   if [ -z "$rows" ]; then
     printf '%s/obligations.tsv admits no obligation.\n' "$proj"
@@ -4860,6 +5067,36 @@ cmd_obligations() {
       "$(printf '%s\n' "$line" | cut -f4)" "$(printf '%s\n' "$line" | cut -f5)" \
       "${ohash:--}" "$odetail"
   done
+  # What each row names as the capability that would discharge it, resolved
+  # against qualification.tsv (felix_obligations_needs). Report only: it is
+  # read after every verdict above was formed and feeds none of them. The
+  # table is left out of the gate's copy, whose indented lines the gate
+  # greps for failing rows; the count rides on the summary line, which the
+  # gate already prints.
+  #
+  # Its exit 2 is a qualification.tsv that exists and could not be read. The
+  # library has said which on stderr and printed nothing, so the table is left
+  # off and the summary says so where the count would be. Being report only,
+  # that moves no exit status either.
+  local needs ncount nrc
+  needs="$(felix_obligations_needs "$proj")"; nrc=$?
+  ncount="$(printf '%s\n' "$needs" | felix_obligations_needs_count)"
+  if [ "$gate" -ne 1 ] && [ -n "$needs" ]; then
+    printf '\nwhat would discharge each, by the checkers %s/qualification.tsv declares\n\n' "$(basename "$proj")"
+    printf '%s\n' "$needs" | while IFS=$'\t' read -r nname ncap nres nmiss; do
+      [ -n "$nname" ] || continue
+      case "$nres" in
+        complete) nmiss="declares a row for every control" ;;
+        short)    nmiss="declares no row for: $(printf '%s' "$nmiss" | sed 's/,/, /g')" ;;
+        absent)   nmiss="no checker by that id: a capability Felix would have to acquire" ;;
+        none)     nres="-"; nmiss="names nothing that would discharge it" ;;
+      esac
+      printf '  %-22s %-18s %-9s %s\n' "$nname" "$ncap" "$nres" "$nmiss"
+    done
+    printf '\ncomplete means every control is DECLARED, not that one ran and held: the\n'
+    printf 'gate'"'"'s qualified check runs them. Nothing here discharges, blocks or\n'
+    printf 'clears an obligation.\n'
+  fi
   local n_block; n_block="$(printf '%s\n' "$out" | felix_obligations_blocking | grep -c .)"
   local n_exc; n_exc="$(printf '%s\n' "$out" | awk -F'\t' 'index($8, "excepted|") == 1' | grep -c .)"
   printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking, %s excepted' \
@@ -4870,6 +5107,17 @@ cmd_obligations() {
     "$n_block" "$n_exc"
   local n_ung; n_ung="$(felix_obligations_ungrounded "$proj" | grep -c .)"
   [ "$n_ung" -gt 0 ] && printf '; %s ground on no probe' "$n_ung"
+  # named complete short absent none, one count per obligation by its weakest
+  # need. Left off when felix_obligations_needs printed nothing, which only
+  # a missing qualification library does: zeros there would read as a ledger
+  # that names nothing, when nobody looked. A table that could not be read
+  # puts a sentence in its place, on the line the gate prints, since a count of
+  # what nobody read would read as one.
+  if [ "$nrc" -eq 2 ]; then
+    printf '; what would discharge them could not be read'
+  elif [ -n "$ncount" ] && [ -n "$needs" ]; then
+    printf '%s\n' "$ncount" | awk -F'\t' '{ printf "; %d name what discharges them: %d complete, %d short, %d absent; %d name nothing", $1, $2, $3, $4, $5 }'
+  fi
   printf '\n'
   # A clearance that happened silently would leave the founder a green with
   # nothing in the record saying a person's grant produced it: said, once per

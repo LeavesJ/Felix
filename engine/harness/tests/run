@@ -3605,15 +3605,15 @@ printf '#!/usr/bin/env bash\nprintf "claude\\n" >> "%s/claude.log"\nprintf "%%s\
 _attempt ""
 _atrules() { awk -v f="$1" 'p { print; p = 0; next } $0 == f { p = 1 }' "$AT/claude.args" | tr ', ' '\n\n' | grep -v '^$'; }
 _atdeny="$(_atrules --disallowedTools)"
-if printf '%s\n' "$_atdeny" | grep -q -x -F 'Read(//proc/**)'; then
+if grep -q -x -F 'Read(//proc/**)' <<<"$_atdeny"; then
   ok  "the model step disallows Read under /proc, in the spelling 2.1.37 honours"
 else
   bad "the model step disallows Read under /proc, in the spelling 2.1.37 honours" \
       "--disallowedTools ${_atdeny:-(absent)}"
 fi
 _atallow="$(_atrules --allowedTools)"
-if printf '%s\n' "$_atallow" | grep -q -x -E 'Read(\(.*\))?' \
-   && printf '%s\n' "$_atallow" | grep -q -x -E 'Edit(\(.*\))?'; then
+if grep -q -x -E 'Read(\(.*\))?' <<<"$_atallow" \
+   && grep -q -x -E 'Edit(\(.*\))?' <<<"$_atallow"; then
   ok  "and Read and Edit stay allowed, since the repair needs both"
 else
   bad "and Read and Edit stay allowed, since the repair needs both" "--allowedTools ${_atallow:-(absent)}"
@@ -3788,12 +3788,33 @@ printf '\nunattended readiness\n'
 # not: the ledger lives in a checkout made fresh every run (#84). Felix cannot
 # determine that mechanically, so the honest mark is neither [x] nor [ ].
 UNB="$TMP/unattgh"; mkdir -p "$UNB"
+# `gh api` answers the way the server does for what the drift rows below ask:
+# the workflow list from UNSTUB_WORKFLOWS through jq for the -q expression, a
+# file under UNSTUB_FILES as its raw contents or gh's own 404, and no answer at
+# all for an endpoint containing UNSTUB_UNANSWERED.
 cat > "$UNB/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
   "variable list") ;;
   "secret list")   printf 'ANTHROPIC_API_KEY\n' ;;
   "run list")      printf '0\n' ;;
+  "api "*)
+    ep=""; q="."; prev=""
+    for a in "$@"; do
+      case "$prev" in -q|--jq) q="$a" ;; esac
+      case "$a" in repos/*) ep="$a" ;; esac
+      prev="$a"
+    done
+    if [ -n "${UNSTUB_UNANSWERED:-}" ]; then
+      case "$ep" in *"$UNSTUB_UNANSWERED"*) printf 'error connecting to api.github.com\n' >&2; exit 1 ;; esac
+    fi
+    case "$ep" in
+      */actions/workflows) printf '%s\n' "${UNSTUB_WORKFLOWS:-}" | jq -r "$q" ;;
+      */contents/*)
+        f="${UNSTUB_FILES:-/nonexistent}/${ep#*/contents/}"
+        [ -f "$f" ] || { printf 'gh: Not Found (HTTP 404)\n' >&2; exit 1; }
+        cat "$f" ;;
+    esac ;;
 esac
 exit 0
 STUB
@@ -3855,6 +3876,84 @@ has "and is marked unknown rather than unmet" "$(_row "$out" 'budget ceiling')" 
 # says what has been spent and not merely what was declared.
 has "and reports what has been spent" "$out" "spent"
 
+# Deployed copies drift in silence. A person copies templates/unattended.yml
+# into a repository once, and the engine it checks out moves on without it.
+# another governed project's copy did exactly that, measured 2026-09-23: its scope step still
+# proceeded on every exit of felix repair but 3, a behaviour #323 and #329
+# had fixed in the template, while nothing here could say so. The repair's
+# push also starts no ordinary run of the gate, since GitHub creates none
+# from an event the workflow token causes except a dispatch, so whether the
+# gate workflow takes workflow_dispatch is a fact about the loop too. Both
+# rows read the repository's default branch, where a workflow_run trigger
+# and a dispatch are both taken from.
+if ! command -v jq >/dev/null 2>&1; then
+  for a in "a gate workflow that takes workflow_dispatch is reported as taking one" \
+           "and one that does not is reported unmet" \
+           "an on: line naming workflow_dispatch counts as taking one" \
+           "workflow_dispatch named only in an if: expression does not" \
+           "a gate workflow that cannot be read is unknown, not unmet" \
+           "a deployed copy that is the template with its placeholders filled matches it" \
+           "and still matches with its comments changed" \
+           "a copy whose scope step drifted is unmet" \
+           "and the row names the line it drifted at" \
+           "a copy with no Felix pin does not match" \
+           "a copy with a placeholder left unfilled does not match" \
+           "a repository with no unattended workflow says so" \
+           "a workflow list that cannot be read is unknown, not unmet"; do
+    skip "$a" "no jq here to evaluate gh's -q expressions"
+  done
+else
+UNF="$TMP/unattfiles"; mkdir -p "$UNF/.github/workflows"
+export UNSTUB_FILES="$UNF" \
+       UNSTUB_WORKFLOWS='{"workflows":[{"name":"gate","path":".github/workflows/gate.yml","state":"active"},{"name":"unattended repair","path":".github/workflows/unattended.yml","state":"active"}]}'
+_tpl="$FROOT/harness/templates/unattended.yml"
+_fill() { sed -e 's#{{FELIX_REPO}}#example/felix-home#' \
+              -e 's#{{FELIX_REF}}#0123456789abcdef0123456789abcdef01234567#' "$_tpl"; }
+_dr() { _row "$(_unatt)" 'gate takes a dispatch'; }
+_tr() { _row "$(_unatt)" 'workflow matches template'; }
+
+printf 'on:\n  pull_request:\n  push:\n    branches: [main]\n  workflow_dispatch:\njobs: {}\n' \
+  > "$UNF/.github/workflows/gate.yml"
+has "a gate workflow that takes workflow_dispatch is reported as taking one" "$(_dr)" "[x]"
+printf 'on:\n  pull_request:\n  push:\n    branches: [main]\njobs: {}\n' \
+  > "$UNF/.github/workflows/gate.yml"
+has "and one that does not is reported unmet" "$(_dr)" "[ ]"
+printf 'on: [pull_request, workflow_dispatch]\njobs: {}\n' > "$UNF/.github/workflows/gate.yml"
+has "an on: line naming workflow_dispatch counts as taking one" "$(_dr)" "[x]"
+printf "on:\n  pull_request:\njobs:\n  gate:\n    if: github.event_name != 'workflow_dispatch'\n" \
+  > "$UNF/.github/workflows/gate.yml"
+has "workflow_dispatch named only in an if: expression does not" "$(_dr)" "[ ]"
+rm -f "$UNF/.github/workflows/gate.yml"
+has "a gate workflow that cannot be read is unknown, not unmet" "$(_dr)" "[?]"
+
+_fill > "$UNF/.github/workflows/unattended.yml"
+has "a deployed copy that is the template with its placeholders filled matches it" "$(_tr)" "[x]"
+# The comment a local copy keeps about its own Felix, and one of the template's
+# own comments gone: neither changes what the workflow does.
+_fill | sed -e '/^      # Pinned, to the full sha/i\
+      # felix-home, not felix: see the Felix checkout in gate.yml.' \
+            -e '/^# Wired, and off\./d' > "$UNF/.github/workflows/unattended.yml"
+has "and still matches with its comments changed" "$(_tr)" "[x]"
+# another governed project's shape on 2026-09-23: the scope step before #323.
+_fill | sed 's#if \[ "\$rc" = "0" \]; then#if [ "$rc" != "3" ]; then#' \
+  > "$UNF/.github/workflows/unattended.yml"
+_ln="$(grep -n 'if \[ "$rc" != "3" \]' "$UNF/.github/workflows/unattended.yml" | cut -d: -f1)"
+out="$(_tr)"
+has "a copy whose scope step drifted is unmet" "$out" "[ ]"
+has "and the row names the line it drifted at" "$out" "line ${_ln:-?}"
+_fill | grep -v "ref: '0123456789abcdef" > "$UNF/.github/workflows/unattended.yml"
+has "a copy with no Felix pin does not match" "$(_tr)" "[ ]"
+cp "$_tpl" "$UNF/.github/workflows/unattended.yml"
+has "a copy with a placeholder left unfilled does not match" "$(_tr)" "[ ]"
+_fill > "$UNF/.github/workflows/unattended.yml"
+out="$(UNSTUB_WORKFLOWS='{"workflows":[{"name":"gate","path":".github/workflows/gate.yml","state":"active"}]}' _unatt)"
+has "a repository with no unattended workflow says so" \
+    "$(_row "$out" 'workflow matches template')" "no workflow named"
+has "a workflow list that cannot be read is unknown, not unmet" \
+    "$(UNSTUB_UNANSWERED=actions/workflows _tr)" "[?]"
+unset UNSTUB_FILES UNSTUB_WORKFLOWS
+fi
+
 cp "$TMP/risk.unatt.keep" "$FROOT/projects/widget/risk.tsv"
 ( cd "$REPO" && git remote remove origin ) 2>/dev/null
 
@@ -3880,6 +3979,82 @@ if [ -x "$REAL_ROOT/$resolved" ]; then
 else
   bad "and that path resolves in a real checkout" "generated $resolved, absent from $REAL_ROOT"
 fi
+
+printf '\ngenerated CI drops the credentials its checkouts fetched with\n'
+# actions/checkout keeps what it fetched with unless told otherwise: the job
+# token in repo/.git/config, and the Felix deploy key in a file felix/.git/config
+# names. The gate then runs the pull request's own test code in that same job,
+# which can read either, and nothing after the fetch needs them.
+#
+# So every checkout step is found in the rendered text and its own with: block
+# is read. A key in a comment, in another step or in the header is not that
+# step's input, and a render with no checkout step at all fails, not passes.
+_wf_render() { ( . "$FROOT/engine/harness/lib/detect.sh" 2>/dev/null || . "$FROOT/harness/lib/detect.sh"
+                 . "$FROOT/engine/harness/lib/bootstrap.sh" 2>/dev/null || . "$FROOT/harness/lib/bootstrap.sh"
+                 felix_bs_render_workflow "$1" someone/repo ); }
+# One row per actions/checkout step, whatever its version: ordinal, whether its
+# with: sets persist-credentials to false, whether its with: holds ssh-key, and
+# its path. Comment lines and block-scalar bodies (a run: | script) are skipped.
+_wf_checkouts() { awk -v q="'" '
+  function unq(v) { return (v ~ /^".*"$/ || (length(v) > 1 && substr(v, 1, 1) == q && substr(v, length(v)) == q)) ? substr(v, 2, length(v) - 2) : v }
+  function flush() { if (ck) printf "%d\t%d\t%d\t%s\n", ++n, pc, ssh, (p == "" ? "-" : p); ck = 0 }
+  BEGIN { bs = st = sd = -1 }
+  /^[ \t]*#/ || /^[ \t]*$/ { next }
+  {
+    match($0, /^ */); ind = RLENGTH; body = substr($0, ind + 1)
+    if (bs >= 0) { if (ind > bs) next; bs = -1 }
+    sub(/[ \t]+#.*$/, "", body)
+    item = 0; dash = ind
+    if (body == "-" || substr(body, 1, 2) == "- ") {
+      item = 1; body = substr(body, 2); match(body, /^ */); ind += 1 + RLENGTH; body = substr(body, RLENGTH + 1)
+    }
+    key = body; val = ""
+    if (match(body, /^[^:]+:/) && (substr(body, RLENGTH + 1, 1) == "" || substr(body, RLENGTH + 1, 1) == " ")) {
+      key = substr(body, 1, RLENGTH - 1); val = substr(body, RLENGTH + 1); sub(/^ +/, "", val); val = unq(val)
+    }
+    lead = item ? dash : ind
+    if (st >= 0) {
+      if (item && (sd < 0 ? (dash >= st) : (dash == sd))) { flush(); sd = dash; ki = ind; instep = 1; pc = ssh = 0; p = ""; wi = wc = -1 }
+      else if (sd >= 0 ? (lead <= sd) : (lead <= st)) { flush(); st = sd = -1; instep = 0 }
+    }
+    if (instep && ind == ki) {
+      if (key == "uses") ck = (val == "actions/checkout" || val ~ /^actions\/checkout@/)
+      wi = (key == "with" && val == "") ? ind : -1; wc = -1
+    } else if (instep && wi >= 0 && ind > wi) {
+      if (wc < 0) wc = ind
+      if (ind == wc && key == "persist-credentials" && val == "false") pc = 1
+      if (ind == wc && key == "ssh-key" && val != "") ssh = 1
+      if (ind == wc && key == "path") p = val
+    }
+    if (key == "steps" && val == "") { flush(); st = ind; sd = -1; instep = 0 }
+    if (val ~ /^[|>][-+0-9]*$/) bs = ind
+  }
+  END { flush() }'; }
+_wf_all=""; _wf_felix=""; _wf_repo=""
+for _wf_eco in node python rust go nosuch; do
+  _wf_rows="$(_wf_render "$_wf_eco" | _wf_checkouts)"
+  [ -n "$_wf_rows" ] || _wf_all="$_wf_all, $_wf_eco renders no checkout step"
+  _wf_hasf=0; _wf_hasr=0
+  while IFS=$'\t' read -r _wf_n _wf_pc _wf_ssh _wf_path; do
+    [ -n "$_wf_n" ] || continue
+    _wf_at="$_wf_eco checkout $_wf_n (path: $_wf_path)"
+    [ "$_wf_pc" = 1 ] || _wf_all="$_wf_all, $_wf_at keeps its credential"
+    if [ "$_wf_ssh" = 1 ]; then
+      _wf_hasf=1; [ "$_wf_pc" = 1 ] || _wf_felix="$_wf_felix, $_wf_at keeps the deploy key"
+    fi
+    if [ "$_wf_path" = repo ]; then
+      _wf_hasr=1; [ "$_wf_pc" = 1 ] || _wf_repo="$_wf_repo, $_wf_at keeps the job token"
+    fi
+  done <<< "$_wf_rows"
+  [ "$_wf_hasf" = 1 ] || _wf_felix="$_wf_felix, $_wf_eco renders no checkout with ssh-key"
+  [ "$_wf_hasr" = 1 ] || _wf_repo="$_wf_repo, $_wf_eco renders no checkout at path: repo"
+done
+if [ -z "$_wf_all" ]; then ok "every checkout step in the generated workflow sets persist-credentials: false in its own with"
+else bad "every checkout step in the generated workflow sets persist-credentials: false in its own with" "${_wf_all#, }"; fi
+if [ -z "$_wf_felix" ]; then ok "and the Felix checkout, which holds the deploy key, drops it"
+else bad "and the Felix checkout, which holds the deploy key, drops it" "${_wf_felix#, }"; fi
+if [ -z "$_wf_repo" ]; then ok "and the project's own checkout drops the job token"
+else bad "and the project's own checkout drops the job token" "${_wf_repo#, }"; fi
 
 printf '\ngenerated CI grades against a pinned Felix\n'
 # With no ref the Felix checkout took the default branch at the moment the job
@@ -4189,9 +4364,10 @@ printf '\npipefail safety\n'
 # SIGPIPE. The check then says absent about something present, and it is
 # timing-dependent, so small producers pass and a real repository fails.
 big="$(seq 1 200000)"
-# Deliberately not asserting that `producer | grep -q x` fails here. It fails
-# only when the producer is still writing when grep exits, so the assertion is a
-# race and flakes. The reason the helpers exist is recorded above instead.
+# Deliberately not asserting that `producer | grep -q x` fails on the match
+# these helpers look for, near the end. It fails only when the producer is still
+# writing when grep exits, so with a late match the assertion is a race and
+# flakes. The reason the helpers exist is recorded above instead.
 if ( set -uo pipefail
      . "$FROOT/harness/lib/resolve.sh"
      felix_contains "$big" "199999" ); then
@@ -4214,6 +4390,39 @@ beta" "alph" ); then
 else
   ok "felix_has_line rejects partial lines"
 fi
+# Twenty-one of the suite's own checks had the shape the helpers replaced,
+# `printf '%s\n' "$out" | grep -Fq x`, and one failed on main at a1bf2c7d, its
+# log reading `printf: write error: Broken pipe`, once #310 lengthened the
+# output it read. Each printf that fed such a chain now hands the chain's first
+# stage a here-string, which bash has written in full before that stage starts,
+# so grep's exit breaks no printf. Seven chains still pipe that first stage's
+# output into a later grep -q, and that writer is safe for another reason, at
+# the sizes these reports have: it prints a few filtered lines, which stdio
+# holds until the stage has read all its input and then writes in one piece.
+# A match on the first line of a megabyte takes the race out of the pipe form:
+# grep exits after its first read, so the writer can have handed over only
+# that read and one pipe's capacity, a small part of 1.3 MB. The first check
+# pins that failure, which is what gives the second its meaning: on a haystack
+# small enough for the pipe form to pass, the here-string passing would prove
+# nothing. Neither reads the suite, so the third does: it goes red on any
+# check here that pipes printf or echo of a variable into a chain ending in
+# grep -q, which is how the sweep stays swept. It passes over comments, and
+# over the first check's own pipe, which is there to break. It reads a line at
+# a time, so a chain continued onto a second line is not seen; none is today.
+if ( set -o pipefail; printf '%s\n' "$big" | grep -Fxq 1 ) 2>/dev/null; then
+  bad "under pipefail, printf piped into grep -q fails when grep matches the first line of a megabyte" \
+      "the pipe form passed, so this haystack cannot show that the here-string form is immune"
+else
+  ok  "under pipefail, printf piped into grep -q fails when grep matches the first line of a megabyte"
+fi
+if ( set -o pipefail; grep -Fxq 1 <<<"$big" ); then
+  ok  "and a here-string into grep -q passes on the same megabyte"
+else
+  bad "and a here-string into grep -q passes on the same megabyte"
+fi
+_pfre="(printf '%s(\\\\n)?'|echo) \"[\$][^\"]*\" [|] ([^|]*[|] )*grep [^|]*-[a-zA-Z]*q"
+_pfsites="$(grep -nE "$_pfre" "$HERE/run" | grep -vE -e '^[0-9]+:[[:space:]]*#' -e '"[$]big" [|] grep -Fxq 1 [)]')"
+is "no check in this suite pipes printf or echo of a variable into a chain ending in grep -q" "$_pfsites" ""
 
 printf '\nthe completion gate\n'
 # The principle under test: an agent must not be able to say it is finished
@@ -7515,7 +7724,7 @@ leda="$(_ledsnap "$MEM/widgetconc")"
 ledgone=""
 while IFS= read -r _line; do
   [ -n "$_line" ] || continue
-  printf '%s\n' "$leda" | grep -qxF "$_line" || ledgone="$ledgone $_line"
+  grep -qxF "$_line" <<<"$leda" || ledgone="$ledgone $_line"
 done <<EOF
 $ledb
 EOF
@@ -7844,6 +8053,64 @@ has "and scope says which tier it reached"               "$out" "red"
 out="$( cd "$SC" && "$FELIX" scope a.md 2>&1 )"; rc=$?
 is  "scoping a bare path still answers"      "$rc" "0"
 has "but admits it never read the changes"   "$out" "content"
+
+# The content rules then read one source of the three the paths come from.
+# felix_classify_diff took its paths from felix_changed_paths (the branch, the
+# index and the worktree) and its added lines from `base...HEAD` alone, so an
+# uncommitted line was a path with no content: named, rated by its extension,
+# never read. A credential typed into a documentation file and not committed
+# yet was "In scope". The unattended verify step only missed it by committing
+# before it asked. The control comes first, so the red below cannot be read as
+# "anything uncommitted is red".
+( cd "$SC" && git reset -q --hard HEAD ) >/dev/null 2>&1
+printf 'more notes\n' >> "$SC/a.md"
+out="$( cd "$SC" && "$FELIX" scope --base HEAD 2>&1 )"; rc=$?
+is  "an uncommitted edit with nothing in it stays in scope" "$rc" "0"
+# `sk-` and not `sk-ant-`: must_flag excuses a fixture line to secret-scan only
+# when no hard shape is on it, and `sk-ant-` is one. The risk table's rule reads
+# both, so the rule under test is the same.
+printf 'token = "sk-RRRRRRRRRRRRRRRRRRRRRRRR"\n' >> "$SC/a.md"   # must_flag
+out="$( cd "$SC" && "$FELIX" scope --base HEAD 2>&1 )"; rc=$?
+is  "an uncommitted credential added to a green path is out of scope" "$rc" "3"
+has "and scope names the tier the line reached"                        "$out" "highest tier: red"
+( cd "$SC" && git add a.md ) >/dev/null 2>&1
+out="$( cd "$SC" && "$FELIX" scope --base HEAD 2>&1 )"; rc=$?
+is  "and so is a staged one" "$rc" "3"
+# Every other caller of felix_classify_diff reads the same staged line, since a
+# library assertion passes while a call site stays broken (#65).
+has "classify reads it too"                  "$( cd "$SC" && "$FELIX" classify --base HEAD 2>&1 )" "tier:  red"
+has "and so does the tier a pull request would be labelled with" \
+    "$( cd "$SC" && "$FELIX" pr --base HEAD 2>&1 )" "tier:     red"
+has "and the receipt's risk tier"            "$( cd "$SC" && "$FELIX" receipt --base HEAD 2>&1 )" '"tier": "red"'
+( cd "$SC" && git reset -q --hard HEAD ) >/dev/null 2>&1
+
+# And on a stacked branch the content rules read three-dot, which the paths
+# stopped doing for #51. A squash freezes the merge-base, so every line the
+# branch below added was read again as this branch's own: a docs-only branch
+# was out of scope for a credential main already held.
+SK="$TMP/scopestack"; mkdir -p "$SK"
+( cd "$SK" && git init -q -b main
+  git config user.email t@t; git config user.name t
+  printf 'widget\n' > .felix; printf 'notes\n' > a.md; git add -A; git commit -qm init
+  git checkout -q -b feat-a
+  printf 'api_key = "sk-QQQQQQQQQQQQQQQQQQQQQQQQ"\n' >> a.md   # must_flag
+  git add -A; git commit -qm "A: a credential"
+  git checkout -q -b feat-b
+  printf 'more\n' > NOTES.md; git add -A; git commit -qm "B: docs only"
+  git checkout -q main; git merge -q --squash feat-a; git commit -qm "A squashed (#1)"
+  git checkout -q feat-b ) >/dev/null 2>&1
+SK="$(cd "$SK" && pwd -P)"
+is "the squash leaves this merge-base behind main as well" \
+   "$( cd "$SK" && [ "$(git merge-base main HEAD)" = "$(git rev-parse main)" ] && echo same || echo behind )" \
+   "behind"
+out="$( cd "$SK" && "$FELIX" scope --base main 2>&1 )"; rc=$?
+is "a stacked branch is not out of scope for a credential its base already merged" "$rc" "0"
+# The control that keeps it honest: a fix that narrowed everything would pass
+# the line above and stop enforcing.
+printf 'api_key = "sk-SSSSSSSSSSSSSSSSSSSSSSSS"\n' >> "$SK/NOTES.md"   # must_flag
+( cd "$SK" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "B: its own" ) >/dev/null 2>&1
+out="$( cd "$SK" && "$FELIX" scope --base main 2>&1 )"; rc=$?
+is "but a credential the branch adds itself still is" "$rc" "3"
 
 printf '\nthe line that does the work\n'
 # `felix merge` was shipped, deployed, written into the handoff as "Felix can
@@ -10577,6 +10844,368 @@ else
            "grounded on a probe felix declares"; do skip "$a" "no projects/felix/obligations.tsv beside this harness"; done
 fi
 
+# ------------------------------------- obligations name what discharges them ---
+# Roadmap Phase 1, first item. An optional eighth column, `needs`, names the
+# checker ids in qualification.tsv that would discharge a row, and each
+# resolves as complete (a row for every control), short (declared, some
+# missing, named) or absent (no checker by that id). Report only. So the
+# controls here hold on the engine before the column existed as much as after
+# it: a seven-column row is still a row, and discharge and blocking do not
+# move whatever a need resolves to. Fresh fixture dirs, as for the asks above.
+printf '\nobligations: what would discharge each, by name\n'
+NDP="$TMP/needs-proj"; NDR="$TMP/needs-repo"; mkdir -p "$NDP" "$NDR" "$MEM/needs-proj"
+( cd "$NDR" && git init -q -b main && printf 'x\n' > x && git add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null 2>&1
+NDR="$(cd "$NDR" && pwd -P)"
+printf 'thing\t-\t-\tls -1 x\ttest -f x\n' > "$NDP/probes.tsv"
+# One checker with a row for every control, one with a violation only, and one
+# whose only row is malformed. Nothing here runs them: resolution reads what
+# the table declares and qualifies nothing.
+: > "$NDP/qualification.tsv"
+for _c in violation:fail restoration:pass irrelevant:pass alternate:fail \
+          decoupled_violation:fail decoupled_satisfaction:pass; do
+  printf 'whole\ttrue\t%s\t%s\ttrue\n' "${_c%%:*}" "${_c##*:}" >> "$NDP/qualification.tsv"
+done
+printf 'part\ttrue\tviolation\tfail\ttrue\n'   >> "$NDP/qualification.tsv"
+printf 'broken\ttrue\tviolation\tpass\ttrue\n' >> "$NDP/qualification.tsv"
+_nd()      { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+               . "$FROOT/harness/lib/obligations.sh"; "$@" ) 2>/dev/null; }
+_ndrun()   { _nd felix_obligations_run "$NDP" "$NDR"; }
+_ndneeds() { _nd felix_obligations_needs "$NDP"; }
+_ndblk()   { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+               . "$FROOT/harness/lib/verify.sh"; . "$FROOT/harness/lib/evidence.sh"
+               . "$FROOT/harness/lib/escape.sh"; . "$FROOT/harness/lib/probes.sh"
+               . "$FROOT/harness/lib/facts.sh"; . "$FROOT/harness/lib/obligations.sh"
+               felix_merge_blockers "$NDP" "" "$NDR" "$FROOT" ) 2>/dev/null | grep '^obligations'; }
+_ndrow()   {   # evidence [needs]
+  if [ $# -ge 2 ]; then printf 'a\tRELEASE_BLOCKING\tdeterministic\t-\t%s\tthing\towed\t%s\n' "$1" "$2"
+  else                  printf 'a\tRELEASE_BLOCKING\tdeterministic\t-\t%s\tthing\towed\n' "$1"; fi > "$NDP/obligations.tsv"; }
+_ndtc()    { ( . "$FROOT/harness/lib/table.sh" 2>/dev/null
+               felix_table_check "$FROOT/harness/templates/schemas.tsv" "$NDP/obligations.tsv" >/dev/null 2>&1; echo $? ); }
+
+# Controls: the seven-column row, and discharge, exactly as before.
+_ndrow true
+is  "needs: a seven-column row is still a row"                  "$(_nd felix_obligation_rows "$NDP" | grep -c .)" "1"
+is  "and nothing about it is refused"                           "$(_nd felix_obligation_malformed "$NDP")" ""
+is  "and the schema check accepts it"                           "$(_ndtc)" "0"
+_nd7="$(_ndrun)"
+is  "and it is evaluated on its axes as before"                 "$(printf '%s\n' "$_nd7" | cut -f4,5)" "ACTIVE	SATISFIED"
+is  "a seven-column row names nothing that would discharge it"  "$(_ndneeds)" "a	-	none	-"
+_ndrow true gone
+is  "an eighth column of well-formed ids is not refused"        "$(_nd felix_obligation_malformed "$NDP")" ""
+is  "and discharge does not move: the row reads as it did without one" "$(_ndrun)" "$_nd7"
+is  "the schema check accepts the eighth column as needs"       "$(_ndtc)" "0"
+_ndrow false gone
+has "a failing row that names an absent capability blocks a release as before" \
+    "$(_ndblk)" "obligations	a	ACTIVE UNSATISFIED"
+_ndrow false whole
+has "and one whose checker declares every control blocks all the same" \
+    "$(_ndblk)" "obligations	a	ACTIVE UNSATISFIED"
+is  "complete is not discharge: the row is still UNSATISFIED"   "$(_ndrun | cut -f5)" "UNSATISFIED"
+_ndrow true ''
+is  "an empty needs cell is not refused by the scan"            "$(_nd felix_obligation_malformed "$NDP")" ""
+is  "and reads as naming nothing"                               "$(_ndneeds)" "a	-	none	-"
+
+# Resolution, against what qualification.tsv declares.
+_ndrow true -
+is  "a dash names nothing"                                      "$(_ndneeds)" "a	-	none	-"
+_ndrow true whole
+is  "a checker with a row for every control resolves complete"  "$(_ndneeds)" "a	whole	complete	-"
+_ndrow true part
+is  "a checker short of controls resolves short, naming what it lacks" \
+    "$(_ndneeds)" "a	part	short	restoration,irrelevant,alternate,decoupled_violation,decoupled_satisfaction"
+_ndrow true gone
+is  "an id no checker carries resolves absent"                  "$(_ndneeds)" "a	gone	absent	-"
+_ndrow true broken
+is  "a checker whose only row is malformed is short, not absent" "$(_ndneeds | cut -f3)" "short"
+_ndrow true 'whole,part,gone'
+is  "a row needing three capabilities resolves each of them" \
+    "$(_ndneeds | cut -f2,3 | tr '\n' ' ')" "whole	complete part	short gone	absent "
+{ printf 'a\tINFO\tdeterministic\t-\ttrue\t-\tr\twhole\n'
+  printf 'b\tINFO\tdeterministic\t-\ttrue\t-\tr\twhole,gone\n'
+  printf 'c\tINFO\tdeterministic\t-\ttrue\t-\tr\tpart\n'
+  printf 'd\tINFO\tdeterministic\t-\ttrue\t-\tr\n'
+  printf 'e\tINFO\tdeterministic\t-\ttrue\t-\tr\t-\n'; } > "$NDP/obligations.tsv"
+is  "the count is one per obligation, by its weakest need" \
+    "$(_ndneeds | _nd felix_obligations_needs_count)" "3	1	1	1	2"
+# A copy of the engine without the qualification library cannot resolve, and
+# says nothing and fails rather than calling every checker absent.
+NDNL="$TMP/lib-without-qualify"; mkdir -p "$NDNL"
+for _l in resolve probes obligations exceptions; do cp "$FROOT/harness/lib/$_l.sh" "$NDNL/" 2>/dev/null; done
+is  "an engine shipped without the qualification library resolves nothing, rather than absent" \
+    "$( ( . "$NDNL/resolve.sh"; . "$NDNL/probes.sh"; . "$NDNL/obligations.sh"
+          felix_obligations_needs "$NDP"; printf 'rc=%s' "$?" ) 2>/dev/null )" "rc=1"
+
+# The count above failed once in a full gate on a loaded Mac: 3 0 2 1 2, row a
+# resolved short against a checker declaring all six. Membership was printf of
+# the declared list into grep -qxF, and grep -q leaves on its first match; a
+# printf still writing is killed by SIGPIPE, and under pipefail, which this
+# suite and the felix CLI both set, `||` then names a control the checker
+# declares. A list longer than a pipe holds makes the race certain, because the
+# writer has to block: twenty thousand violation rows first, then one row for
+# each other control. One awk writes them; a loop here would cost minutes.
+NDB="$TMP/needs-big"; mkdir -p "$NDB"
+awk 'BEGIN { for (i = 0; i < 20000; i++) print "big\ttrue\tviolation\tfail\ttrue"
+             n = split("restoration:pass irrelevant:pass alternate:fail decoupled_violation:fail decoupled_satisfaction:pass", c, " ")
+             for (i = 1; i <= n; i++) { split(c[i], kv, ":"); print "big\ttrue\t" kv[1] "\t" kv[2] "\ttrue" } }' \
+  > "$NDB/qualification.tsv"
+printf 'a\tINFO\tdeterministic\t-\ttrue\t-\tr\tbig\n' > "$NDB/obligations.tsv"
+is  "a checker declaring every control resolves complete however many rows precede its last" \
+    "$(_nd felix_obligations_needs "$NDB")" "a	big	complete	-"
+
+# A table that exists and cannot be read is said, not resolved. awk's "can't
+# open file" went to a stderr every caller discards and its status was never
+# read, so the declared list came back empty and every capability read absent:
+# a claim about a table nobody read. root reads a file whose mode is 000, and
+# then no table here can be made unreadable; those assertions skip, not pass.
+printf 'x\n' > "$TMP/mode-000"; chmod 000 "$TMP/mode-000"
+_unreadable=1; cat "$TMP/mode-000" >/dev/null 2>&1 && _unreadable=0
+chmod 644 "$TMP/mode-000"
+_noread="this user reads a file whose mode is 000, so no table can be made unreadable"
+NDU="$TMP/needs-unreadable"; mkdir -p "$NDU"
+cp "$NDP/qualification.tsv" "$NDU/qualification.tsv"
+# A row naming nothing first, which needs no read of the table to report: a
+# resolution that stops part way must not leave it behind as a partial report.
+{ printf 'n\tINFO\tdeterministic\t-\ttrue\t-\tr\t-\n'
+  printf 'a\tINFO\tdeterministic\t-\ttrue\t-\tr\tpart,whole\n'; } > "$NDU/obligations.tsv"
+_ndu() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+           . "$FROOT/harness/lib/obligations.sh"
+           felix_obligations_needs "$NDU"; printf 'rc=%s' "$?" ) 2>"$TMP/ndu.err"; }
+if [ "$_unreadable" -eq 1 ]; then
+  chmod 000 "$NDU/qualification.tsv"
+  is  "needs over a table that cannot be read resolves nothing, not every capability absent, and exits 2" \
+      "$(_ndu)" "rc=2"
+  has "and needs says on stderr which table could not be read" \
+      "$(grep 'could not be read' "$TMP/ndu.err")" "$NDU/qualification.tsv"
+  is  "and that is the one line needs writes there"        "$(grep -c . "$TMP/ndu.err")" "1"
+  is  "and needs says so without the caller's pipefail"    "$(set +o pipefail; _ndu)" "rc=2"
+  chmod 644 "$NDU/qualification.tsv"
+else
+  for a in "needs over a table that cannot be read resolves nothing, not every capability absent, and exits 2" \
+           "and needs says on stderr which table could not be read" \
+           "and that is the one line needs writes there" \
+           "and needs says so without the caller's pipefail"; do skip "$a" "$_noread"; done
+fi
+# No table at all is still an answer: nothing is declared, so everything named
+# is absent, and that is what a project without qualification looks like.
+NDN="$TMP/needs-no-table"; mkdir -p "$NDN"
+cp "$NDU/obligations.tsv" "$NDN/obligations.tsv"
+is  "with no qualification.tsv at all, every capability named resolves absent, and exits 0" \
+    "$( ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+          . "$FROOT/harness/lib/obligations.sh"
+          felix_obligations_needs "$NDN"; printf 'rc=%s' "$?" ) 2>/dev/null )" \
+    "$(printf 'n\t-\tnone\t-\na\tpart\tabsent\t-\na\twhole\tabsent\t-\nrc=0')"
+
+# Whichever read fails. A mode cannot stage the case where the declared list was
+# read and a later read of one checker's controls was not, so awk is wrapped:
+# every call that names a qualification.tsv is counted, and the one numbered
+# QSHIM_FAIL runs with that table at mode 000, put back as it returns. Which
+# read fails is counted back from the last one a clean run of the same command
+# made, so nothing here knows how many reads the engine takes to get there.
+_QSHIM="$TMP/awk-shim"; _QSC="$TMP/awk-shim.count"; mkdir -p "$_QSHIM"
+_qawk="$(command -v awk)"
+cat > "$_QSHIM/awk" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    qualification.tsv|*/qualification.tsv)
+      printf x >> "\$QSHIM_COUNT"
+      if [ "\$((\$(wc -c < "\$QSHIM_COUNT")))" -eq "\${QSHIM_FAIL:-0}" ]; then
+        chmod 000 "\$a"; "$_qawk" "\$@"; rc=\$?; chmod 644 "\$a"; exit \$rc
+      fi
+      break ;;
+  esac
+done
+exec "$_qawk" "\$@"
+EOF
+chmod +x "$_QSHIM/awk"
+# _qreads CMD...: how many reads of the table CMD makes through the wrapper.
+_QSE="$TMP/awk-shim.err"
+_qreads() {
+  : > "$_QSC"
+  ( PATH="$_QSHIM:$PATH"; QSHIM_COUNT="$_QSC"; QSHIM_FAIL=0
+    export PATH QSHIM_COUNT QSHIM_FAIL; "$@" ) >/dev/null 2>&1
+  printf '%s' "$(( $(wc -c < "$_QSC") ))"
+}
+# _qfailat K CMD...: CMD with its Kth read of the table failing. Its stdout is
+# left in _qsout, its status in _qsrc and its stderr in $_QSE, so a command
+# that wants it read with its stdout says 2>&1 itself. Fails, having staged
+# nothing, when the run never reached read K.
+_qfailat() {
+  local k="$1"; shift
+  : > "$_QSC"
+  _qsout="$( PATH="$_QSHIM:$PATH"; QSHIM_COUNT="$_QSC"; QSHIM_FAIL="$k"
+             export PATH QSHIM_COUNT QSHIM_FAIL; "$@" 2>"$_QSE" )"; _qsrc=$?
+  [ "$(( $(wc -c < "$_QSC") ))" -ge "$k" ]
+}
+# _qstage BACK CMD...: the same, with the read BACK before the last a clean run
+# makes failing. Fails, having staged nothing, when there is no such read.
+_qstage() {
+  local back="$1" n; shift
+  n=$(( $(_qreads "$@") - back ))
+  [ "$n" -ge 1 ] || return 1
+  _qfailat "$n" "$@"
+}
+# _qeach FROM PRED CMD...: CMD with each of its reads of the table failing in
+# turn, from read FROM to the last a clean run makes. PRED is called after each
+# with _qsout, _qsrc and $_QSE set, and prints nothing when the result is right.
+# Prints a line for each read whose result was not, one for a read the run
+# never reached, and one when a clean run made fewer than FROM reads, because
+# then nothing was staged at all: a failure, not a skip, or reading the table
+# some way the wrapper cannot see would pass every assertion built on this.
+_qeach() {
+  local from="$1" pred="$2" n k said; shift 2
+  n="$(_qreads "$@")"
+  if [ "$n" -lt "$from" ]; then
+    printf 'a clean run made %s read(s) of the table by name, fewer than %s\n' "$n" "$from"; return 0
+  fi
+  k="$from"
+  while [ "$k" -le "$n" ]; do
+    if ! _qfailat "$k" "$@"; then printf 'read %s of %s: never reached\n' "$k" "$n"
+    else said="$("$pred")"; [ -z "$said" ] || printf 'read %s of %s: %s\n' "$k" "$n" "$said"; fi
+    k=$((k + 1))
+  done
+}
+_qsnone="too few reads of qualification.tsv reach awk by name for this one to be made to fail alone"
+if [ "$_unreadable" -eq 1 ]; then
+  if _qstage 0 _nd felix_obligations_needs "$NDU"; then
+    is  "needs whose last read of one checker's controls fails prints nothing and exits 2" "$_qsrc:$_qsout" "2:"
+  else bad "needs whose last read of one checker's controls fails prints nothing and exits 2" "$_qsnone"; fi
+  if _qstage 1 _nd felix_obligations_needs "$NDU"; then
+    is  "and the same when the read that fails is an earlier one, with a later one read" "$_qsrc:$_qsout" "2:"
+  else bad "and the same when the read that fails is an earlier one, with a later one read" "$_qsnone"; fi
+else
+  for a in "needs whose last read of one checker's controls fails prints nothing and exits 2" \
+           "and the same when the read that fails is an earlier one, with a later one read"; do
+    skip "$a" "$_noread"; done
+fi
+# And every read, not only the last two: the list of declared checkers and the
+# malformed rows are read first, and a status dropped on either still resolved
+# and exited 0. With the caller's pipefail and without it, because a status that
+# reaches the caller only through a pipeline is lost without. The stderr line
+# is needs' own, and one: a checker's read that let the qualification
+# library's line through as well would say it twice.
+_ndv()   { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+             . "$FROOT/harness/lib/obligations.sh"; felix_obligations_needs "$NDU" ); }
+_ndvnp() { ( set +o pipefail; _ndv ); }
+_ndvsays() {
+  [ "$_qsrc:$_qsout" = "2:" ] \
+    || printf 'exit %s with [%s] on stdout; ' "$_qsrc" "$(printf '%s' "$_qsout" | tr '\n\t' '/ ')"
+  { [ "$(grep -c . "$_QSE")" = 1 ] && grep -qF "$NDU/qualification.tsv could not be read" "$_QSE"; } \
+    || printf 'stderr [%s]' "$(tr '\n' '/' < "$_QSE")"
+}
+if [ "$_unreadable" -eq 1 ]; then
+  is  "whichever read of the table fails, needs prints nothing, exits 2, and says so in one stderr line naming it" \
+      "$(_qeach 1 _ndvsays _ndv)" ""
+  is  "and so without the caller's pipefail" "$(_qeach 1 _ndvsays _ndvnp)" ""
+else
+  for a in "whichever read of the table fails, needs prints nothing, exits 2, and says so in one stderr line naming it" \
+           "and so without the caller's pipefail"; do skip "$a" "$_noread"; done
+fi
+
+# A cell that is not an id refuses the row, as every other malformed cell does.
+for _b in Deploy 'a,,b' 'x, y' 9lives 'ok,'; do
+  _ndrow true "$_b"
+  has "needs [$_b] refuses the row with the reason" "$(_nd felix_obligation_malformed "$NDP")" "needs '$_b'"
+done
+_ndrow true Deploy
+is  "a row refused for its needs is never evaluated"            "$(_ndrun)" ""
+has "and is refused at the merge boundary"                      "$(_ndblk)" "needs 'Deploy'"
+
+# The CLI, on the bound fixture: a need nobody declares and a row naming none.
+WNP="$FROOT/projects/widget"
+cp "$WNP/obligations.tsv" "$TMP/needs-w-oblig.keep"
+{ printf 'fixture\tRELEASE_BLOCKING\tdeterministic\t-\ttrue\t-\ta fixture owes one thing, and it holds\tgone\n'
+  printf 'second\tADVISORY\tdeterministic\t-\ttrue\t-\tand one that names nothing\n'; } > "$WNP/obligations.tsv"
+_ndcount="1 name what discharges them: 0 complete, 0 short, 1 absent; 1 name nothing"
+out="$(cd "$REPO" && "$FELIX" obligations 2>&1)"; rc=$?
+is  "felix obligations exits 0 with a need nobody declares"     "$rc" "0"
+has "and shows each row's need with its resolution"             "$(printf '%s\n' "$out" | grep ' gone ')" "absent"
+has "and the row that names nothing, saying so"                 "$out" "names nothing that would discharge it"
+has "and says complete is declared, not run"                    "$out" "DECLARED, not that one ran"
+has "and the summary line counts them"                          "$(printf '%s\n' "$out" | grep 'obligation(s):')" "$_ndcount"
+out="$(cd "$REPO" && "$FELIX" obligations --gate 2>&1)"; rc=$?
+is  "felix obligations --gate exits 0 whatever the needs resolve to" "$rc" "0"
+has "and its summary line carries the same count"               "$(printf '%s\n' "$out" | grep 'obligation(s):')" "$_ndcount"
+case "$out" in
+  *"what would discharge each"*) bad "and the gate's copy carries no needs table" "$out" ;;
+  *)                             ok  "and the gate's copy carries no needs table" ;;
+esac
+out="$(cd "$REPO" && "$FELIX" gate 2>&1)"
+has "the gate's obligations check stays ok with every need absent" "$out" "  obligations        ok"
+has "and prints the count under it" \
+    "$(printf '%s\n' "$out" | awk '/^  obligations  / { getline; print; exit }')" "$_ndcount"
+# And over a table that cannot be read. The needs report is report only and
+# moves no verdict, so the exit is what it would have been had it resolved; the
+# table of what would discharge each is left off, and the summary line says
+# what could not be read where the count was, since a count of what nobody read
+# would read as one. Not run through felix gate here: a red qualified check
+# would write this checkout's mistakes.log, which later blocks read, and the
+# gate prints this same summary line.
+_ndsays="; what would discharge them could not be read"
+if [ "$_unreadable" -eq 1 ]; then
+  cp "$WNP/qualification.tsv" "$TMP/needs-w-qual.keep" 2>/dev/null || true
+  cp "$NDP/qualification.tsv" "$WNP/qualification.tsv"
+  ( cd "$REPO" && "$FELIX" obligations >/dev/null 2>&1 );        _ndrc=$?
+  ( cd "$REPO" && "$FELIX" obligations --gate >/dev/null 2>&1 ); _ndrcg=$?
+  chmod 000 "$WNP/qualification.tsv"
+  out="$(cd "$REPO" && "$FELIX" obligations 2>&1)"; rc=$?
+  outg="$(cd "$REPO" && "$FELIX" obligations --gate 2>&1)"; rcg=$?
+  chmod 644 "$WNP/qualification.tsv"
+  is  "felix obligations over a table it cannot read exits as it does over one it can" "$rc" "$_ndrc"
+  case "$out" in
+    *"what would discharge each"*) bad "and leaves off the table of what would discharge each" "$out" ;;
+    *)                             ok  "and leaves off the table of what would discharge each" ;;
+  esac
+  _ndsum="$(printf '%s\n' "$out" | grep 'obligation(s):')"
+  case "$_ndsum" in
+    *"$_ndsays") ok  "and its summary line ends saying what would discharge them could not be read" ;;
+    *)           bad "and its summary line ends saying what would discharge them could not be read" "$_ndsum" ;;
+  esac
+  case "$_ndsum" in
+    *"name what discharges them"*) bad "and counts nothing it could not read" "$_ndsum" ;;
+    *)                             ok  "and counts nothing it could not read" ;;
+  esac
+  is  "felix obligations --gate over a table it cannot read exits as it does over one it can" "$rcg" "$_ndrcg"
+  _ndsum="$(printf '%s\n' "$outg" | grep 'obligation(s):')"
+  case "$_ndsum" in
+    *"$_ndsays") ok  "and the gate's summary line ends saying what would discharge them could not be read" ;;
+    *)           bad "and the gate's summary line ends saying what would discharge them could not be read" "$_ndsum" ;;
+  esac
+  case "$_ndsum" in
+    *"name what discharges them"*) bad "and the gate's summary counts nothing it could not read" "$_ndsum" ;;
+    *)                             ok  "and the gate's summary counts nothing it could not read" ;;
+  esac
+  rm -f "$WNP/qualification.tsv"
+  [ -f "$TMP/needs-w-qual.keep" ] && mv "$TMP/needs-w-qual.keep" "$WNP/qualification.tsv"
+else
+  for a in "felix obligations over a table it cannot read exits as it does over one it can" \
+           "and leaves off the table of what would discharge each" \
+           "and its summary line ends saying what would discharge them could not be read" \
+           "and counts nothing it could not read" \
+           "felix obligations --gate over a table it cannot read exits as it does over one it can" \
+           "and the gate's summary line ends saying what would discharge them could not be read" \
+           "and the gate's summary counts nothing it could not read"; do skip "$a" "$_noread"; done
+fi
+cp "$TMP/needs-w-oblig.keep" "$WNP/obligations.tsv"
+
+# Felix's own ledger names what would discharge its two rows. Neither has a
+# checker in qualification.tsv yet, and absent is the honest reading.
+_REALP="$(cd "$REAL_HARNESS/../.." && pwd)/projects/felix"
+if [ -f "$_REALP/obligations.tsv" ]; then
+  _ndf="$(_nd felix_obligations_needs "$_REALP")"
+  is  "felix's lifecycle_wired needs lifecycle, which no checker declares" \
+      "$(printf '%s\n' "$_ndf" | awk -F'\t' '$1 == "lifecycle_wired" { print $2 "\t" $3 }')" "lifecycle	absent"
+  is  "and engine_deployed needs deploy, absent the same way" \
+      "$(printf '%s\n' "$_ndf" | awk -F'\t' '$1 == "engine_deployed" { print $2 "\t" $3 }')" "deploy	absent"
+else
+  for a in "felix's lifecycle_wired needs lifecycle, which no checker declares" \
+           "and engine_deployed needs deploy, absent the same way"; do
+    skip "$a" "no projects/felix/obligations.tsv beside this harness"; done
+fi
+has "the template documents the needs column" \
+    "$(grep '^# obligation' "$FROOT/harness/templates/obligations.tsv")" "reason	needs"
+
 # ------------------------------------------ hooks-events, the probe's instrument ---
 # `hook_binding` records which events the shipped hooks.json binds. It used to
 # be a grep for `"Event": [`, and the blind control that qualified the first
@@ -12773,12 +13402,142 @@ case " $_qm " in
   *" restoration "*) bad "and a declared control is not reported missing" "$_qm" ;;
   *)                 ok  "and a declared control is not reported missing" ;;
 esac
+# Membership is a read of the table, never a race with it. A declared control
+# was once reported missing when grep -q found it and left before the printf
+# feeding it had finished, and pipefail turned the writer's SIGPIPE into "not
+# found". A list longer than a pipe holds makes that certain: twenty thousand
+# violation rows, then one row for each other control, written by one awk.
+QBP="$TMP/qual-big"; mkdir -p "$QBP"
+awk 'BEGIN { for (i = 0; i < 20000; i++) print "big\ttrue\tviolation\tfail\ttrue"
+             n = split("restoration:pass irrelevant:pass alternate:fail decoupled_violation:fail decoupled_satisfaction:pass", c, " ")
+             for (i = 1; i <= n; i++) { split(c[i], kv, ":"); print "big\ttrue\t" kv[1] "\t" kv[2] "\ttrue" } }' \
+  > "$QBP/qualification.tsv"
+_qmc() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+           felix_qualify_missing_controls "$@"; printf 'rc=%s' "$?" ) 2>"$TMP/qmc.err"; }
+is  "a checker with twenty thousand violation rows before its other five controls is missing none" \
+    "$(_qmc "$QBP" big | tr '\n' ' ')" "rc=0"
+is  "and none without the caller's pipefail either" "$(set +o pipefail; _qmc "$QBP" big | tr '\n' ' ')" "rc=0"
+# The same line did the same in felix_qualify_ungoverned, against the list of
+# every checker the table declares: a reported name that sorts first is the one
+# grep finds on its first line. Twenty thousand checkers, named in letters,
+# because the gate line a name is read from takes no digit.
+QGV="$TMP/qual-many"; mkdir -p "$QGV"
+awk 'BEGIN { print "alpha\ttrue\tviolation\tfail\ttrue"
+             for (i = 0; i < 20000; i++) {
+               s = i ""; n = ""
+               for (j = 1; j <= length(s); j++) n = n substr("abcdefghij", substr(s, j, 1) + 1, 1)
+               print "zz-" n "\ttrue\tviolation\tfail\ttrue" } }' > "$QGV/qualification.tsv"
+_qgv="$(printf '  alpha              ok\n  omega              FAIL\n')"
+_qug() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+           felix_qualify_ungoverned "$@"; printf 'rc=%s' "$?" ) 2>"$TMP/qug.err"; }
+is  "a reported checker with a row is never called unqualified among twenty thousand, and one with none still is" \
+    "$(_qug "$QGV" "$_qgv" | tr '\n' ' ')" "omega rc=0"
+# Membership is of a whole name, never part of one. violation is part of
+# decoupled_violation, so a match on parts reads a checker declaring only the
+# two decoupled controls as declaring the one with teeth; and a reported alpha
+# would read as qualified by a row for alphabet.
+QDC="$TMP/qual-parts"; mkdir -p "$QDC"
+{ printf 'dec\ttrue\tdecoupled_violation\tfail\ttrue\n'
+  printf 'dec\ttrue\tdecoupled_satisfaction\tpass\ttrue\n'
+  printf 'alphabet\ttrue\tviolation\tfail\ttrue\n'; } > "$QDC/qualification.tsv"
+is  "a checker declaring only the two decoupled controls is missing violation and the three others" \
+    "$(_qmc "$QDC" dec | tr '\n' ' ')" "violation restoration irrelevant alternate rc=0"
+is  "and a reported checker whose name is part of a declared one's is still unqualified" \
+    "$(_qug "$QDC" "$(printf '  alpha              ok\n')" | tr '\n' ' ')" "alpha rc=0"
+# A byte that is not UTF-8, in a mutation, leaves a row a row. BSD cut in a
+# UTF-8 locale stops at it with "Illegal byte sequence", and ungoverned read
+# that as a table it could not read: a false cause, every time, for such a
+# table. Where no en_US UTF-8 locale is installed there is nothing to show.
+_u8="$(locale -a 2>/dev/null | awk '/^en_US\.(UTF-8|utf8)$/ && !n++')"
+_u8none="no en_US UTF-8 locale is installed here"
+QL8="$TMP/qual-not-utf8"; mkdir -p "$QL8"
+{ printf 'alpha\ttrue\tviolation\tfail\tprintf caf\351 > x\n'
+  printf 'beta\ttrue\tviolation\tfail\ttrue\n'; } > "$QL8/qualification.tsv"
+if [ -n "$_u8" ]; then
+  is  "in a UTF-8 locale, a row holding a byte that is not UTF-8 is read, and ungoverned names only the unqualified" \
+      "$( export LC_ALL="$_u8"; _qug "$QL8" "$(printf '  alpha  ok\n  beta  ok\n  omega  ok\n')" | tr '\n' ' ')" "omega rc=0"
+else
+  skip "in a UTF-8 locale, a row holding a byte that is not UTF-8 is read, and ungoverned names only the unqualified" "$_u8none"
+fi
+# A table that exists and cannot be read is said, not resolved. Read as empty it
+# named all six controls missing and every reported checker unqualified: what a
+# table declaring nothing says, said about one nobody read.
+QUT="$TMP/qual-unreadable"; mkdir -p "$QUT"
+printf 'alpha\ttrue\tviolation\tfail\ttrue\n' > "$QUT/qualification.tsv"
+if [ "$_unreadable" -eq 1 ]; then
+  chmod 000 "$QUT/qualification.tsv"
+  is  "a table that cannot be read names no control missing, rather than all six, and exits 2" \
+      "$(_qmc "$QUT" alpha | tr '\n' ' ')" "rc=2"
+  has "and missing_controls says on stderr which table could not be read" \
+      "$(grep 'could not be read' "$TMP/qmc.err")" "$QUT/qualification.tsv"
+  is  "and that is the one line missing_controls writes there" "$(grep -c . "$TMP/qmc.err")" "1"
+  is  "and missing_controls says so without the caller's pipefail" \
+      "$(set +o pipefail; _qmc "$QUT" alpha | tr '\n' ' ')" "rc=2"
+  is  "ungoverned over a table that cannot be read names no reported checker, and exits 2" \
+      "$(_qug "$QUT" "$_qgv" | tr '\n' ' ')" "rc=2"
+  has "and ungoverned says on stderr which table could not be read" \
+      "$(grep 'could not be read' "$TMP/qug.err")" "$QUT/qualification.tsv"
+  is  "and that is the one line ungoverned writes there" "$(grep -c . "$TMP/qug.err")" "1"
+  is  "and ungoverned says so without the caller's pipefail" \
+      "$(set +o pipefail; _qug "$QUT" "$_qgv" | tr '\n' ' ')" "rc=2"
+  chmod 644 "$QUT/qualification.tsv"
+else
+  for a in "a table that cannot be read names no control missing, rather than all six, and exits 2" \
+           "and missing_controls says on stderr which table could not be read" \
+           "and that is the one line missing_controls writes there" \
+           "and missing_controls says so without the caller's pipefail" \
+           "ungoverned over a table that cannot be read names no reported checker, and exits 2" \
+           "and ungoverned says on stderr which table could not be read" \
+           "and that is the one line ungoverned writes there" \
+           "and ungoverned says so without the caller's pipefail"; do skip "$a" "$_noread"; done
+fi
+# No table at all is an answer, and stays one: nothing is declared.
+is  "with no qualification.tsv at all a checker is missing all six, and that exits 0" \
+    "$(_qmc "$TMP/no-such-proj" alpha | tr '\n' ' ')" \
+    "violation restoration irrelevant alternate decoupled_violation decoupled_satisfaction rc=0"
+is  "and every reported checker is unqualified, and that exits 0" \
+    "$(_qug "$TMP/no-such-proj" "$_qgv" | tr '\n' ' ')" "alpha omega rc=0"
 # A row that names a checker and not enough to run one is a control nobody is
 # applying, and silence about it reads as a control that passed.
 printf 'demo\tonly-two\n' >> "$QLP/qualification.tsv"
 has "a row too short to run anything is reported, not skipped" \
     "$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
         felix_qualify_malformed "$QLP")" "demo"
+# A line was skipped as blank when its first field was empty, so a row with a
+# tab in front of it was never run and never called malformed. A table whose
+# lines end in a bare carriage return is one line to awk, and every row after
+# the first rode in fields past the sixth, which nothing reads. A checker that
+# is not an id was split in two, or expanded to the files of the checkout, by
+# what walks the checkers. Each is malformed now, and each table here holds a
+# row that would otherwise run, so a reader that runs it or skips it says so.
+QRD="$TMP/qual-reader"; mkdir -p "$QRD"
+_qrd() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+           printf 'rows=%s ' "$(felix_qualify_rows "$QRD" | wc -l | tr -d ' ')"
+           felix_qualify_malformed "$QRD" | tr '\t\n' '| ' ) 2>/dev/null; }
+printf '\tdemo\ttrue\tviolation\tfail\ttrue\n' > "$QRD/qualification.tsv"
+is  "a row with a tab in front of its checker is malformed, never skipped as a blank line" \
+    "$(_qrd)" "rows=0 |no checker name "
+printf 'demo\ttrue\tviolation\tfail\ttrue\rdemo\ttrue\talternate\tfail\ttrue\r' > "$QRD/qualification.tsv"
+is  "a table whose lines end in a bare carriage return is malformed, never one row with the rest unread" \
+    "$(_qrd)" "rows=0 demo|a carriage return; a row ends at a newline alone "
+printf 'demo\ttrue\tviolation\tfail\ttrue\r\n' > "$QRD/qualification.tsv"
+is  "and so is a row ending in a carriage return and a newline" \
+    "$(_qrd)" "rows=0 demo|a carriage return; a row ends at a newline alone "
+printf 'demo\ttrue\tviolation\tfail\ttrue\t-\ttrue\n' > "$QRD/qualification.tsv"
+is  "a row of more than six fields is malformed" \
+    "$(_qrd)" "rows=0 demo|7 field(s); a control has five, or six with a premise "
+{ for _qrn in 'my check' '*' 'Demo' 'HELDOUT' '9lives' '-x'; do
+    printf '%s\ttrue\tviolation\tfail\ttrue\n' "$_qrn"; done; } > "$QRD/qualification.tsv"
+is  "a checker that is not an id is malformed, a space, a glob, a capital, a digit or a dash first" \
+    "$( ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+          felix_qualify_malformed "$QRD" ) 2>/dev/null | grep -c 'is not a checker name')" "6"
+is  "and none of those rows is run" "$(_qrd | cut -d' ' -f1)" "rows=0"
+# What is still skipped, by the whole line: a blank one, spaces and tabs
+# included, and a comment, with or without a tab in front of it.
+{ printf '\n   \n\t\n# a comment\n  # indented\n\t# behind a tab\n'
+  printf 'my-check_2\ttrue\tviolation\tfail\ttrue\t-\n'; } > "$QRD/qualification.tsv"
+is  "a blank line and a comment are still skipped, and an id with digits, _ and - is a checker" \
+    "$(_qrd)" "rows=1 "
 
 # The verdict is the control's, not the row's. `expect` was free text, so a
 # violation row expecting `pass` over a mutation that changed nothing ran,
@@ -12818,6 +13577,52 @@ is  "a violation row expecting pass over a no-op mutation is never run, so never
 is  "while every rightly paired row still runs and is met" \
     "$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
         felix_qualify_run "$QMP" "$QLR" right | awk -F'\t' '$5 == "met"' | wc -l | tr -d ' ')" "6"
+
+# A checker or a mutation that reads its stdin read the rows. They reached the
+# loop that ran them through a pipe, and each row's commands inherited it, so a
+# checker that read to the end swallowed every row after its own: a met row and
+# then a held one ran only the met one, one line of met, and the gate read one
+# control met of one. Each is now given nothing to read. The held row comes
+# second, so a run that stops after the first has nothing held to say, and the
+# verdicts are read in order, so two lines of anything else do not pass.
+QSI="$TMP/qual-stdin"; mkdir -p "$QSI"
+_qsi() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+           felix_qualify_run "$QSI" "$QLR" ) 2>/dev/null | cut -f5 | tr '\n' ' '; }
+{ printf 'demo\tcat >/dev/null; false\tviolation\tfail\ttrue\n'
+  printf 'demo\ttrue\tviolation\tfail\ttrue\n'; } > "$QSI/qualification.tsv"
+is  "a checker that reads its stdin leaves the row after it to run, and that row is held" \
+    "$(_qsi)" "met held "
+{ printf 'demo\t%s\tviolation\tfail\tcat >/dev/null; printf FORBIDDEN > bad.txt\n' "$_qc"
+  printf 'demo\ttrue\tviolation\tfail\ttrue\n'; } > "$QSI/qualification.tsv"
+is  "and so does a mutation that reads its stdin" "$(_qsi)" "met held "
+# The premise was already given nothing to read; this keeps it so.
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\tcat >/dev/null\n' "$_qc"
+  printf 'demo\ttrue\tviolation\tfail\ttrue\n'; } > "$QSI/qualification.tsv"
+is  "and so does a premise that reads its stdin" "$(_qsi)" "met held "
+# The rows reach the loop by no pipe now, so a command reading stdin would find
+# none of them whether or not it is given /dev/null. What giving it /dev/null
+# does is shown by handing the runner a line to read: a checker that passes
+# only at end of input, and a mutation that stages the violation only there,
+# each come out as with nothing to read.
+_qsin() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+            printf 'x\n' | felix_qualify_run "$QSI" "$QLR" ) 2>/dev/null | cut -f4,5 | tr '\t\n' '  '; }
+printf 'demo\t! read -r _\tviolation\tfail\ttrue\n' > "$QSI/qualification.tsv"
+is  "a checker reads nothing, even with a line waiting on felix's own stdin" "$(_qsin)" "pass held "
+printf 'demo\t%s\tviolation\tfail\tread -r _ || printf FORBIDDEN > bad.txt\n' "$_qc" > "$QSI/qualification.tsv"
+is  "and nor does a mutation" "$(_qsin)" "fail met "
+# The runner's own read of a table that cannot be read. Its status was a
+# pipeline's, so with the caller's pipefail it said 2 and without it said 0,
+# having run nothing: the empty run a table declaring nothing makes.
+if [ "$_unreadable" -eq 1 ]; then
+  chmod 000 "$QSI/qualification.tsv"
+  _qsir() { ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/qualify.sh"
+              felix_qualify_run "$QSI" "$QLR"; printf 'rc=%s' "$?" ) 2>/dev/null; }
+  is  "felix_qualify_run over a table it cannot read runs nothing and exits 2, with the caller's pipefail and without" \
+      "$(_qsir) $(set +o pipefail; _qsir)" "rc=2 rc=2"
+  chmod 644 "$QSI/qualification.tsv"
+else
+  skip "felix_qualify_run over a table it cannot read runs nothing and exits 2, with the caller's pipefail and without" "$_noread"
+fi
 
 # Armed: a declared control that does not hold refuses.
 #
@@ -12861,6 +13666,168 @@ case "$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)" in
   *"qualified by no row"*) bad "and --gate does not raise it" ;;
   *)                       ok  "and --gate does not raise it" ;;
 esac
+# felix qualify --gate read qualification.tsv four times and more in one run:
+# the rows, the malformed rows, the rows it ran, and each checker's controls.
+# When the first read held and a later one failed, the later status was never
+# read, so the run could run no control and still count 0 of 0 held and exit
+# 0, and felix gate printed qualified ok over a checker with a held control. A
+# table rewritten between reads (a checkout in the same tree) splits a run the
+# same way. So --gate makes one read, counted with the wrapper from the
+# obligations block, and everything it runs, counts and decides comes from it.
+# Without --gate the report may read the table once more, for the roster gap.
+_qlgate()  { ( cd "$REPO" && "$FELIX" qualify --gate 2>&1 ); }
+_qlplain() { ( cd "$REPO" && "$FELIX" qualify 2>&1 ); }
+_qlw="$FROOT/projects/widget/qualification.tsv"
+is  "felix qualify --gate reads qualification.tsv exactly once" "$(_qreads _qlgate)" "1"
+_qlpr="$(_qreads _qlplain)"
+case "$_qlpr" in
+  1|2) ok  "plain felix qualify reads it once for its controls and at most once more for the roster gap" ;;
+  *)   bad "plain felix qualify reads it once for its controls and at most once more for the roster gap" "$_qlpr read(s)" ;;
+esac
+# What a failed read of the table leaves felix qualify saying, whichever read
+# it is: exit 2, a line naming the table and saying it could not be read, no
+# verdict row and no count, because nothing read means nothing run; and not
+# that the table declares no control, which nobody read it to know, nor awk's
+# own error. Prints what was wrong, or nothing. Counted with grep -c, not
+# grep -q: a printf into grep -q loses the race under pipefail.
+_qlwt="/projects/widget/qualification.tsv"
+_qlunread() {
+  [ "$_qsrc" = 2 ] || printf 'exit %s; ' "$_qsrc"
+  [ "$(printf '%s\n' "$_qsout" | grep -F 'could not be read' | grep -cF "$_qlwt")" -ge 1 ] \
+    || printf 'no line saying %s could not be read; ' "$_qlwt"
+  case "$_qsout" in *"declares no control"*) printf 'says something declares no control; ' ;; esac
+  case "$_qsout" in *"awk:"*|*"can't open file"*) printf "shows awk's own error; " ;; esac
+  [ "$(printf '%s\n' "$_qsout" | grep -cE '^  [^ ]+ +[a-z_]+ +(pass|fail) +[^ ]+ +(ok|HELD|UNRUNNABLE|n/a)$')" -eq 0 ] \
+    || printf 'prints a verdict row; '
+  case "$_qsout" in *"control(s) held"*) printf 'prints a held count; ' ;; esac
+}
+# This read was the one saying which controls demo declares, and it printed
+# demo's controls could not be read beside a run it went on to count. That
+# assertion is rewritten, not dropped: there is one read now, the last is the
+# first, and its failure is the table's, not demo's.
+if [ "$_unreadable" -eq 1 ] && _qstage 0 _qlgate; then
+  is  "when the last read felix qualify --gate makes of the table fails, it says the table could not be read and exits 2" \
+      "$(_qlunread)" ""
+  case "$_qsout" in
+    *"demo declares no control for:"*)
+      bad "and names none of demo's controls missing" "$(printf '%s\n' "$_qsout" | grep 'declares no control for')" ;;
+    *) ok  "and names none of demo's controls missing" ;;
+  esac
+else
+  for a in "when the last read felix qualify --gate makes of the table fails, it says the table could not be read and exits 2" \
+           "and names none of demo's controls missing"; do
+    if [ "$_unreadable" -eq 1 ]; then bad "$a" "$_qsnone"; else skip "$a" "$_noread"; fi; done
+fi
+# Without --gate the last read is the one that says which reported checks have
+# a row, and there both answers the report can give would be false: a gap it
+# did not see, or no gap. It said so, and exited 0 as if it had read it.
+if [ "$_unreadable" -eq 1 ] && _qstage 0 _qlplain; then
+  has "felix qualify says which checks have a row could not be read when that read fails" \
+      "$_qsout" "which checks have a row here could not be read"
+  _qlc="$(printf '%s\n' "$_qsout" | grep -e 'qualified by no row' -e 'Every check the last gate reported' || true)"
+  is  "and claims neither a check no row qualifies nor that every check has one" "$_qlc" ""
+  is  "and plain felix qualify exits 2 when the roster gap could not be read" "$_qsrc" "2"
+else
+  for a in "felix qualify says which checks have a row could not be read when that read fails" \
+           "and claims neither a check no row qualifies nor that every check has one" \
+           "and plain felix qualify exits 2 when the roster gap could not be read"; do
+    if [ "$_unreadable" -eq 1 ]; then bad "$a" "$_qsnone"; else skip "$a" "$_noread"; fi; done
+fi
+# Every read, from the first. This replaces an assertion that failed each read
+# from the second and wanted demo's shortfall or its could-not-be-read line
+# each time: with one read there is no second, and the first failing read the
+# table as one declaring no control that can be run, which was the old answer
+# to read 1 and is false. Each read that fails refuses, exit 2, and says so.
+_qlplainsays() {
+  [ "$_qsrc" = 2 ] || printf 'exit %s; ' "$_qsrc"
+  [ "$(printf '%s\n' "$_qsout" | grep -c 'could not be read')" -ge 1 ] || printf 'nothing says what could not be read; '
+  case "$_qsout" in *"awk:"*|*"can't open file"*) printf "shows awk's own error; " ;; esac
+}
+if [ "$_unreadable" -eq 1 ]; then
+  is  "whichever read of the table felix qualify --gate makes fails, it runs nothing, says the table could not be read, and exits 2" \
+      "$(_qeach 1 _qlunread _qlgate)" ""
+  is  "and whichever read plain felix qualify makes fails, it says what could not be read and exits 2" \
+      "$(_qeach 1 _qlplainsays _qlplain)" ""
+else
+  for a in "whichever read of the table felix qualify --gate makes fails, it runs nothing, says the table could not be read, and exits 2" \
+           "and whichever read plain felix qualify makes fails, it says what could not be read and exits 2"; do
+    skip "$a" "$_noread"; done
+fi
+# A table that is not there at a read, or not there after one, or not the
+# table it was. Each is staged by an awk wrapper counting the reads as the one
+# above does: aside moves the table away for the Kth read and puts it back,
+# after moves it away once the Kth read is done and it is put back when the
+# run returns, and swap puts another table in its place once the Kth read is
+# done. A table gone between reads read as one declaring nothing, because the
+# reader returns early on a table that is not a file, and the rest of the run
+# ran nothing and passed. The table here has a met control and a held one, so
+# every right answer refuses.
+_QMSHIM="$TMP/awk-shim-moves"; mkdir -p "$_QMSHIM"
+cat > "$_QMSHIM/awk" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    qualification.tsv|*/qualification.tsv)
+      printf x >> "\$QSHIM_COUNT"
+      if [ "\$((\$(wc -c < "\$QSHIM_COUNT")))" -eq "\${QSHIM_FAIL:-0}" ]; then
+        case "\$QSHIM_MODE" in
+          aside) mv "\$a" "\$a.aside"; "$_qawk" "\$@"; rc=\$?; mv "\$a.aside" "\$a"; exit \$rc ;;
+          after) "$_qawk" "\$@"; rc=\$?; mv "\$a" "\$a.gone"; exit \$rc ;;
+          swap)  "$_qawk" "\$@"; rc=\$?; cp "\$a" "\$a.was"; cp "\$QSHIM_WITH" "\$a"; exit \$rc ;;
+        esac
+      fi
+      break ;;
+  esac
+done
+exec "$_qawk" "\$@"
+EOF
+chmod +x "$_QMSHIM/awk"
+# _qmeach MODE PRED CMD...: CMD with each of its reads, in turn, staged by MODE,
+# and the widget table put back after each; PRED as for _qeach.
+_qmeach() {
+  local mode="$1" pred="$2" n k said; shift 2
+  n="$(_qreads "$@")"
+  [ "$n" -ge 1 ] || { printf 'a clean run made no read of the table by name\n'; return 0; }
+  k=1
+  while [ "$k" -le "$n" ]; do
+    : > "$_QSC"
+    _qsout="$( PATH="$_QMSHIM:$PATH"; QSHIM_COUNT="$_QSC"; QSHIM_FAIL="$k"; QSHIM_MODE="$mode"
+               QSHIM_WITH="$TMP/qual-swap-with"
+               export PATH QSHIM_COUNT QSHIM_FAIL QSHIM_MODE QSHIM_WITH; "$@" 2>"$_QSE" )"; _qsrc=$?
+    [ -f "$_qlw.gone" ] && mv "$_qlw.gone" "$_qlw"
+    [ -f "$_qlw.was" ] && mv "$_qlw.was" "$_qlw"
+    if [ "$(( $(wc -c < "$_QSC") ))" -lt "$k" ]; then printf 'read %s of %s: never reached\n' "$k" "$n"
+    else said="$("$pred")"; [ -z "$said" ] || printf 'read %s of %s: %s\n' "$k" "$n" "$said"; fi
+    k=$((k + 1))
+  done
+}
+_qlrefused() { [ "$_qsrc" != 0 ] || printf 'exit 0'; }
+_qlheld() {
+  [ "$_qsrc" = 1 ] || printf 'exit %s; ' "$_qsrc"
+  [ "$(printf '%s\n' "$_qsout" | grep -cE ' alternate .*HELD$')" -ge 1 ] || printf 'the held control is not shown; '
+}
+cp "$_qlw" "$TMP/qual-moves.keep"
+printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck" > "$TMP/qual-swap-with"
+is  "a table moved away for any one read felix qualify --gate makes never passes it" \
+    "$(_qmeach aside _qlrefused _qlgate)" ""
+is  "a table gone after any read felix qualify --gate makes never passes it" \
+    "$(_qmeach after _qlrefused _qlgate)" ""
+is  "a table rewritten to one that passes, after any read felix qualify --gate makes, leaves the run it read refusing on its held control" \
+    "$(_qmeach swap _qlheld _qlgate)" ""
+is  "and the widget table is put back after each" "$(cmp -s "$_qlw" "$TMP/qual-moves.keep" && echo same || echo changed)" "same"
+# BSD cut in a UTF-8 locale stops at the first byte it cannot decode, and a
+# mutation may hold one. The checkers listed with it stopped there, and every
+# checker after that row went unreported, silently.
+if [ -n "$_u8" ]; then
+  cp "$FROOT/projects/widget/qualification.tsv" "$TMP/qual-u8.keep"
+  { printf 'aaa\tfalse\tviolation\tfail\tprintf caf\351 > x\n'; cat "$TMP/qual-u8.keep"; } \
+    > "$FROOT/projects/widget/qualification.tsv"
+  has "in a UTF-8 locale, a row holding a byte that is not UTF-8 hides no checker after it from felix qualify" \
+      "$( export LC_ALL="$_u8"; _qlgate )" "  demo declares no control for: "
+  cp "$TMP/qual-u8.keep" "$FROOT/projects/widget/qualification.tsv"
+else
+  skip "in a UTF-8 locale, a row holding a byte that is not UTF-8 hides no checker after it from felix qualify" "$_u8none"
+fi
 ( cd "$REPO" && . "$FROOT/harness/lib/verify.sh"
   felix_verify_record "$REPO" "$FROOT" 0 "gate.sh" "$(felix_tree_id "$REPO" "$FROOT")" "" "" >/dev/null 2>&1 )
 has "a receipt with no roster is said to have none, never read as nothing left" \
@@ -12881,6 +13848,220 @@ printf 'demo\t%s\tviolation\tpass\ttrue\n' "$_qcheck" > "$FROOT/projects/widget/
 _qo="$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)"; _qrc=$?
 is  "a table whose every row is malformed refuses --gate" "$_qrc" "1"
 has "and names the rows it could not read" "$_qo" "MALFORMED"
+# A held row the reader dropped. Behind a tab it was skipped as a blank line,
+# and after a bare carriage return it rode in the met row's unread fields; either
+# way it never ran and was never refused, and --gate passed on the met row.
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck"
+  printf '\tdemo\ttrue\talternate\tfail\ttrue\n'; } > "$_qlw"
+_qo="$(_qlgate)"; _qrc=$?
+is  "a held row with a tab in front of it refuses --gate, named malformed" \
+    "$_qrc:$(printf '%s\n' "$_qo" | grep -c 'MALFORMED  no checker name$')" "1:1"
+printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\rdemo\ttrue\talternate\tfail\ttrue\r' "$_qcheck" > "$_qlw"
+_qo="$(_qlgate)"; _qrc=$?
+is  "and so does a held row after a bare carriage return" \
+    "$_qrc:$(printf '%s\n' "$_qo" | grep -c 'MALFORMED  a carriage return')" "1:1"
+# A present, empty table is a table declaring no control, and refuses as it
+# always has; the tests below it change what a table nobody read says, not this.
+: > "$_qlw"
+_qo="$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)"; _qrc=$?
+is  "a present, empty table refuses felix qualify --gate, as before" "$_qrc" "1"
+has "and says it declares no control that can be run" "$_qo" "declares no control that can be run"
+( cd "$REPO" && "$FELIX" qualify >/dev/null 2>&1 ); _qrc=$?
+is  "and plain felix qualify over it returns 1, as before" "$_qrc" "1"
+
+# A table that cannot be read from the start. It refused, but it said the table
+# declares no control that can be run, which nobody read it to know, and showed
+# awk's own error. Mode 000 stages it.
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck"
+  printf 'demo\t%s\talternate\tfail\tprintf harmless > other.txt\n' "$_qcheck"; } > "$_qlw"
+if [ "$_unreadable" -eq 1 ]; then
+  chmod 000 "$_qlw"
+  _qsout="$(_qlgate)"; _qsrc=$?
+  is  "felix qualify --gate over a table it cannot read runs nothing, says it could not be read naming it, and exits 2" \
+      "$(_qlunread)" ""
+  _qsout="$(_qlplain)"; _qsrc=$?
+  is  "and plain felix qualify over it does the same" "$(_qlunread)" ""
+  chmod 644 "$_qlw"
+else
+  for a in "felix qualify --gate over a table it cannot read runs nothing, says it could not be read naming it, and exits 2" \
+           "and plain felix qualify over it does the same"; do skip "$a" "$_noread"; done
+fi
+
+# A run that dies part way. It counted what it had: a run killed after one of
+# two met controls said 1 of 1, and one killed before its first said 0 of 0,
+# and both exited 0. git is wrapped so that the Kth worktree add kills a
+# process of the felix CLI above it and then fails. The processes from that git
+# up to the CLI itself all run the CLI's command line, a subshell for each
+# $(...), so they are walked up while they do; the one QKILL_BELOW (1 unless
+# said) below the CLI is killed. Under felix qualify that is the row loop; under
+# felix gate the one below the CLI is felix qualify --gate itself, and the one
+# below that its row loop. It never kills the CLI, nor the suite, and leaves a
+# mark when it has killed, so a run it never reached is a failure and not a
+# pass. Both controls are met, so the death is the only reason to refuse.
+_QGSHIM="$TMP/git-shim"; mkdir -p "$_QGSHIM"; _qgit="$(command -v git)"
+cat > "$_QGSHIM/git" <<EOF
+#!/bin/sh
+case " \$* " in
+  *" worktree add "*)
+    printf x >> "\$QKILL_COUNT"
+    if [ "\$((\$(wc -c < "\$QKILL_COUNT")))" -eq "\${QKILL_AT:-0}" ]; then
+      chain=""; p="\$PPID"
+      while [ -n "\$p" ] && [ "\$p" -gt 1 ]; do
+        case "\$(ps -ww -o command= -p "\$p")" in
+          *"\$QKILL_FELIX "*) chain="\$p \$chain" ;;
+          *) break ;;
+        esac
+        p="\$(ps -o ppid= -p "\$p" | tr -d ' ')"
+      done
+      set -- \$chain
+      [ "\$#" -gt "\${QKILL_BELOW:-1}" ] || exit 1
+      shift "\${QKILL_BELOW:-1}"
+      [ "\$1" != "\$QKILL_SPARE" ] && kill -KILL "\$1" && printf '%s\n' "\$1" > "\$QKILL_COUNT.killed"
+      exit 1
+    fi ;;
+esac
+exec "$_qgit" "\$@"
+EOF
+chmod +x "$_QGSHIM/git"
+_qkill() {   # K: felix qualify --gate with its Kth worktree add killing the row loop
+  : > "$_QSC"; rm -f "$_QSC.killed"
+  _qsout="$( cd "$REPO" && PATH="$_QGSHIM:$PATH" QKILL_COUNT="$_QSC" QKILL_AT="$1" \
+             QKILL_FELIX="$FELIX" QKILL_SPARE="$$" "$FELIX" qualify --gate 2>&1 )"; _qsrc=$?
+  [ -s "$_QSC.killed" ]
+}
+_qknone="the wrapped git killed nothing, so no run was cut short"
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck"
+  printf 'demo\t%s\trestoration\tpass\ttrue\n' "$_qcheck"; } > "$_qlw"
+( cd "$REPO" && "$FELIX" qualify --gate >/dev/null 2>&1 ); _qrc=$?
+is  "two met controls pass --gate when nothing cuts the run short" "$_qrc" "0"
+if _qkill 1; then
+  [ "$_qsrc" != 0 ] && ok "a felix qualify --gate run killed at its first control refuses, never counting none of none as met" \
+                    || bad "a felix qualify --gate run killed at its first control refuses, never counting none of none as met" "$_qsout"
+else bad "a felix qualify --gate run killed at its first control refuses, never counting none of none as met" "$_qknone"; fi
+if _qkill 2; then
+  [ "$_qsrc" != 0 ] && ok "and one killed at its second refuses, never counting one met as the table" \
+                    || bad "and one killed at its second refuses, never counting one met as the table" "$_qsout"
+  # When the kill reached the CLI itself it died, and a CLI that died has
+  # nothing left to say; the line is asked of a run that lived to report.
+  if [ "$_qsrc" -ge 128 ]; then
+    skip "and says it ran 1 of the 2 controls, exiting 1" "the kill reached the felix CLI itself, exit $_qsrc"
+  else
+    _qk="$(printf '%s\n' "$_qsout" | awk '/(^|[^0-9])1 of [^0-9]*2([^0-9]|$)/ && /ran/')"
+    [ "$_qsrc" = 1 ] && [ -n "$_qk" ] && ok "and says it ran 1 of the 2 controls, exiting 1" \
+      || bad "and says it ran 1 of the 2 controls, exiting 1" "exit $_qsrc: $(printf '%s' "$_qsout" | tr '\n' '/')"
+  fi
+else
+  for a in "and one killed at its second refuses, never counting one met as the table" \
+           "and says it ran 1 of the 2 controls, exiting 1"; do bad "$a" "$_qknone"; done
+fi
+# A checker named with no row ran nothing, and 0 of 0 held passed the gate.
+_qsout="$(cd "$REPO" && "$FELIX" qualify --gate nobody 2>&1)"; _qsrc=$?
+_qk="$(printf '%s\n' "$_qsout" | awk '/nobody/ && (/no control/ || /no row/)')"
+[ "$_qsrc" = 1 ] && [ -n "$_qk" ] \
+  && ok  "felix qualify --gate naming a checker with no row refuses, and says no control is declared for it" \
+  || bad "felix qualify --gate naming a checker with no row refuses, and says no control is declared for it" \
+         "exit $_qsrc: $(printf '%s' "$_qsout" | tr '\n' '/')"
+
+# The stdin case above, through the CLI: the checker that read to the end took
+# the held row with it, and the gate passed.
+{ printf 'demo\tcat >/dev/null; false\tviolation\tfail\ttrue\n'
+  printf 'demo\ttrue\tviolation\tfail\ttrue\n'; } > "$_qlw"
+_qsout="$(_qlgate)"; _qsrc=$?
+is  "felix qualify --gate refuses a held row after a checker that reads its stdin" "$_qsrc" "1"
+is  "and shows that row held" "$(printf '%s\n' "$_qsout" | grep -cE '^  demo +violation +fail +pass +HELD$')" "1"
+
+# Every value a verdict is computed from takes its status from its own
+# assignment. One read is not enough if the held count, the total, the rows
+# run, the checkers, a checker's controls or the checkers never shown failing
+# come out of a pipeline whose status nobody reads. So awk, tr, cut and sort
+# are each wrapped to fail their Nth call with exit 2 without running, for
+# every N a clean run makes, over three tables.
+#
+# One has a met violation and a held restoration and nothing else wrong, so
+# every right answer refuses. The held control expects pass: a command field
+# that came back empty, as a field cut by a fork that failed once did, ran
+# `eval ""`, passed, and met it.
+#
+# One has a met restoration and demo's only fail control, whose premise is
+# absent here, so demo is never shown failing and every right answer refuses.
+# The list of checkers never shown failing, failing, came back empty, and read
+# as every checker shown.
+#
+# One has a single met control. It may exit 0 only with the output a clean run
+# gives, word for word, and that output shows the control met and demo's
+# shortfall naming the five controls it lacks: a list of its controls that
+# failed to empty named all six missing, violation too, and a list of the
+# checkers, or of what one lacks, that failed to empty said no shortfall at
+# all, and each passed. Exiting non-zero once its report has begun, it says
+# what could not be read or worked out; a fault before that, in finding which
+# project governs the checkout, stops felix with a refusal of its own.
+#
+# Two checks no fault here can reach are kept as defence in depth, not pinned
+# by a test invented for them. The split of felix qualify's one read into rows
+# and malformed rows refuses a line tagged neither way, but that read is one awk
+# that tags every line it prints or fails whole. And --gate wanting at least
+# one verdict repeats what the refusals of no selected row and of fewer
+# verdicts than rows already make true.
+_QFSHIM="$TMP/fault-shim"; _QFC="$TMP/fault-shim.count"
+for _qfc in awk tr cut sort; do
+  mkdir -p "$_QFSHIM/$_qfc"
+  cat > "$_QFSHIM/$_qfc/$_qfc" <<EOF
+#!/bin/sh
+printf x >> "\$QFAULT_COUNT"
+[ "\$((\$(wc -c < "\$QFAULT_COUNT")))" -eq "\${QFAULT_AT:-0}" ] && exit 2
+exec "$(command -v "$_qfc")" "\$@"
+EOF
+  chmod +x "$_QFSHIM/$_qfc/$_qfc"
+done
+# _qfsweep PRED COMMAND...: for each COMMAND, felix qualify --gate with its
+# Nth call failing, for N from 1 to the calls a clean run makes. Prints
+# "COMMAND N: what PRED said" for each wrong result, and a line for a command
+# a clean run never called, since then nothing was faulted.
+_qfsweep() {
+  local pred="$1" c n k said; shift
+  for c in "$@"; do
+    : > "$_QFC"
+    ( cd "$REPO" && PATH="$_QFSHIM/$c:$PATH" QFAULT_COUNT="$_QFC" QFAULT_AT=0 "$FELIX" qualify --gate ) >/dev/null 2>&1
+    n=$(( $(wc -c < "$_QFC") ))
+    [ "$n" -ge 1 ] || { printf 'a clean run called %s no times, so nothing was faulted\n' "$c"; continue; }
+    k=1
+    while [ "$k" -le "$n" ]; do
+      : > "$_QFC"
+      _qsout="$(cd "$REPO" && PATH="$_QFSHIM/$c:$PATH" QFAULT_COUNT="$_QFC" QFAULT_AT="$k" "$FELIX" qualify --gate 2>&1)"; _qsrc=$?
+      said="$("$pred")"; [ -z "$said" ] || printf '%s %s of %s: %s\n' "$c" "$k" "$n" "$said"
+      k=$((k + 1))
+    done
+  done
+}
+_qfheld() { [ "$_qsrc" != 0 ] || printf 'exit 0'; }
+_qfshort='  demo declares no control for: restoration irrelevant alternate decoupled_violation decoupled_satisfaction'
+_qfclean() {
+  if [ "$_qsrc" = 0 ]; then
+    [ "$_qsout" = "$_qfok" ] || printf 'exit 0 with output a clean run does not give; '
+    [ "$(printf '%s\n' "$_qsout" | grep -cE '^  demo +violation +fail +fail +ok$')" = 1 ] \
+      || printf 'exit 0 without showing the one control met; '
+    [ "$(printf '%s\n' "$_qsout" | grep -cxF "$_qfshort")" = 1 ] \
+      || printf "exit 0 without demo's shortfall of the five controls it lacks; "
+  else
+    case "$_qsout" in
+      "qualification for "*)
+        [ "$(printf '%s\n' "$_qsout" | grep -cE 'could not be (read|worked out)')" -ge 1 ] \
+          || printf 'exit %s saying nothing of what could not be read or worked out; ' "$_qsrc" ;;
+    esac
+  fi
+}
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck"
+  printf 'demo\tfalse\trestoration\tpass\ttrue\n'; } > "$_qlw"
+is  "whichever awk, tr, cut or sort call felix qualify --gate makes fails, a run over a held control never exits 0" \
+    "$(_qfsweep _qfheld awk tr cut sort)" ""
+{ printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\tfalse\n' "$_qcheck"
+  printf 'demo\t%s\trestoration\tpass\ttrue\n' "$_qcheck"; } > "$_qlw"
+is  "and a run whose one checker is never shown failing here never exits 0 either" \
+    "$(_qfsweep _qfheld awk tr cut sort)" ""
+printf 'demo\t%s\tviolation\tfail\tprintf FORBIDDEN > bad.txt\n' "$_qcheck" > "$_qlw"
+_qfok="$(cd "$REPO" && "$FELIX" qualify --gate 2>&1)"
+is  "and a run over a met control exits 0 only with a clean run's output, its shortfall included, and otherwise says what could not be read or worked out" \
+    "$(_qfsweep _qfclean awk tr cut sort)" ""
 rm -f "$FROOT/projects/widget/qualification.tsv"
 [ -f "$TMP/qual.keep" ] && mv "$TMP/qual.keep" "$FROOT/projects/widget/qualification.tsv"
 is "and the widget project is as this block found it" \
@@ -13445,6 +14626,78 @@ is  "and says under it how many did not apply here" \
 # why. demo declares four, so the ok line must not read as six of six.
 has "and names under it a checker short of the six controls, without refusing" \
     "$(_qpunder "$_qpgo" ok)" "demo declares no control for: irrelevant decoupled_satisfaction"
+# A checker whose declared controls could not be read was named here, under
+# qualified ok, and ok with that under it is still ok: the gate passed over a
+# checker nobody knew the controls of. That assertion is rewritten, not
+# dropped: a failed read, of the table or of what a checker declares, is a
+# refusal now, under qualified FAIL. And the gate read the table again for its
+# checker count, and when that read failed it said across 0 checker(s) and
+# showed awk's own error. Every read this gate makes is its qualified check's
+# (premgate has no probes or obligations table), so each is failed in turn with
+# the counting awk from the obligations block. PRED tags what it finds, c6 for
+# the verdict and c7 for the count, so one sweep serves both assertions.
+_qgt="$QGH/projects/premgate/qualification.tsv"
+_qpfails() {
+  local f r
+  [ -z "$(_qpunder "$_qsout" ok)" ] || printf '[c6 qualified ok] '
+  f="$(_qpunder "$_qsout" FAIL)"
+  if [ -z "$f" ]; then printf '[c6 no qualified FAIL] '
+  else
+    r="$(printf '%s\n' "$f" | sed 1d | grep -v '^gate:' | grep -c 'could not be read')"
+    [ "$r" -ge 1 ] || printf '[c6 nothing under qualified FAIL says what could not be read] '
+  fi
+  case "$_qsout" in *"across 0 checker(s)"*) printf '[c7 across 0 checker(s)] ' ;; esac
+  case "$_qsout" in *"awk:"*|*"can't open file"*) printf "[c7 awk's own error] " ;; esac
+}
+if [ "$_unreadable" -eq 1 ]; then
+  _qpeach="$(_qeach 1 _qpfails _qpgate)"
+  is  "whichever read of the table felix gate's qualified check makes fails, it prints qualified FAIL with a line under it saying what could not be read" \
+      "$(printf '%s\n' "$_qpeach" | awk '/\[c6/ || (NF && !/\[c7/)')" ""
+  is  "and whichever read fails, felix gate never says across 0 checker(s) nor shows awk's own error" \
+      "$(printf '%s\n' "$_qpeach" | awk '/\[c7/ || (NF && !/\[c6/)')" ""
+else
+  for a in "whichever read of the table felix gate's qualified check makes fails, it prints qualified FAIL with a line under it saying what could not be read" \
+           "and whichever read fails, felix gate never says across 0 checker(s) nor shows awk's own error"; do
+    skip "$a" "$_noread"; done
+fi
+# The same from the start: a table at mode 000 failed qualified with nothing
+# under FAIL, because the lines the gate lifts from felix qualify's output were
+# only held, unrunnable, malformed and never shown.
+if [ "$_unreadable" -eq 1 ]; then
+  chmod 000 "$_qgt"; _qsout="$(_qpgate)"; chmod 644 "$_qgt"
+  is  "felix gate over a table it cannot read fails qualified and says under it that the table could not be read" \
+      "$(_qpfails)" ""
+else
+  skip "felix gate over a table it cannot read fails qualified and says under it that the table could not be read" "$_noread"
+fi
+# And a present, empty table, which failed the same way with nothing under it.
+cp "$_qgt" "$TMP/premgate-qual.keep"
+: > "$_qgt"
+_qsout="$(_qpgate)"
+_qpwhy="$(_qpunder "$_qsout" FAIL | sed 1d | grep -v '^gate:' | grep -v '^ *$')"
+has "felix gate over a present, empty table fails qualified and says under it that no checker here is qualified" \
+    "$_qpwhy" "No checker here is qualified"
+# The sentence runs onto a second line, and the first alone ended at the
+# table's path, a reason that never said what was wrong with the table.
+has "and says why, that it declares no control that can be run" \
+    "$_qpwhy" "declares no control that can be run"
+# The lines lifted under qualified FAIL were picked by a word anywhere in the
+# line, so a checker whose name held HELD took its met rows for held ones: eight
+# of them filled the eight lines, and the reason, a checker never shown failing,
+# was cut off below them. A checker is an id now, lowercase, so no met row can
+# hold HELD, UNRUNNABLE or MALFORMED, and a checker named HELDOUT is itself a
+# malformed row, a reason in its own right (the reader's assertions above).
+# That leaves the lift picking each word where it sits as defence in depth,
+# which no assertion can turn red alone; this one guards what it is for, eight
+# met rows ahead of the reason and none of them lifted. The reason comes
+# second, so a lift that keeps the first eight matches loses it.
+{ for _qpi in 1 2 3 4 5 6 7 8; do _qp5 heldout "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'; done
+  _qp6 zz "$_qpc" violation fail 'printf FORBIDDEN > bad.txt' false; } > "$_qgt"
+_qpwhy="$(_qpunder "$(_qpgate)" FAIL | sed 1d | grep -v '^gate:' | grep -v '^ *$')"
+has "felix gate names under qualified FAIL a checker never shown failing, beside eight met rows of a checker named heldout" \
+    "$_qpwhy" "never shown failing in this checkout: zz"
+is  "and lifts none of those met rows as a reason" "$(printf '%s\n' "$_qpwhy" | grep -cE ' ok$')" "0"
+cp "$TMP/premgate-qual.keep" "$_qgt"
 # A row that ran and was met before the verdict was the control's: the gate
 # read ok over it. Now it refuses, and says which row and why.
 { _qptab_shown; _qp5 demo "$_qpc" violation pass true; } > "$QGH/projects/premgate/qualification.tsv"
@@ -13453,6 +14706,95 @@ has "felix gate fails qualification over a row whose verdict is not its control'
     "$(_qpunder "$_qpgo" FAIL)" "qualified"
 has "and shows the row and the verdict under qualified FAIL" \
     "$(_qpunder "$_qpgo" FAIL)" "violation must expect fail, not [pass]"
+# The checker count under qualified ok is the table's, however it is reached:
+# one read, and the checkers whose controls ran. Three checkers over four met
+# controls, so a count of rows or of met controls cannot pass for it.
+{ _qp5 alpha "$_qpc" violation   fail 'printf FORBIDDEN > bad.txt'
+  _qp5 alpha "$_qpc" restoration pass true
+  _qp5 beta  "$_qpc" violation   fail 'printf FORBIDDEN > bad.txt'
+  _qp5 gamma "$_qpc" violation   fail 'printf FORBIDDEN > bad.txt'; } > "$QGH/projects/premgate/qualification.tsv"
+_qpgo="$(_qpgate)"
+is  "a clean felix gate counts across as many checkers as the table's well-formed rows name" \
+    "$(_qpunder "$_qpgo" ok | grep -o '[0-9]* control(s) met across [0-9]* checker(s)')" "4 control(s) met across 3 checker(s)"
+# A checker that is not an id. Six controls met by `my check` were met across
+# 0 checkers, because the count took one word before the control; the checkers
+# were walked by an unquoted for, which split the name into two checkers
+# declaring nothing and read a checker named * as the files in the checkout,
+# a.txt among them. Such a row is malformed now, so felix qualify --gate refuses
+# it and the gate shows it under qualified FAIL. The count taking what is left
+# of a row once its last four columns are off, and the checkers walked a line
+# at a time, stay as defence in depth: no well-formed row reaches either with a
+# space or a glob in its checker, so no assertion here turns red on them alone.
+{ for _qpx in violation alternate decoupled_violation; do _qp5 'my check' "$_qpc" "$_qpx" fail 'printf FORBIDDEN > bad.txt'; done
+  for _qpx in restoration irrelevant decoupled_satisfaction; do _qp5 'my check' "$_qpc" "$_qpx" pass true; done
+  _qp5 '*' "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+  _qp5 demo "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+} > "$_qgt"
+( cd "$QGR" && FELIX_HOME="$QGH" "$QGH/harness/felix" qualify --gate >/dev/null 2>&1 ); _qprc=$?
+is  "felix qualify --gate refuses rows whose checker is my check or *, rather than running them" "$_qprc" "1"
+_qpgo="$(_qpgate)"
+_qpwhy="$(_qpunder "$_qpgo" FAIL | sed 1d | grep -v '^gate:')"
+is  "and felix gate fails qualified showing each such row MALFORMED under it" \
+    "$(printf '%s\n' "$_qpwhy" | grep -cE '^  +(my check|\*) +MALFORMED  \[(my check|\*)\] is not a checker name')" "7"
+case "$_qpgo" in
+  *"across 0 checker(s)"*|*"a.txt"*) bad "and never counts across 0 checkers nor names a file of the checkout" "$_qpgo" ;;
+  *) ok "and never counts across 0 checkers nor names a file of the checkout" ;;
+esac
+cp "$TMP/premgate-qual.keep" "$_qgt"
+# A run of the controls that did not finish, and one that finished having given
+# fewer verdicts than rows, each refused alone. A kill part way gives both at
+# once, so each refusal stood behind the other and neither was shown to hold by
+# itself. A kill after the loop's last verdict would show the first alone, but
+# nothing outside the shell runs between that verdict and the loop's end to
+# stage it from, so the row loop is doctored instead, in a copy of this home:
+# once to return 3 having given every verdict, once to return 0 having dropped
+# its last. Two met controls each time, so what was doctored is the only reason
+# to refuse, and the verdicts it did give are counted, so a doctoring that broke
+# the loop cannot pass for one that did what it says.
+_qdoc() {   # HOME BODY: a copy of the premgate home whose row loop is BODY, the real one being _qdoc_run_rows
+  rm -rf "$1"; cp -R "$QGH" "$1"
+  { printf '%s\n' 'eval "_qdoc_run_rows () $(declare -f _felix_qualify_run_rows | sed 1d)"'
+    printf '_felix_qualify_run_rows() { %s; }\n' "$2"; } >> "$1/harness/lib/qualify.sh"
+  { _qp5 demo "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+    _qp5 demo "$_qpc" restoration pass true; } > "$1/projects/premgate/qualification.tsv"
+}
+_qdq() { ( cd "$QGR" && FELIX_HOME="$1" "$1/harness/felix" qualify --gate 2>&1 ); }
+_qdn() {   # exit:ok rows:did-not-finish lines:ran-fewer lines, of _qsout and _qsrc
+  printf '%s:%s:%s:%s' "$_qsrc" "$(printf '%s\n' "$_qsout" | grep -cE ' ok$')" \
+    "$(printf '%s\n' "$_qsout" | grep -c '^felix: the run of the controls did not finish$')" \
+    "$(printf '%s\n' "$_qsout" | grep -c '^only 1 of 2 declared control(s) ran')"
+}
+_qdoc "$TMP/qual-doc-unfinished" '_qdoc_run_rows "$@"; return 3'
+_qsout="$(_qdq "$TMP/qual-doc-unfinished")"; _qsrc=$?
+is  "a row loop that gave every verdict and then failed refuses --gate by itself, saying the run did not finish" \
+    "$(_qdn)" "1:2:1:0"
+_qdoc "$TMP/qual-doc-short" '_qdoc_run_rows "$@" | awk "NR == 1"'
+_qsout="$(_qdq "$TMP/qual-doc-short")"; _qsrc=$?
+is  "and one that finished having given 1 verdict of 2 refuses by itself, saying 1 of 2 ran" \
+    "$(_qdn)" "1:1:0:1"
+# felix gate over a felix qualify --gate cut short. Its row loop killed at the
+# second of two met controls leaves felix qualify saying the run did not finish
+# and that 1 of 2 ran, and each is lifted under qualified FAIL. felix qualify
+# --gate itself killed at the first says nothing a line is lifted for, and the
+# FAIL still says where to read why rather than standing alone.
+_qpk() {   # K BELOW: felix gate with its Kth worktree add killing the process BELOW under the CLI
+  : > "$_QSC"; rm -f "$_QSC.killed"
+  _qsout="$( cd "$QGR" && PATH="$_QGSHIM:$PATH" QKILL_COUNT="$_QSC" QKILL_AT="$1" QKILL_BELOW="$2" \
+             QKILL_FELIX="$QGH/harness/felix" QKILL_SPARE="$$" FELIX_HOME="$QGH" "$QGH/harness/felix" gate 2>&1 )"
+  [ -s "$_QSC.killed" ]
+}
+{ _qp5 demo "$_qpc" violation fail 'printf FORBIDDEN > bad.txt'
+  _qp5 demo "$_qpc" restoration pass true; } > "$_qgt"
+_qpa="felix gate over a felix qualify --gate whose row loop was killed says under qualified FAIL that the run did not finish and 1 of 2 ran"
+if _qpk 2 2; then
+  is  "$_qpa" "$(_qpunder "$_qsout" FAIL | sed 1d \
+      | grep -cE '^  felix: the run of the controls did not finish$|^  only 1 of 2 declared control\(s\) ran')" "2"
+else bad "$_qpa" "$_qknone"; fi
+_qpa="and over a felix qualify --gate killed before it said anything, qualified FAIL still says where to read why"
+if _qpk 1 1; then
+  is  "$_qpa" "$(_qpunder "$_qsout" FAIL | sed 1d | grep -c '^  felix qualify --gate refused; run it to read why$')" "1"
+else bad "$_qpa" "$_qknone"; fi
+cp "$TMP/premgate-qual.keep" "$_qgt"
 printf '\nautonomy is opted into, never assumed\n'
 AUP="$TMP/autoproj"; mkdir -p "$AUP"
 a() { ( . "$FROOT/harness/lib/autonomy.sh"; felix_autonomy_allows "$AUP" "$1" && echo yes || echo no ); }
@@ -14911,6 +16253,145 @@ is "text piped into a shell is its script" "$rc" "2"
 {"tool_name":"Bash","tool_input":{"command":"until [ -f x ]; do read -t 5 -r _ < <(tail -f /dev/null); done"}}
 J
 is "a process substitution keeps the shape a row is written about" "$rc" "2"
+rm -f "$FROOT/projects/widget/deny.tsv" "$FROOT/.deny-err"
+
+printf '\ndenial refuses what a command changes, not what it reads\n'
+# The tables that ship, not a copy of a row. Every projects/*/deny.tsv beside
+# this harness is put in front of the real hook in turn, so the red run, which
+# checks the base out whole, runs these lines against the rows the base holds.
+# Until 2026-09-23 three rows refused commands that change nothing: a grep
+# -rln over the marker, whose ln was taken for a link; the read the engine
+# resolves its home with, whose 2>/dev/null was taken for a write of the
+# pointer; a dry run of git add; a listing of a script. Each was reproduced
+# with argv-logging shims and a hash of the files, and most are in the
+# refusals the hooks logged.
+#
+# The first column says which way: 0, the command is allowed; 2, refused.
+# The second set keeps the first honest. A narrowed row that refused nothing
+# would pass every line of the first, so each real write the old rows refused
+# is asserted still refused, a line for each verb they name, and a line for a
+# write on a later line of the command: a row reads the payload's JSON, where
+# a line break is a backslash and an n, and the first draft of these rows let
+# every such write through.
+#
+# The second column says which tables a line is about. A 0 line holds for
+# every table (-). A 2 line holds for every table with a Bash row whose
+# pattern contains that text, and skips when there is none, because a table
+# only ever refuses what it has a row about: the public snapshot ships one
+# project's table, and a line about another's rows has nothing to ask there.
+# An exit that is neither 0 nor 2, or a table that could not be put in place,
+# is named in the failure and never read as either answer.
+#
+# A refused line writes into no directory under /tmp. The marker rows and
+# the git add row carry deny.tsv's `checkout` scope, which passes over a
+# command whose every target is a throwaway fixture under /tmp or $TMPDIR,
+# so a refusal asserted about such a path would assert what that scope
+# lifts. These lines are about how far a row's pattern reaches, and a path
+# under $HOME keeps them about that whatever the scope decides. `mv .felix
+# /tmp/x` stays: it moves this checkout's own marker, which no scope lifts.
+_dtabs=""
+for _dt in "$REAL_HARNESS"/../../projects/*/deny.tsv; do
+  [ -f "$_dt" ] && _dtabs="$_dtabs$_dt
+"
+done
+_dkeyed() {
+  local t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    [ "$1" = "-" ] \
+      || awk -F'\t' -v k="$1" '$1 == "Bash" && index($2, k) { f = 1 } END { exit !f }' "$t" \
+      || continue
+    printf '%s\n' "$t"
+  done <<EOF
+$_dtabs
+EOF
+}
+# Every table on stdin whose exit through the hook is not the one wanted, as
+# " project:exit".
+_dmiss() {
+  local want="$1" cmd="$2" t rc out=""
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if cp "$t" "$FROOT/projects/widget/deny.tsv"; then
+      ( cd "$REPO" && _pre "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$cmd\"}}" ); rc=$?
+    else
+      rc=nocopy
+    fi
+    t="${t%/deny.tsv}"
+    [ "$rc" = "$want" ] || out="$out ${t##*/}:$rc"
+  done
+  printf '%s' "$out"
+}
+while IFS=$'\t' read -r _dw _dk _dn _dc; do
+  case "$_dw" in 0|2) ;; *) continue ;; esac
+  _dks="$(_dkeyed "$_dk")"
+  if [ -z "$_dks" ]; then
+    if [ "$_dk" = "-" ]; then skip "$_dn" "no projects/*/deny.tsv beside this harness"
+    else skip "$_dn" "no table beside this harness has a Bash row about $_dk"; fi
+    continue
+  fi
+  is "$_dn" "$(printf '%s\n' "$_dks" | _dmiss "$_dw" "$_dc")" ""
+done <<'J'
+0	-	no shipped table refuses grep -rln over the marker, whose ln is a flag	grep -rln '\\.felix' engine/harness
+0	-	nor grep -ln over the pointer	grep -ln '\\.felix-home' engine/harness/lib/resolve.sh
+0	-	nor the read the engine resolves its home with, whose 2>/dev/null writes no pointer	tr -d '[:space:]' 2>/dev/null < \"$HOME/.felix-home\"
+0	-	nor a > inside a quoted log format	git log --format='%h>%s' -- .felix
+0	-	nor cp reading the marker into a backup	cp .felix /tmp/backup
+0	-	nor a find whose 2>/dev/null comes before its -name .felix	find . -maxdepth 2 2>/dev/null -name .felix
+0	-	nor an ls whose 2>/dev/null comes before the pointer it lists	ls -la 2>/dev/null ~/.felix-home
+0	-	nor tee copying the marker it reads on stdin	tee /tmp/copy < .felix
+0	-	nor dd reading the marker	dd of=/tmp/x if=.felix
+0	-	nor git add -n -A, which stages nothing	git add -n -A
+0	-	nor git add -A --dry-run	git add -A --dry-run
+0	-	nor listing scripts/gate.sh, which runs nothing	ls -la ./scripts/gate.sh
+0	-	nor a backslash-n typed into quoted text before the script's path, which is no line break	printf 'run:\\n./scripts/gate.sh\\n' > /tmp/notes
+0	-	nor a grep for its subshell spelling	grep -rn '(./scripts/gate.sh)' docs
+0	-	nor a brace expansion that names it	ls -la {./scripts/gate.sh,./scripts/x.sh}
+2	felix(-home)	a table with a row about the marker still refuses printf x > .felix	printf x > .felix
+2	felix(-home)	and a redirect to a quoted marker path	printf 'p\\n' > \"$T/repo/.felix\"
+2	felix(-home)	and to one quoted in part	printf x > \"$HOME\"/.felix-home
+2	felix(-home)	and to one quoted round a blank	printf x > \"$HOME/a b/.felix\"
+2	felix(-home)	and an append to the marker	echo p >> .felix
+2	felix(-home)	and a clobbering redirect, which the old row let through	printf x >| .felix
+2	felix(-home)	and a redirect on a later line of the command	cd ~/r\nprintf x > .felix
+2	felix(-home)	and tee onto the marker	tee .felix
+2	felix(-home)	and cp onto the marker	cp x .felix
+2	felix(-home)	and cp onto one quoted round a blank	cp seed \"$HOME/a b/.felix\"
+2	felix(-home)	and cp onto the marker with its errors sent away	cp x .felix 2>/dev/null
+2	felix(-home)	and cp of a marker into the current directory, where it lands as one	cp ../other/.felix .
+2	felix(-home)	and cp of a marker into a directory named with its slash	cp /x/.felix \"$T/repo/\"
+2	felix(-home)	and cp onto the marker on a later line of the command	cd ~/r\ncp x .felix
+2	felix(-home)	and scp onto the marker	scp host:seed .felix
+2	felix(-home)	and ln -s onto the marker	ln -s x .felix
+2	felix(-home)	and install onto the marker	install -m 644 seed .felix
+2	felix(-home)	and mv onto the pointer	mv x \"$HOME/.felix-home\"
+2	felix(-home)	and mv of the marker away	mv .felix /tmp/x
+2	felix(-home)	and rm of the marker	rm -f .felix
+2	felix(-home)	and rm of the marker on a later line of the command	cd ~/r\nrm -f .felix
+2	felix(-home)	and rm of the marker on a tab-indented later line	cd ~/r\n\trm -f .felix
+2	felix(-home)	and a write with another line after it, which the old row let through	cp x .felix\necho ok
+2	felix(-home)	and a redirect with another line after it, which the old row let through	printf x > .felix\nls
+2	felix(-home)	and cp onto the marker before a comment	cp x .felix # seed
+2	felix(-home)	and truncate of the pointer	truncate -s 0 \"$HOME/.felix-home\"
+2	felix(-home)	and sed -i on the marker	sed -i s/a/b/ .felix
+2	felix(-home)	and dd of= the marker	dd of=.felix
+2	felix(-home)	and dd with its of= after another operand, which the old row let through	dd if=/dev/zero of=.felix
+2	git add	a table with a row about git add still refuses git add -A	git add -A
+2	git add	and git add --all	git add --all
+2	git add	and git add .	git add .
+2	git add	and git add -A behind another flag	git add -v -A
+2	git add	and git add -A before an &&	git add -A && git commit -m wip
+2	git add	and git add -A on a later line of the command	cd ~/r\ngit add -A
+2	git add	and git add -A with another line after it, which the old row let through	git add -A\ngit commit -m wip
+2	scripts/gate	a table with a row about scripts/gate.sh still refuses running it	./scripts/gate.sh --quick
+2	scripts/gate	and running it after a cd	cd ~/x && ./scripts/gate.sh
+2	scripts/gate	and running it under bash	bash ./scripts/gate.sh
+2	scripts/gate	and running it on a later line, inside an if	if true; then\n  ./scripts/gate.sh\nfi
+2	scripts/gate	and running it after a line continuation	cd ~/x && \\\n  ./scripts/gate.sh
+2	scripts/gate	and running it in a brace group	{ ./scripts/gate.sh; }
+2	scripts/gate	and running it in a command substitution	x=$( ./scripts/gate.sh )
+2	scripts/gate	and running it on a tab-indented later line, which the old row let through	cd ~/x\n\t./scripts/gate.sh
+J
 rm -f "$FROOT/projects/widget/deny.tsv" "$FROOT/.deny-err"
 
 # The wiring itself, read off the file that ships rather than the fixture copy.
@@ -17173,7 +18654,7 @@ if [ -n "$TBROOT" ] && [ -f "$TBROOT/engine/harness/templates/schemas.tsv" ]; th
     [ -f "$TBROOT/$_tbf" ] || continue
     case "$_tbf" in
       *.tsv) ;;
-      *) printf '%s\n' "$_tbnames" | grep -qxF "${_tbf##*/}" || continue ;;
+      *) grep -qxF "${_tbf##*/}" <<<"$_tbnames" || continue ;;
     esac
     _tbn=$((_tbn+1))
     _tb felix_table_rows "$TBROOT/$_tbf" > "$TBM/rows" 2>&1
@@ -17213,7 +18694,7 @@ _tbrefuse() {  # <label> <reason> [split]
   local _o _r _s
   _o="$(_tb felix_table_check "$TBS" "$TBM/risk.tsv")"; _r=$?
   _s="$(_tfsplit "$TBM/risk.tsv" C)"
-  if [ "$_r" = "1" ] && printf '%s' "$_o" | cut -f2 | grep -qx "$2" \
+  if [ "$_r" = "1" ] && cut -f2 <<<"$_o" | grep -qx "$2" \
      && { [ "${3:-}" != "split" ] || [ -n "$_s" ]; }; then
     ok "$1"
   else
@@ -18000,7 +19481,7 @@ _ovstopin() {   # dir, sid [, stop_hook_active [, transcript]]
 _ovstop() { _ovstopin "$NREPO" "$@"; }
 _ovblocks() { case "$2" in *'"decision"'*'"block"'*) ok "$1" ;; *) bad "$1" "expected a block, got [$2]" ;; esac; }
 _ovholds_open() { case "$2" in *'"decision"'*'"block"'*) bad "$1" "expected no block, got [$2]" ;; *) ok "$1" ;; esac; }
-_ovsays_night() { printf '%s\n' "$2" | grep -qi 'overnight'; }
+_ovsays_night() { grep -qi 'overnight' <<<"$2"; }
 _ovgone() { [ -f "$(_ovfile "$1" "${2:-}")" ] && echo present || echo gone; }
 
 _ovreset "$WP"
@@ -19296,8 +20777,8 @@ if git -C "$XH" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 &
     *ROW*"$H12_CLEAR"*|*"$H12_CLEAR"*ROW*) ok "felix obligations prints a row column carrying the ledger line's twelve-character hash" ;;
     *) bad "felix obligations prints a row column carrying the ledger line's twelve-character hash" "$XOUT" ;;
   esac
-  if printf '%s\n' "$XOUT" | grep -F 't_clear' | grep -Fq 'UNSATISFIED' \
-     && printf '%s\n' "$XOUT" | grep -Fq "excepted until $XC_SOON by earlier"; then
+  if grep -F 't_clear' <<<"$XOUT" | grep -Fq 'UNSATISFIED' \
+     && grep -Fq "excepted until $XC_SOON by earlier" <<<"$XOUT"; then
     ok  "an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied"
   else
     bad "an excepted row's detail names its expiry and grantor and keeps its discharge unsatisfied" "$XOUT"
@@ -19310,15 +20791,15 @@ if git -C "$XH" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 &
     *"exceptions at origin/main ("*"): 12 granted"*) ok "the report heads the grants with the base ref and its commit date" ;;
     *) bad "the report heads the grants with the base ref and its commit date" "$(printf '%s\n' "$XOUT" | grep 'exceptions at')" ;;
   esac
-  if printf '%s\n' "$XOUT" | grep -F 't_clear' | grep -Fq 'live' \
-     && printf '%s\n' "$XOUT" | grep -F 't_asleep' | grep -Fq 'armed'; then
+  if grep -F 't_clear' <<<"$XOUT" | grep -Fq 'live' \
+     && grep -F 't_asleep' <<<"$XOUT" | grep -Fq 'armed'; then
     ok  "a live grant is listed live and a grant on a dormant row is listed armed"
   else
     bad "a live grant is listed live and a grant on a dormant row is listed armed" "$XOUT"
   fi
   _m=""
   while IFS='|' read -r _n _r; do
-    printf '%s\n' "$XOUT" | grep -F "$_n" | grep -F 'refused' | grep -Fq "$_r" || _m="$_m $_n"
+    grep -F "$_n" <<<"$XOUT" | grep -F 'refused' | grep -Fq "$_r" || _m="$_m $_n"
   done <<'REASONS'
 t_lapsed|expired
 t_far|expires past the horizon
@@ -19346,7 +20827,7 @@ REASONS
   # the five that are no grant at all (the upper-case hash and t_garbled's
   # four), the same twelve the heading states. The full stop after it keeps
   # 120 from reading as 12.
-  printf '%s\n' "$XOUT" | grep -Eq 'discovered [0-9]+, admitted [0-9]+, granted 12\.' \
+  grep -Eq 'discovered [0-9]+, admitted [0-9]+, granted 12\.' <<<"$XOUT" \
     && ok  "the admitted sentence now counts the grants" \
     || bad "the admitted sentence now counts the grants" \
            "$(printf '%s\n' "$XOUT" | grep 'discovered' || printf 'the report printed no discovered/admitted sentence')"
@@ -19412,8 +20893,8 @@ if [ -f "$FROOT/projects/widget/exceptions.tsv" ]; then cp "$FROOT/projects/widg
 _xc_row fixture "$(_xc_h12 "$FROOT/projects/widget/obligations.tsv" fixture)" "$XC_LIVE" founder 'not in any repository' \
   > "$FROOT/projects/widget/exceptions.tsv"
 out="$(cd "$REPO" && "$FELIX" obligations 2>&1)"
-if printf '%s\n' "$out" | grep -Fq 'exceptions: not read for this project.' \
-   && printf '%s\n' "$out" | grep -Eq '[0-9]+ obligation\(s\): [0-9]+ active, [0-9]+ dormant, [0-9]+ unknown; [0-9]+ blocking, [0-9]+ excepted'; then
+if grep -Fq 'exceptions: not read for this project.' <<<"$out" \
+   && grep -Eq '[0-9]+ obligation\(s\): [0-9]+ active, [0-9]+ dormant, [0-9]+ unknown; [0-9]+ blocking, [0-9]+ excepted' <<<"$out"; then
   ok  "a home that is no repository has its grants unread, and the widget report says so under the new summary"
 else
   bad "a home that is no repository has its grants unread, and the widget report says so under the new summary" "$out"
@@ -19462,8 +20943,11 @@ XE="$TMP/exc-escape"; mkdir -p "$XE"; XE="$(cd "$XE" && pwd -P)"
 ( cd "$XE" && git init -q -b main && printf 'notes\n' > README.md ) >/dev/null 2>&1; _xc_ci "$XE" base
 _xc_esc()   { ( cd "$XE" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/escape.sh"
                 . "$FROOT/harness/lib/obligations.sh"; felix_escapes "$FROOT/projects/widget" HEAD~1 "$XE" ) 2>/dev/null; }
-_xc_fired() { _xc_esc | grep -q "^exception$(printf '\t')$1"; }
-_xc_quiet() { ! _xc_esc | grep -q "^exception$(printf '\t')"; }
+# The rows are read whole before grep sees them. Piped, a grep -q that matched
+# early could break felix_escapes' pipe under pipefail, and the ! in _xc_quiet
+# would read that broken pipe as quiet.
+_xc_fired() { local _o; _o="$(_xc_esc)"; grep -q "^exception$(printf '\t')$1" <<<"$_o"; }
+_xc_quiet() { local _o; _o="$(_xc_esc)"; ! grep -q "^exception$(printf '\t')" <<<"$_o"; }
 if git -C "$XE" rev-parse --verify -q HEAD >/dev/null 2>&1; then
   mkdir -p "$XE/projects/x"; printf '# seeded\n' > "$XE/projects/x/exceptions.tsv"; _xc_ci "$XE" create
   _xc_fired projects/x/exceptions.tsv && ok  "creating a project's exceptions table escapes on the exception channel" \
@@ -19770,9 +21254,24 @@ fi
 # project holds is one every run of it on the machine shares. Tracked files
 # only, so an untracked project in somebody's home checkout is not this suite's
 # verdict to give. Felix's own gate is counted too; #276 took it out of /tmp.
+#
+# The second grep reads to the end rather than quitting at its first match.
+# Under pipefail a grep -q there broke the first grep's pipe whenever more
+# than a pipe's capacity of the script followed the match, the pipeline read
+# as failed, and the && dropped the script's name: a pass for the script most
+# in need of a fail. The fixture names /tmp/ on its second line, ahead of a
+# megabyte, where that form missed it every time.
+_pgl_names_tmp() { grep -vE '^[[:space:]]*#' "$1" | grep '/tmp/' >/dev/null; }
+{ printf '#!/bin/sh\nscratch=/tmp/fixed-path\n'; seq 1 200000; } > "$TMP/pgl-early-tmp.sh"
+if _pgl_names_tmp "$TMP/pgl-early-tmp.sh" 2>/dev/null; then
+  ok  "a script that names /tmp/ on its second line, ahead of a megabyte, is caught under pipefail"
+else
+  bad "a script that names /tmp/ on its second line, ahead of a megabyte, is caught under pipefail" \
+      "the reader quit at its match and broke the pipe, so the pipeline read as no match"
+fi
 _pgl_fixed="$(git -C "$_PGL_ROOT" ls-files -- projects 2>/dev/null | while IFS= read -r f; do
     [ -f "$_PGL_ROOT/$f" ] && [ "$(head -c2 "$_PGL_ROOT/$f")" = '#!' ] || continue
-    grep -vE '^[[:space:]]*#' "$_PGL_ROOT/$f" | grep -q '/tmp/' && printf '%s ' "$f"
+    _pgl_names_tmp "$_PGL_ROOT/$f" && printf '%s ' "$f"
   done)"
 is "no project script names a fixed path under /tmp outside its comments" "$_pgl_fixed" ""
 
@@ -19872,7 +21371,7 @@ _lyt="$(_ly_f "$_lyr" 1)"; _lytd="${_lyt//[!0-9]/}"; _lylod="${_lylo//[!0-9]/}";
 if [ "$(TZ=LYT-14 date +%Y%m%d%H)" = "$(date -u +%Y%m%d%H)" ]; then
   skip "lifecycle field 1 is a UTC ISO 8601 stamp, the format the other memory logs use" \
        "this machine's date ignores the zone string LYT-14, so UTC and a local clock read the same here"
-elif printf '%s' "$_lyt" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+elif grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$_lyt" \
      && [ "$_lylod" -le "$_lytd" ] && [ "$_lytd" -le "$_lyhid" ]; then
   ok  "lifecycle field 1 is a UTC ISO 8601 stamp, the format the other memory logs use"
 else
@@ -20175,7 +21674,7 @@ _lyhdr="$(awk '/^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)/ { exit }
                /^#/ { sub(/^#[[:space:]]*/, ""); printf "%s ", $0 }' "$FROOT/harness/lib/lifecycle.sh" 2>/dev/null | tr -s ' ')"
 _lymiss=""
 for _lyw in 'dated exception to rows-first[^.]*2026-09-21[^.]*closed 2026-09-22' 'schema row is[^.]* in templates/schemas\.tsv'; do
-  printf '%s' "$_lyhdr" | grep -qiE -- "$_lyw" || _lymiss="$_lymiss [$_lyw]"
+  grep -qiE -- "$_lyw" <<<"$_lyhdr" || _lymiss="$_lymiss [$_lyw]"
 done
 if [ -n "$_lyhdr" ] && [ -z "$_lymiss" ]; then
   ok  "lib/lifecycle.sh dates its exception to rows-first, taken 2026-09-21 and closed 2026-09-22, and says its row is in schemas.tsv"
@@ -20586,7 +22085,7 @@ case "$_auo" in
   *--verify*) ok  "it names what counts as a check and that --verify changes it" ;;
   *)          bad "it names what counts as a check and that --verify changes it" "$_audiag" ;;
 esac
-printf '%s\n' "$_auo" | grep -qiE 'sub-?agent' \
+grep -qiE 'sub-?agent' <<<"$_auo" \
   && ok  "it says edits and checks inside subagents are not seen" \
   || bad "it says edits and checks inside subagents are not seen" "$_audiag"
 case "$(_au_last "$_auo")" in
@@ -20723,7 +22222,7 @@ else
   bad "and runs none of commissioning: no run, no receipt, no discovery cache, no commissioning log" \
       "the project was not created and bound, so an absent receipt proves nothing"
 fi
-printf '%s\n' "$_nct" | grep -i 'skip' | grep -q 'felix commission' \
+grep -i 'skip' <<<"$_nct" | grep -q 'felix commission' \
   && ok  "and prints one line saying commissioning was skipped and felix commission runs it later" \
   || bad "and prints one line saying commissioning was skipped and felix commission runs it later" "$_nct"
 
@@ -21337,7 +22836,7 @@ _rvo="$(_au --dir "$RV/r3/eco")"; _rvh="$(_au --help)"
 _rvr="$(awk '/^## / { p = ($0 ~ /^## Try it/); next } p' "$REAL_HARNESS/../../README.md" 2>/dev/null | tr -d '`')"
 _rve="$(awk -F'\t' '$2 == "lib/audit.sh" { print $4 }' "$REAL_HARNESS/ecosystem.tsv" 2>/dev/null)"
 _rvn="the never line claims only what the roster recognises, and --verify ERE adds a project's own runner to it, in every project read, as the report, the help, the README and ecosystem.tsv say; none claims every ecosystem"
-if printf '%s\n' "$_rvo" | grep -E '^ *never ' | grep -qi 'no check the roster recognises had run' \
+if grep -E '^ *never ' <<<"$_rvo" | grep -qi 'no check the roster recognises had run' \
    && _rv_says "$_rvo" 'verify ere adds a project.s own[^.]*every project' && _rv_says "$_rvr" 'verify ere adds a project.s own[^.]*every project' \
    && _rv_says "$_rvh" 'verify ere[^.]*beside the default runners' && _rv_says "$_rve" 'verify adds' \
    && ! _rv_says "$_rvo $_rvr $_rvh $_rve $(cat "$REAL_HARNESS"/lib/audit.sh "$REAL_HARNESS"/lib/audit-read.sh "$REAL_HARNESS"/lib/audit-count.sh)" 'every ecosystem|replaces (the|that) (roster|list)|in place of the default'; then
@@ -21958,7 +23457,7 @@ _hx_chk >/dev/null; is "the handoff a fold could have written reads clean" "$?" 
 _hx_on s/a
 printf '### 0zz. what A did\n\nA ran first.\n\n' > "$TMP/ho-a.md"
 _hxa="$(cd "$HX" && "$FELIX" handoff --section "$TMP/ho-a.md" 2>"$TMP/ho-a.err" | sed -n 's/^wrote //p')"
-printf '%s' "$_hxa" | grep -qE '^docs/handoff/pending/[0-9]{8}T[0-9]{6}Z-s-a\.md$' \
+grep -qE '^docs/handoff/pending/[0-9]{8}T[0-9]{6}Z-s-a\.md$' <<<"$_hxa" \
   && ok  "felix handoff --section writes the section to docs/handoff/pending/<UTC time>-<branch>.md" \
   || bad "felix handoff --section writes the section to docs/handoff/pending/<UTC time>-<branch>.md" "wrote [$_hxa]"
 is  "and drops the id its heading carried, since only the fold gives ids" "$(head -1 "$HX/$_hxa" 2>/dev/null)" "### what A did"
@@ -22110,6 +23609,1210 @@ git -C "$HX" checkout -q -f s/local
 mkdir -p "$TMP/ho-none"; ( cd "$TMP/ho-none" && git init -q )
 ( cd "$TMP/ho-none" && "$REAL_HARNESS/bin/handoff-check" >/dev/null 2>&1 ); is "handoff-check cannot examine a checkout with no HANDOFF.md, and says 2, never 0" "$?" "2"
 ( cd "$HX" && "$REAL_HARNESS/bin/handoff-check" >/dev/null 2>&1 ); is "and exits 0 on a clean one" "$?" "0"
+
+printf '\nno engine test reads a pipe through a grep that can stop early\n'
+# Under pipefail, `producer | grep -q x` reads "absent" for a value that is
+# there whenever grep matches and exits while the producer still has output to
+# write: the producer's next write breaks the pipe, it dies of SIGPIPE (141),
+# and pipefail hands that status to the `if`, `&&`, `||` or `!` reading it.
+# The first pair below pins that on the machine running the suite, because the
+# lint after it is only worth having while it holds.
+#
+# _spl_scan is the lint's one matcher, and the same code reads the samples and
+# the engine. It prints file:line wherever a `|` that is not half of `||` is
+# followed, after optional `command`, `env`, `nice`, `timeout N`, `if` and `!`
+# words, VAR=value prefixes and a leading backslash, by grep, egrep or fgrep
+# that can stop reading early. One way is an option that lets it: -q, -m, -l or
+# -L, alone or inside a cluster (-qxF, -Eq, -m1), or --quiet, --silent,
+# --max-count, --files-with-matches or --files-without-match. Options are read
+# letter by letter, and one that takes an argument (-e, -f, -A, -B, -C, -d, -D,
+# --regexp, --file, --context and its halves) takes the rest of its word, or
+# the next word, with it: `-e pat -q` is flagged, and `-eline` is not read as
+# -l. The other is a standard output on /dev/null, whatever the options: GNU
+# grep, the grep on Linux, reads that as -q and stops at its first match, even
+# given -c. So `>/dev/null`, `> /dev/null`, `1>`, `>>`, `&>`, `>&` or `>|`,
+# before or after `2>&1`, anywhere in grep's own command is named. That command
+# runs to the first `|`, `;` or `&&` outside quotes, or to a comment, and on
+# past a backslash that ends its line; it does not stop at `)` or a lone `&`.
+# A digit glued to a word before `>` is
+# part of the word, so `y2>/dev/null` is standard output; `2>/dev/null` alone
+# is not named, since where grep's errors go changes nothing. A pipe that ends
+# one line, or ends its code before a comment, carries onto the next line of
+# code, and a line may start with the pipe; bash reads both as one chain, and
+# it carries a pipe across blank and comment lines too. Comment lines are
+# skipped.
+#
+# What it does not see: `head`, `sed q` or an awk that exits early at the end of
+# a pipeline whose status is tested (there were two, felix_overnight_field's
+# `cut | head -1` read with `|| return 1` and felix_marketplace_root's
+# `sed | sed | head -1` read with `|| mroot=""`, safe only because each reads
+# one line, and both now read to the end; a new one would pass this lint); a
+# grep whose standard output reaches /dev/null only through a redirect on its
+# caller, on a brace group around it, on a subshell that closes on a later line
+# (one that closes on grep's own line is named), or through exec; a quoted
+# target (`>"/dev/null"`, `>'/dev/null'`); a pipe into
+# a brace group or subshell that holds the grep; a grep named by its path or
+# through a variable; a wrapper given options of its own (`env -i`,
+# `nice -n 5`, `timeout -s KILL 5`); a VAR= prefix whose quoted value holds a
+# space; an early option placed after the pattern, or on a continuation line
+# inside grep's own arguments; a producer whose status is tested through a
+# variable; code built at run time with eval. What it names that is no pipe:
+# looking for the pipe and the grep, it reads quoted strings and here-doc
+# bodies as code, so a message or a pattern holding `| grep -q` is named, and
+# so is the line after a code line whose trailing comment ends in `|`; and
+# since grep's command runs past `)` and a lone `&`, a redirect to /dev/null
+# that belongs to a later command on the line is named, as is `/dev/nullx`.
+_spl_scan() {
+  awk '
+    # grep, after the words that may stand before it, able to stop early.
+    function early(s) {
+      sub(/^[ \t]+/, "", s)
+      while (s ~ /^(command|env|nice|if|!)[ \t]/ || s ~ /^timeout[ \t]+[0-9.]+[smhd]?[ \t]/ ||
+             s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]/) {
+        if (s ~ /^timeout[ \t]/) sub(/^timeout[ \t]+/, "", s)
+        sub(/^[^ \t]*[ \t]+/, "", s)
+      }
+      sub(/^\\/, "", s)
+      if (s !~ /^[ef]?grep[ \t]/) return 0
+      sub(/^[ef]?grep[ \t]+/, "", s)
+      if (quits(s) || devnull(s)) return 1
+      if (cont) gpc = 1
+      return 0
+    }
+    # An option among the words that lets grep stop early.
+    function quits(s,   w, n, i, k, c) {
+      n = split(s, w, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        if (w[i] == "--") return 0
+        if (w[i] ~ /^--(quiet|silent|max-count|files-with-matches|files-without-match)(=|$)/) return 1
+        if (w[i] ~ /^--(regexp|file|after-context|before-context|context)$/) { i++; continue }
+        if (w[i] ~ /^--/) continue
+        if (w[i] !~ /^-[A-Za-z0-9]/) return 0
+        for (k = 2; k <= length(w[i]); k++) {
+          c = substr(w[i], k, 1)
+          if (c ~ /[qmlL]/) return 1
+          if (c ~ /[efABCdD]/) { if (k == length(w[i])) i++; break }
+        }
+      }
+      return 0
+    }
+    # A standard output on /dev/null in the words, up to where the command ends.
+    # Quoted strings become one letter first, so a | or ; inside a pattern ends
+    # nothing and a digit after a quote stays glued to a word. Sets cont when the
+    # command runs on past a backslash that ends the line.
+    function devnull(s,   t, m, pre, d) {
+      t = s
+      gsub(/\047[^\047]*\047/, "Q", t)
+      gsub(/"([^"\\]|\\.)*"/, "Q", t)
+      gsub(/>\|/, ">", t)
+      sub(/(\||;|&&|[ \t]#).*/, "", t)
+      cont = (t ~ /\\[ \t]*$/)
+      while (match(t, /&?[0-9]*>>?&?[ \t]*\/dev\/null/)) {
+        m = substr(t, RSTART, RLENGTH)
+        pre = (RSTART > 1) ? substr(t, RSTART - 1, 1) : ""
+        t = substr(t, RSTART + RLENGTH)
+        if (m ~ /^&/) return 1
+        d = m; sub(/>.*/, "", d)
+        if (d == "" || d == "1" || pre ~ /[^ \t]/) return 1
+      }
+      return 0
+    }
+    FNR == 1 { open = 0; gp = 0 }
+    /^[ \t]*(#|$)/ { gp = 0; next }
+    {
+      # A line a backslash carried a grep onto: a redirect here is the grep one.
+      if (gp) {
+        if (devnull($0)) { print FILENAME ":" gp; gp = 0 }
+        else if (!cont) gp = 0
+      }
+      gpc = 0
+      hit = open && early($0)
+      rest = $0
+      while (!hit && (j = index(rest, "|")) > 0) {
+        if (substr(rest, j + 1, 1) == "|") { rest = substr(rest, j + 2); continue }
+        rest = substr(rest, j + 1)
+        hit = early(rest)
+      }
+      if (hit) print FILENAME ":" FNR
+      else if (gpc) gp = FNR
+      t = $0; sub(/[ \t]*(\\[ \t]*)?$/, "", t)
+      open = (t ~ /(^|[^|])[|]([ \t]+#.*)?$/)
+    }
+  ' "$@"
+}
+
+# ~1 MB with the match on line 1: the writer fills the pipe and blocks, grep
+# reads, matches and exits, and the writer's next write always breaks. That
+# takes the race out, so the first check fails every time the premise holds.
+_spl_big="$(seq 1 160000)"
+_spl_ps="$( set -o pipefail
+            printf '%s\n' "$_spl_big" 2>/dev/null | grep -qx 1
+            printf '%s %s' "$?" "${PIPESTATUS[1]}" )"
+case "$_spl_ps" in
+  0\ *) bad "under pipefail, printf of a megabyte piped into grep -q reads a match on its first line as absent" \
+            "the pipe read the line as present (statuses: $_spl_ps), so nothing here shows the shape the lint refuses can fail" ;;
+  *\ 0) ok  "under pipefail, printf of a megabyte piped into grep -q reads a match on its first line as absent" ;;
+  *)    bad "under pipefail, printf of a megabyte piped into grep -q reads a match on its first line as absent" \
+            "grep itself did not report the match (pipeline status, grep status: $_spl_ps), so this is not the broken pipe" ;;
+esac
+if ( set -o pipefail; grep -qx 1 <<<"$_spl_big" ); then
+  ok  "and the same test fed a here-string finds it"
+else
+  bad "and the same test fed a here-string finds it" \
+      "the here-string form missed line 1 of the megabyte, so it is no replacement for the pipe"
+fi
+
+# The matcher on shapes written out, so a change to it that drops one shows as
+# a named miss rather than as a quiet engine scan. Each sample is a file; the
+# answer is the line numbers flagged in it.
+mkdir -p "$TMP/_spl"
+_spl_flags() {
+  printf '%s\n' "$1" > "$TMP/_spl/sample"
+  ( cd "$TMP/_spl" && _spl_scan sample ) | awk -F: '{ printf "%s%s", s, $NF; s = " " }'
+}
+is "the lint flags a pipe into grep -q as a cluster, with no space after the pipe, or after another flag" \
+   "$(_spl_flags 'x | grep -qxF y
+x |grep -Eq y
+x | grep -qvE y
+x | grep -E -q y')" "1 2 3 4"
+is "the lint flags grep reached through command or a VAR=value prefix" \
+   "$(_spl_flags 'x | command grep -q y
+x | LC_ALL=C grep -q y
+x | LC_ALL=C command grep -qx y')" "1 2 3"
+is "the lint flags grep reached through env, timeout, nice, if, ! or a leading backslash" \
+   "$(_spl_flags 'x | \grep -q y
+x | env LC_ALL=C grep -q y
+x | timeout 5 grep -q y
+x | nice grep -q y
+x | if grep -q y; then :; fi
+x | ! grep -q y')" "1 2 3 4 5 6"
+is "the lint flags an early option after an option that takes an argument, attached or apart" \
+   "$(_spl_flags 'x | grep -e pat -q y
+x | grep -f pats -q
+x | grep -A 2 -q y
+x | grep --regexp pat -q
+x | grep -epat -m1')" "1 2 3 4 5"
+is "the lint takes no option's argument for an option: -eline is not -l, and a pattern -quux is not -q" \
+   "$(_spl_flags 'x | grep -eline f
+x | grep -e -quux f
+x | grep -A 2 y')" ""
+is "the lint flags every option that lets grep stop early, in egrep and fgrep as well" \
+   "$(_spl_flags 'x | grep -m1 y
+x | grep --quiet y
+x | grep --silent y
+x | grep --max-count=1 y
+x | egrep -l y
+x | fgrep -L y
+x | grep --files-with-matches y')" "1 2 3 4 5 6 7"
+is "the lint flags a grep -q on the line after a pipe that ends a line, with or without a backslash" \
+   "$(_spl_flags 'x |
+  grep -q y
+z | \
+  grep -qx y')" "2 4"
+is "the lint flags a grep -q on the line after a pipe that a comment follows" \
+   "$(_spl_flags 'x |   # why it is piped
+  grep -q y')" "2"
+is "the lint flags a line that starts with a pipe into grep -qxF, continuing the line above" \
+   "$(_spl_flags 'x \
+| grep -qxF y')" "2"
+is "the lint leaves an ||, a grep that reads to the end, a pattern after -- and a comment line alone" \
+   "$(_spl_flags 'a || grep -q x f
+x | grep -c y
+x | grep -v y
+x | grep -- -q
+# x | grep -q y')" ""
+is "the lint carries neither an || nor a comment's trailing pipe onto the next line" \
+   "$(_spl_flags 'a ||
+  grep -q y
+# a |
+  grep -q y')" ""
+# Named on purpose, as the comment above says: pinned so a matcher that learns
+# to skip them also has to change what that comment promises.
+is "the lint reads a quoted string and a code line's trailing comment as code" \
+   "$(_spl_flags "printf 'use: x | grep -q y\\n'
+grep -E 'a| grep -q' f
+foo  # see a |
+grep -q y file")" "1 2 4"
+# A grep with no early option whose standard output is /dev/null stops at its
+# first match on GNU grep, even with -c, so each of these is the same shape.
+is "the lint flags a piped grep whose standard output goes to /dev/null, in each spelling of the redirect" \
+   "$(_spl_flags 'x | grep -xF y >/dev/null
+x | grep -xF y > /dev/null
+x | grep -xF y 1>/dev/null
+x | grep -xF y &>/dev/null
+x | grep -xF y >/dev/null 2>&1
+x | grep -xF y 2>&1 >/dev/null
+x | grep -xF y >>/dev/null
+x | grep -xF y >& /dev/null
+x | grep -xF y >|/dev/null')" "1 2 3 4 5 6 7 8 9"
+is "the lint flags it in an if, after a sed, after a quoted | or ;, after --, and given -c" \
+   "$(_spl_flags "if printf '%s\\n' \"\$l\" | grep -xF \"\$v\" >/dev/null 2>&1; then :; fi
+x | sed 's/:.*//' | grep -xF \"\$v\" >/dev/null 2>&1
+x | grep -E 'a|b' >/dev/null
+x | grep -xF \"a;b\" >/dev/null
+x | grep -- -q >/dev/null
+x | grep -c y >/dev/null")" "1 2 3 4 5 6"
+is "the lint reads a digit before > as a descriptor only standing alone: 2>/dev/null is not named, y2>/dev/null is" \
+   "$(_spl_flags 'x | grep -xF y 2>/dev/null
+x | grep -xF y 2> /dev/null
+x | grep -xF y2>/dev/null
+x | grep -xF "$v"2>/dev/null')" "3 4"
+is "the lint flags a redirect on the line a backslash carries the grep onto, and one after a pipe that ends a line" \
+   "$(_spl_flags 'x | grep -xF y \
+  >/dev/null 2>&1
+x |
+  grep -xF y >/dev/null')" "1 4"
+is "the lint leaves grep -c with its errors on /dev/null, and a redirect that is another command's or a comment's" \
+   "$(_spl_flags 'x | grep -c y 2>/dev/null
+n="$(x | grep -c . 2>/dev/null)" || n=0
+x | grep -xF y | wc -l >/dev/null
+x | grep -xF y; z >/dev/null
+x | grep -xF y && z >/dev/null
+x | grep -xF y || z >/dev/null
+grep -xF y file >/dev/null
+a || grep -xF y >/dev/null
+x | grep -xF y   # not >/dev/null
+x | grep -xF y \
+
+>/dev/null')" ""
+
+# The engine itself: the CLI, its libraries, its hooks and its bin scripts. Not
+# tests/, which #364 scans once it lands, and not templates/, which is table
+# data.
+_spl_sites="$( cd "$REAL_HARNESS" 2>/dev/null && [ -f felix ] \
+                 || { printf 'no engine to scan at %s\n' "$REAL_HARNESS"; exit 0; }
+               set --
+               for _spl_x in felix lib/*.sh hooks/* bin/*; do [ -f "$_spl_x" ] && set -- "$@" "$_spl_x"; done
+               _spl_scan "$@" || printf 'the scan itself failed, exit %s\n' "$?" )"
+_spl_nl='
+'
+if [ -z "$_spl_sites" ]; then
+  ok  "no engine test pipes into a grep that can stop reading early"
+else
+  bad "no engine test pipes into a grep that can stop reading early" \
+      "a false miss under pipefail is possible at: ${_spl_sites//$_spl_nl/ }"
+fi
+
+printf '\nan escape or a tier over a diff larger than a pipe\n'
+# A test that pipes a value into `grep -q` answers "not found" for a value that
+# is there whenever grep matches and exits while the writer still has lines to
+# write: the writer dies of SIGPIPE, pipefail makes the pipeline 141, and the
+# `&&` or `if` reads no match. Past a pipe's capacity with the match early it
+# happens every time, and a diff is the value most likely to get that big.
+# Three places read one, and each fails open: the confine that demotes a risk
+# row, the destructive-SQL escape over the added lines, and a risk table's
+# content rows. Each is driven here with 20,000 changed lines (well past the
+# 64 KB a pipe holds), the match as early as the producer's order allows, and
+# the same fixture with the match on the LAST line as the control. The last
+# line cannot be missed, so the control proves the fixture reaches the line
+# under test and that a red is the race, not an unreachable branch.
+_spd_dir="$TMP/_spd"; mkdir -p "$_spd_dir"
+_spd_t="$(printf '\t')"
+# has(), with the failure saying what the miss did rather than only what the
+# output lacked.
+_spd_has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "$4; got [$2]" ;; esac; }
+_spd_nofix() { _spd_why="$1"; shift; for _spd_a in "$@"; do bad "$_spd_a" "$_spd_why"; done; }
+_spd_esc() { ( cd "$1" && . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/escape.sh"
+               . "$FROOT/harness/lib/obligations.sh"; felix_escapes "$2" HEAD~1 "$1" ) 2>/dev/null; }
+
+# _spd_deps DIR FIRST LAST: a repository whose one commit rewrites every line of
+# a 20,001-line manifest from 1.0 to 2.0, FIRST replacing the first line and
+# LAST the last. The unchanged second line ends the first hunk there, so FIRST
+# is the hunk's second line, straight after the line it replaced.
+_spd_deps() {
+  mkdir -p "$1" && ( cd "$1" && git init -q -b main \
+    && awk 'BEGIN { print "pkg00000 = 1.0"; print "# pinned below"
+                    for (i = 1; i <= 20000; i++) printf "pkg%05d = 1.0\n", i }' > deps.txt \
+    && git add -A && git -c user.name=t -c user.email=t@t commit -qm base \
+    && _SPD_F="$2" _SPD_L="$3" awk 'BEGIN { print ENVIRON["_SPD_F"]; print "# pinned below"
+                    for (i = 1; i < 20000; i++) printf "pkg%05d = 2.0\n", i
+                    print ENVIRON["_SPD_L"] }' > deps.txt \
+    && git add -A && git -c user.name=t -c user.email=t@t commit -qm change ) >/dev/null 2>&1
+}
+
+# A verifier row demoted to fire only when every changed line is a version bump
+# and the package names pair up. The smuggled flag keeps its line's package
+# name, so the names still pair and the confine's line pattern is the only
+# thing between it and a merge.
+_spd_n1="a line outside a risk row's confine near the top of a diff larger than a pipe still fires the row"
+_spd_n2="a line outside a risk row's confine on the last line of a diff larger than a pipe fires the row"
+_spd_n3="a diff larger than a pipe whose every line is inside the confine still escapes nothing"
+mkdir -p "$_spd_dir/proj"
+printf 'red\tpath\t^deps\\.txt$\ta manifest that also configures the gate\tverifier\t^[-+]pkg[0-9]+ = [0-9.]+$\n' \
+  > "$_spd_dir/proj/risk.tsv"
+_spd_deps "$_spd_dir/early" 'pkg00000 = 2.0 --ignore=tests/test_judgment.py' 'pkg20000 = 2.0'
+_spd_deps "$_spd_dir/late"  'pkg00000 = 2.0' 'pkg20000 = 2.0 --ignore=tests/test_judgment.py'
+_spd_deps "$_spd_dir/clean" 'pkg00000 = 2.0' 'pkg20000 = 2.0'
+if [ "$(git -C "$_spd_dir/early" diff -U0 HEAD~1 HEAD 2>/dev/null | wc -c | tr -d ' ')" -gt 262144 ] \
+   && [ "$(git -C "$_spd_dir/late"  diff -U0 HEAD~1 HEAD 2>/dev/null | wc -c | tr -d ' ')" -gt 262144 ] \
+   && [ "$(git -C "$_spd_dir/clean" diff -U0 HEAD~1 HEAD 2>/dev/null | wc -c | tr -d ' ')" -gt 262144 ]; then
+  _spd_has "$_spd_n1" "$(_spd_esc "$_spd_dir/early" "$_spd_dir/proj")" "verifier${_spd_t}deps.txt" \
+    "the line outside the confine was missed, the diff read as a version bump, and the row did not fire"
+  _spd_has "$_spd_n2" "$(_spd_esc "$_spd_dir/late" "$_spd_dir/proj")" "verifier${_spd_t}deps.txt" \
+    "the row did not fire on a line outside its confine that cannot be raced"
+  is "$_spd_n3" "$(_spd_esc "$_spd_dir/clean" "$_spd_dir/proj")" ""
+else
+  _spd_nofix "the fixture was not built: three repositories each with a diff over 256 KB" \
+    "$_spd_n1" "$_spd_n2" "$_spd_n3"
+fi
+
+# Destructive SQL in the added lines escapes as durable. The first added line of
+# the whole diff is the first added line of its first file, so one new file with
+# the statement on line 1 puts it first; the control puts it last.
+#
+# The statement and the row's pattern are put together at run time, never
+# written whole here: this file's own added lines are what felix merge reads for
+# destructive SQL, and a fixture spelled out would escape the branch that adds it.
+_spd_stmt="$(printf '%s%s' 'DROP ' 'TABLE users;')"
+_spd_sql() {
+  mkdir -p "$1" && ( cd "$1" && git init -q -b main && printf 'notes\n' > README.md \
+    && git add -A && git -c user.name=t -c user.email=t@t commit -qm base \
+    && _SPD_W="$2" _SPD_S="$_spd_stmt" awk 'BEGIN { w = ENVIRON["_SPD_W"]; s = ENVIRON["_SPD_S"]
+                    if (w == "first") print s
+                    for (i = 1; i <= 20000; i++) printf "INSERT INTO t VALUES (%d);\n", i
+                    if (w == "last") print s }' > seed.sql \
+    && git add -A && git -c user.name=t -c user.email=t@t commit -qm change ) >/dev/null 2>&1
+}
+_spd_n4="destructive SQL on the first added line of a diff larger than a pipe still escapes as durable"
+_spd_n5="destructive SQL on the last added line of a diff larger than a pipe escapes as durable"
+mkdir -p "$_spd_dir/none"
+_spd_sql "$_spd_dir/sqlfirst" first
+_spd_sql "$_spd_dir/sqllast"  last
+if [ "$(git -C "$_spd_dir/sqlfirst" diff HEAD~1 HEAD 2>/dev/null | wc -c | tr -d ' ')" -gt 262144 ] \
+   && [ "$(git -C "$_spd_dir/sqllast" diff HEAD~1 HEAD 2>/dev/null | wc -c | tr -d ' ')" -gt 262144 ]; then
+  _spd_has "$_spd_n4" "$(_spd_esc "$_spd_dir/sqlfirst" "$_spd_dir/none")" "durable${_spd_t}ADDED-LINES" \
+    "the destructive statement was missed and the branch would merge without a person seeing it"
+  _spd_has "$_spd_n5" "$(_spd_esc "$_spd_dir/sqllast" "$_spd_dir/none")" "durable${_spd_t}ADDED-LINES" \
+    "a destructive statement that cannot be raced did not escape"
+else
+  _spd_nofix "the fixture was not built: two repositories each with a diff over 256 KB" "$_spd_n4" "$_spd_n5"
+fi
+
+# A content row raises the tier when its pattern is anywhere in the added lines.
+# The row is the shipped template's destructive-SQL row; the added lines are
+# handed to the pass directly, in the shape felix_classify_diff hands them.
+_spd_cls() { ( . "$FROOT/harness/lib/classify.sh"; _felix_classify_pass "$1" "$2" "$3" ) 2>/dev/null; }
+_spd_row="$(printf 'red\tcontent\t^\\+.*(DROP %s|TRUNC%s |DELETE %s [^W]*$)\tdestructive SQL' TABLE ATE FROM)"
+_spd_big="$(awk 'BEGIN { for (i = 1; i <= 20000; i++) printf "+INSERT INTO t VALUES (%d);\n", i }')"
+_spd_has "a content row matching the first of more added lines than a pipe holds still raises the tier" \
+  "$(_spd_cls "$_spd_row" seed.sql "+$_spd_stmt
+$_spd_big")" "red${_spd_t}ADDED-LINES${_spd_t}destructive SQL" \
+  "the content row's match was missed and the diff kept the default tier"
+_spd_has "a content row matching the last of more added lines than a pipe holds raises the tier" \
+  "$(_spd_cls "$_spd_row" seed.sql "$_spd_big
++$_spd_stmt")" "red${_spd_t}ADDED-LINES${_spd_t}destructive SQL" \
+  "a content row's match that cannot be raced did not raise the tier"
+
+printf '\nmembership in a list larger than a pipe: coverage, candidates and gaps\n'
+# Five engine tests asked whether a value was in a list by piping the list into
+# grep -q under pipefail. grep stops reading at its first match; the writer's
+# next write is SIGPIPE, pipefail makes the pipeline 141, and the test reads
+# "not found" for a value that is present. Under load that happens now and
+# then. It happens every time once the list is larger than a pipe holds and
+# the match is early, because the writer is still blocked on a full pipe when
+# grep leaves. So each list below is well over 256 KB with the value asked
+# about on its first line, and beside each is the same question about the
+# LAST line, which no early exit can miss: the control is what shows the
+# fixture reaches the test, so a red here is the race and not a broken fixture.
+_spm="$TMP/_spm"; mkdir -p "$_spm"
+# Ninety characters of filler, so a few thousand names make a few hundred KB.
+_spm_pad="$(awk 'BEGIN { s = sprintf("%090d", 0); gsub(/0/, "x", s); print s }')"
+_spm_nl='
+'
+# Whole-line membership in captured output, read without a pipe.
+_spm_line() { case "$_spm_nl$1$_spm_nl" in *"$_spm_nl$2$_spm_nl"*) return 0 ;; esac; return 1; }
+# The rows of captured output whose column $3 is $2, for a failure message.
+_spm_rows() { _SPM_K="$2" awk -F'\t' -v c="$3" '$c == ENVIRON["_SPM_K"]' <<<"$1" | tr '\n' ' '; }
+# The first line of a value.
+_spm_first() { printf '%s' "${1%%"$_spm_nl"*}"; }
+
+# ------------------------------------------------------------- fixtures ----
+# felix_coverage_check reads the events a hooks file binds. 3,000 filler
+# events sit between the one bound first and the one bound last.
+_spm_cov="$_spm/cov"; mkdir -p "$_spm_cov"
+awk -v pad="$_spm_pad" 'BEGIN {
+  printf "{\"hooks\": {\n  \"SpmFirstBound\": [],\n"
+  for (i = 1; i <= 3000; i++) printf "  \"SpmFiller%s%05d\": [],\n", pad, i
+  printf "  \"SpmLastBound\": []\n}}\n" }' > "$_spm_cov/hooks.json"
+
+# felix_coverage_unconsidered reads the events a stance table lists, against
+# what this machine binds. A fixture HOME binds the table's first event, its
+# last, and one it never lists.
+_spm_unc="$_spm/unc"; _spm_home="$_spm/home"; mkdir -p "$_spm_unc" "$_spm_home/.claude"
+awk -v pad="$_spm_pad" 'BEGIN {
+  printf "SpmFirstKnown\twired\tthe first row\n"
+  for (i = 1; i <= 3000; i++) printf "SpmRow%s%05d\tdeclined\tfiller\n", pad, i
+  printf "SpmLastKnown\twired\tthe last row\n" }' > "$_spm_unc/lifecycle.tsv"
+printf '{"hooks":{"SpmFirstKnown":[],"SpmLastKnown":[],"SpmNeverListed":[]}}\n' \
+  > "$_spm_home/.claude/settings.json"
+
+# felix_candidates_rules reads the admitted obligation names, then the
+# declared probe names after a C-locale sort. Zero-padded, so the sort keeps
+# 00001 first and 09000 last. Memory is a root of this block's own.
+_spm_cp="$_spm/spm-cand"; _spm_cr="$_spm/spm-cand-repo"; _spm_cmem="$_spm/mem"
+mkdir -p "$_spm_cp" "$_spm_cr" "$_spm_cmem/spm-cand/commission"
+awk 'BEGIN { for (i = 1; i <= 9000; i++)
+  printf "spm_admitted_obligation_name_%05d\tADVISORY\tdeterministic\t-\ttrue\n", i }' \
+  > "$_spm_cp/obligations.tsv"
+awk 'BEGIN { for (i = 1; i <= 9000; i++)
+  printf "spm_declared_probe_ground_name_%05d\t-\t-\tls\ttrue\n", i }' > "$_spm_cp/probes.tsv"
+_spm_c1="$(printf 'spm_admitted_obligation_name_00001\tADVISORY\t-\ttrue\tspm_declared_probe_ground_name_09000\tunread\trepeats the first admitted row')"
+_spm_c2="$(printf 'spm_admitted_obligation_name_09000\tADVISORY\t-\ttrue\tspm_declared_probe_ground_name_09000\tunread\trepeats the last admitted row')"
+_spm_c3="$(printf 'spm_grounded_on_first\tADVISORY\t-\ttrue\tspm_declared_probe_ground_name_00001\tunread\tgrounded on the first declared probe')"
+_spm_c4="$(printf 'spm_grounded_on_last\tADVISORY\t-\ttrue\tspm_declared_probe_ground_name_09000\tunread\tgrounded on the last declared probe')"
+printf '# topology -\n# epoch -\n%s\n%s\n%s\n%s\ndone\t4\n' "$_spm_c1" "$_spm_c2" "$_spm_c3" "$_spm_c4" \
+  > "$_spm_cmem/spm-cand/commission/obligations_surveyed.tsv"
+
+# felix_commission_gaps reads awk's rows for one capability. One capability
+# has 6,000 stack rows; another has one, the file's last.
+_spm_gp="$_spm/gap-proj"; _spm_gr="$_spm/gap-repo"; mkdir -p "$_spm_gp" "$_spm_gr"
+printf 'spmcapmany\nspmcaplast\n' > "$_spm_gp/capabilities"
+awk 'BEGIN { for (i = 1; i <= 6000; i++)
+  printf "plugin\tspm-served-plugin-%05d\tspm-marketplace\tlow\tspmcapmany\n", i
+  printf "plugin\tspm-served-last\tspm-marketplace\tlow\tspmcaplast\n" }' > "$_spm_gp/stack.tsv"
+
+# The lists each test reads, measured here from the fixtures: every one is
+# well past a pipe's 64 KB, with the value asked about on its first line.
+_spm_short=""
+_spm_fits() { [ "${#2}" -ge 262144 ] && [ "$(_spm_first "$2" | cut -f1-2)" = "$3" ] \
+                || _spm_short="$_spm_short $1 (${#2} bytes, first [$(_spm_first "$2" | cut -c1-40)])"; }
+_spm_fits felix_coverage_check "$( . "$FROOT/harness/lib/coverage.sh"; felix_hooks_events "$_spm_cov/hooks.json" )" \
+          SpmFirstBound
+_spm_fits felix_coverage_unconsidered "$(cut -f1 "$_spm_unc/lifecycle.tsv")" SpmFirstKnown
+_spm_fits felix_candidates_rules:admitted "$(cut -f1 "$_spm_cp/obligations.tsv")" spm_admitted_obligation_name_00001
+_spm_fits felix_candidates_rules:grounds "$(cut -f1 "$_spm_cp/probes.tsv" | LC_ALL=C sort -u)" \
+          spm_declared_probe_ground_name_00001
+_spm_fits felix_commission_gaps "$(awk -F'\t' '$5 == "spmcapmany"' "$_spm_gp/stack.tsv")" \
+          "$(printf 'plugin\tspm-served-plugin-00001')"
+[ -z "$_spm_short" ] \
+  && ok  "every membership fixture below holds more than 256 KB with the value asked about on its first line" \
+  || bad "every membership fixture below holds more than 256 KB with the value asked about on its first line" \
+         "too small or out of order, so a pass below would prove nothing:$_spm_short"
+
+# ---------------------------------------- felix_coverage_check, declined ----
+printf 'SpmFirstBound\tdeclined\tnothing to add\nSpmLastBound\tdeclined\tnothing to add\n' \
+  > "$_spm_cov/lifecycle.tsv"
+_spm_out="$( . "$FROOT/harness/lib/coverage.sh"; felix_coverage_check "$_spm_cov" "$_spm_cov/hooks.json" )"
+_spm_line "$_spm_out" "missing	SpmFirstBound	declined, yet something wires it" \
+  && ok  "a declined moment wired as the first of 3,000 bound events reads missing" \
+  || bad "a declined moment wired as the first of 3,000 bound events reads missing" \
+         "got [$(_spm_rows "$_spm_out" SpmFirstBound 2)]: grep -q left at line 1, the bound list's writer died of SIGPIPE, pipefail read the binding as absent, and a decline something wires passed as ok"
+_spm_line "$_spm_out" "missing	SpmLastBound	declined, yet something wires it" \
+  && ok  "a declined moment wired as the last of 3,000 bound events reads missing" \
+  || bad "a declined moment wired as the last of 3,000 bound events reads missing" \
+         "got [$(_spm_rows "$_spm_out" SpmLastBound 2)]: the fixture does not reach the coverage check"
+
+# ------------------------------------------ felix_coverage_check, wired ----
+printf 'SpmFirstBound\twired\trefuse completion\nSpmLastBound\twired\trefuse completion\n' \
+  > "$_spm_cov/lifecycle.tsv"
+_spm_out="$( . "$FROOT/harness/lib/coverage.sh"; felix_coverage_check "$_spm_cov" "$_spm_cov/hooks.json" )"
+_spm_line "$_spm_out" "ok	SpmFirstBound	refuse completion" \
+  && ok  "a wired moment bound as the first of 3,000 bound events reads ok" \
+  || bad "a wired moment bound as the first of 3,000 bound events reads ok" \
+         "got [$(_spm_rows "$_spm_out" SpmFirstBound 2)]: the early exit read a binding that is there as absent, and a wired hook was reported as nothing wiring it"
+_spm_line "$_spm_out" "ok	SpmLastBound	refuse completion" \
+  && ok  "a wired moment bound as the last of 3,000 bound events reads ok" \
+  || bad "a wired moment bound as the last of 3,000 bound events reads ok" \
+         "got [$(_spm_rows "$_spm_out" SpmLastBound 2)]: the fixture does not reach the coverage check"
+
+# ------------------------------------------- felix_coverage_unconsidered ----
+_spm_out="$( HOME="$_spm_home"; . "$FROOT/harness/lib/coverage.sh"; felix_coverage_unconsidered "$_spm_unc" )"
+_spm_line "$_spm_out" "SpmFirstKnown" \
+  && bad "a bound moment on the first row of a 3,000-row stance table is not named unconsidered" \
+         "it was named: grep -q left at row 1, the table's writer died of SIGPIPE, and a moment the table considers read as one it has never heard of" \
+  || ok  "a bound moment on the first row of a 3,000-row stance table is not named unconsidered"
+_spm_line "$_spm_out" "SpmLastKnown" \
+  && bad "a bound moment on the last row of a 3,000-row stance table is not named unconsidered" \
+         "it was named, so the fixture does not reach the membership test: got [$(printf '%s' "$_spm_out" | tr '\n' ' ')]" \
+  || ok  "a bound moment on the last row of a 3,000-row stance table is not named unconsidered"
+_spm_line "$_spm_out" "SpmNeverListed" \
+  && ok  "a bound moment the 3,000-row stance table never lists is named unconsidered" \
+  || bad "a bound moment the 3,000-row stance table never lists is named unconsidered" \
+         "got [$(printf '%s' "$_spm_out" | tr '\n' ' ')]: the fixture HOME's bindings were not read"
+
+# -------------------------------------------------- felix_candidates_rules ----
+_spm_out="$( ( FELIX_MEMORY="$_spm_cmem"
+               . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/probes.sh"
+               . "$FROOT/harness/lib/obligations.sh"; . "$FROOT/harness/lib/epoch.sh"
+               . "$FROOT/harness/lib/candidates.sh"
+               felix_candidates_rules "$_spm_cp" "$_spm_cr" ) 2>/dev/null )"
+_spm_line "$_spm_out" "refuse	spm_admitted_obligation_name_00001	already admitted in obligations.tsv" \
+  && ok  "a candidate repeating the first of 9,000 admitted obligations is refused as already admitted" \
+  || bad "a candidate repeating the first of 9,000 admitted obligations is refused as already admitted" \
+         "got [$(_spm_rows "$_spm_out" spm_admitted_obligation_name_00001 2)]: the early exit read an admitted name as absent, and a duplicate of the ledger went on toward acceptance"
+_spm_line "$_spm_out" "refuse	spm_admitted_obligation_name_09000	already admitted in obligations.tsv" \
+  && ok  "a candidate repeating the last of 9,000 admitted obligations is refused as already admitted" \
+  || bad "a candidate repeating the last of 9,000 admitted obligations is refused as already admitted" \
+         "got [$(_spm_rows "$_spm_out" spm_admitted_obligation_name_09000 2)]: the fixture does not reach the admitted test"
+_spm_line "$_spm_out" "accept	$_spm_c3" \
+  && ok  "a candidate grounded on the first of 9,000 declared probes is accepted" \
+  || bad "a candidate grounded on the first of 9,000 declared probes is accepted" \
+         "got [$(_spm_rows "$_spm_out" spm_grounded_on_first 2)]: the early exit read a declared probe as undeclared, and a grounded proposal was refused as a fabrication"
+_spm_line "$_spm_out" "accept	$_spm_c4" \
+  && ok  "a candidate grounded on the last of 9,000 declared probes is accepted" \
+  || bad "a candidate grounded on the last of 9,000 declared probes is accepted" \
+         "got [$(_spm_rows "$_spm_out" spm_grounded_on_last 2)]: the fixture does not reach the grounds test"
+
+# -------------------------------------------------- felix_commission_gaps ----
+_spm_out="$( ( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/detect.sh"
+               . "$FROOT/harness/lib/stack.sh"; . "$FROOT/harness/lib/probes.sh"
+               . "$FROOT/harness/lib/verify.sh"; . "$FROOT/harness/lib/toolbox.sh"
+               . "$FROOT/harness/lib/commission.sh"
+               felix_commission_gaps "$_spm_gp" "$_spm_gr" ) 2>/dev/null )"
+_spm_line "$_spm_out" "spmcapmany	yes	no	no" \
+  && ok  "a capability 6,000 stack rows serve is reported served among the gaps" \
+  || bad "a capability 6,000 stack rows serve is reported served among the gaps" \
+         "got [$(_spm_rows "$_spm_out" spmcapmany 1)]: grep -q left at awk's first row, awk died of SIGPIPE, and a served capability was named a gap"
+_spm_line "$_spm_out" "spmcaplast	yes	no	no" \
+  && ok  "a capability only the last stack row serves is reported served among the gaps" \
+  || bad "a capability only the last stack row serves is reported served among the gaps" \
+         "got [$(_spm_rows "$_spm_out" spmcaplast 1)]: the fixture does not reach the served test"
+
+printf '\nthe ledger, the grant listing and the pre-flight read a long list to its end\n'
+# Each of these asked whether a value is one line of a list by piping the list
+# into `grep -q`, under the suite's and the engine's `set -o pipefail`. grep
+# stops reading at its first match; the writer's next write then meets a closed
+# pipe, the writer dies of SIGPIPE, pipefail makes the pipeline 141, and the
+# test reads "not there" for a line that is there. Past a pipe's capacity
+# (64 KB) with the match on an early line that happens every time, so each
+# fixture below holds a list of several hundred KB with the line asked about
+# first, beside the same fixture with it last: the last line can never be
+# missed this way, so the second says the fixture reaches the test at all.
+_spg_root="$TMP/_spg"
+mkdir -p "$_spg_root"
+
+# The sessions nobody typed into. _felix_ledger_machine_sessions prints them
+# from says.log in awk's own order, so which session is first and which is last
+# is read from what it prints, not assumed. A home holds one of those sessions
+# unfolded beside a person's, and both belong to this fixture's repository, so
+# the walk reaches the membership test for each.
+_spg_L="$_spg_root/ledger"
+_spg_LP="$_spg_L/proj/spgledger"
+mkdir -p "$_spg_L/mem/spgledger" "$_spg_LP" "$_spg_L/repo"
+( cd "$_spg_L/repo" && git init -q -b main \
+  && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m spg )
+_spg_sha="$(git -C "$_spg_L/repo" rev-parse HEAD 2>/dev/null)"
+# The opening's first 200 characters as a brief row keeps them, read from
+# route.sh rather than copied, with a stamp before the day it gives.
+_spg_open="$( . "$FROOT/harness/lib/route.sh"; printf '%s' "${_FELIX_ROUTE_SESSION_REQUESTS[0]:0:200}" )"
+_SPG_OPEN="$_spg_open" LC_ALL=C awk 'BEGIN {
+    o = ENVIRON["_SPG_OPEN"]
+    for (i = 1; i <= 8000; i++)
+      printf "2026-09-10T08:00:00Z\tbrief\tspg-machine-%05d-0123456789abcdef0123456789\t%s\tUse this now\n", i, o
+  }' > "$_spg_L/mem/spgledger/says.log"
+_spg_machine() { ( FELIX_MEMORY="$_spg_L/mem"; export FELIX_MEMORY
+                   . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/ledger.sh"
+                   _felix_ledger_machine_sessions "$_spg_LP" ) 2>/dev/null; }
+_spg_ms="$(_spg_machine)"
+_spg_m1="$(printf '%s\n' "$_spg_ms" | sed -n 1p)"
+_spg_mN="$(printf '%s\n' "$_spg_ms" | sed -n '$p')"
+if [ "${#_spg_ms}" -gt 262144 ] && [ -n "$_spg_m1" ] && [ -n "$_spg_mN" ] && [ "$_spg_m1" != "$_spg_mN" ] \
+   && [ -n "$_spg_sha" ]; then
+  ok  "the machine-session fixture lists more than a pipe holds, with a first and a last session"
+else
+  bad "the machine-session fixture lists more than a pipe holds, with a first and a last session" \
+      "${#_spg_ms} bytes, first [$_spg_m1], last [$_spg_mN], sha [$_spg_sha]"
+fi
+_spg_home() {    # dir, machine session, person session: two unfolded sessions this repository owns
+  mkdir -p "$1/state/ledger" "$1/state/session"
+  printf '%s\n' "$_spg_sha" > "$1/state/session/$2"
+  printf '%s\n' "$_spg_sha" > "$1/state/session/$3"
+  printf 'named\tsuperpowers:systematic-debugging\n' > "$1/state/ledger/$2.tsv"
+  printf 'tool\tRead\n' > "$1/state/ledger/$3.tsv"
+}
+_spg_home "$_spg_L/first" "$_spg_m1" spg-person-first
+_spg_home "$_spg_L/last"  "$_spg_mN" spg-person-last
+# Sourced the way session-start sources it, ledger.sh without route.sh.
+_spg_ledger() {  # fn, home
+  ( FELIX_MEMORY="$_spg_L/mem"; export FELIX_MEMORY
+    . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/ledger.sh"
+    "$1" "$_spg_LP" "$2" "$_spg_L/repo" ) 2>&1
+}
+_spg_out="$(_spg_ledger felix_ledger_stranded "$_spg_L/first")"
+[ "$_spg_out" = "1" ] \
+  && ok  "session-start does not count the first of many machine sessions as stranded, only the person's beside it" \
+  || bad "session-start does not count the first of many machine sessions as stranded, only the person's beside it" \
+         "counted [$_spg_out], expected [1]: the machine session was missed in the list and counted stranded, so the banner carries a caveat it did not need"
+is "nor the last of many machine sessions" \
+   "$(_spg_ledger felix_ledger_stranded "$_spg_L/last")" "1"
+_spg_out="$(_spg_ledger felix_ledger_catchup "$_spg_L/first")"
+[ "$_spg_out" = "1" ] \
+  && ok  "felix ledger folds the person's session and passes over the first of many machine sessions" \
+  || bad "felix ledger folds the person's session and passes over the first of many machine sessions" \
+         "folded [$_spg_out], expected [1]: the machine session was missed in the list and rolled up with the person's"
+[ -f "$_spg_L/mem/spgledger/ledger.d/$_spg_m1.tsv" ] \
+  && bad "and writes no fold for that machine session into memory" \
+         "ledger.d/$_spg_m1.tsv was written: the session was missed in the list and rolled up" \
+  || ok  "and writes no fold for that machine session into memory"
+[ -f "$_spg_L/mem/spgledger/ledger.d/spg-person-first.tsv" ] \
+  && ok  "while the person's session beside that machine session is folded" \
+  || bad "while the person's session beside that machine session is folded" "no ledger.d/spg-person-first.tsv"
+_spg_out="$(_spg_ledger felix_ledger_catchup "$_spg_L/last")"
+if [ "$_spg_out" = "1" ] && [ ! -f "$_spg_L/mem/spgledger/ledger.d/$_spg_mN.tsv" ] \
+   && [ -f "$_spg_L/mem/spgledger/ledger.d/spg-person-last.tsv" ]; then
+  ok  "and felix ledger passes over the last of many machine sessions the same way"
+else
+  bad "and felix ledger passes over the last of many machine sessions the same way" \
+      "folded [$_spg_out]; $(ls "$_spg_L/mem/spgledger/ledger.d" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# Grants at the base ref, against what this tree holds. A row the base holds is
+# merged, whatever else the base holds; listed as written-and-not-merged it
+# tells the person a grant is not yet one when it is. The base holds thousands
+# of well-formed rows; this tree holds one of them and one row of its own, and
+# only its own is unmerged.
+_spg_X="$_spg_root/exc"
+mkdir -p "$_spg_X/projects/spgexc"
+LC_ALL=C awk 'BEGIN {
+    for (i = 1; i <= 8000; i++)
+      printf "spg-grant-%05d\t0123456789abcdef\t2027-06-30T12:00:00Z\tfounder\ta grant the fixture merged, number %05d\n", i, i
+  }' > "$_spg_X/projects/spgexc/exceptions.tsv"
+( cd "$_spg_X" && git init -q -b main && git add projects \
+  && git -c user.name=t -c user.email=t@t commit -q -m spg \
+  && git update-ref refs/remotes/origin/main HEAD )
+_spg_XP="$_spg_X/projects/spgexc"
+_spg_x1="$(sed -n 1p "$_spg_XP/exceptions.tsv")"
+_spg_xN="$(sed -n '$p' "$_spg_XP/exceptions.tsv")"
+_spg_xnew="$(printf 'spg-written\t0123456789abcdef\t2027-06-30T12:00:00Z\tfounder\twritten here and not merged')"
+_spg_xbase="$( . "$FROOT/harness/lib/exceptions.sh"; felix_exceptions_at_base "$_spg_XP" 2>/dev/null )"
+if [ "${#_spg_xbase}" -gt 262144 ] && [ "$(printf '%s\n' "$_spg_xbase" | sed -n 1p)" = "$_spg_x1" ]; then
+  ok  "the grant fixture's base ref holds more than a pipe holds, starting with the row asked about"
+else
+  bad "the grant fixture's base ref holds more than a pipe holds, starting with the row asked about" \
+      "${#_spg_xbase} bytes at refs/remotes/origin/main"
+fi
+_spg_unmerged() { ( . "$FROOT/harness/lib/exceptions.sh"; felix_exceptions_unmerged "$_spg_XP" ) 2>&1; }
+printf '%s\n%s\n' "$_spg_x1" "$_spg_xnew" > "$_spg_XP/exceptions.tsv"
+_spg_out="$(_spg_unmerged)"
+[ "$_spg_out" = "$_spg_xnew" ] \
+  && ok  "a grant merged first among thousands is not listed as written and not merged" \
+  || bad "a grant merged first among thousands is not listed as written and not merged" \
+         "listed [$_spg_out]: the merged grant was missed at the base ref and shown as not yet a grant"
+printf '%s\n%s\n' "$_spg_xN" "$_spg_xnew" > "$_spg_XP/exceptions.tsv"
+is "nor a grant merged last among thousands" \
+   "$(_spg_unmerged)" "$_spg_xnew"
+
+# The pre-flight's second look, for a plugin compiled into the binary. The CLI
+# here is a stand-in that lists nothing, so the only answer is the inventory's:
+# several hundred KB of plugins, the one asked about first, and then last. This
+# one could not miss even through the pipe: felix_ready_inventory ends in
+# `return 0`, so the sort that dies of SIGPIPE under an early match is not the
+# status pipefail reads. So these are not red on the old engine; they hold that
+# the test which replaces the pipe keeps the verdict at this size.
+_spg_R="$_spg_root/ready"
+mkdir -p "$_spg_R/bin" "$_spg_R/home/.claude/plugins" "$_spg_R/proj"
+printf '#!/bin/sh\nprintf "[]\\n"\n' > "$_spg_R/bin/claude"; chmod +x "$_spg_R/bin/claude"
+{ printf '{\n  "version": 2,\n  "plugins": {\n'
+  printf '    "spga@spgmkt": [\n      {}\n    ],\n'
+  LC_ALL=C awk 'BEGIN { for (i = 1; i <= 16000; i++) printf "    \"spgm%05d-bundled-filler@spgmkt\": [\n      {}\n    ],\n", i }'
+  printf '    "spgz@spgmkt": [\n      {}\n    ]\n  }\n}\n'
+} > "$_spg_R/home/.claude/plugins/installed_plugins.json"
+_spg_inv="$( HOME="$_spg_R/home" PATH="$_spg_R/bin:/usr/bin:/bin"
+             . "$FROOT/harness/lib/ready.sh"; felix_ready_inventory 2>/dev/null )"
+if [ "${#_spg_inv}" -gt 262144 ] \
+   && [ "$(printf '%s\n' "$_spg_inv" | sed -n 1p)" = "plugin	spga" ] \
+   && [ "$(printf '%s\n' "$_spg_inv" | sed -n '$p')" = "plugin	spgz" ]; then
+  ok  "the pre-flight fixture's inventory holds more than a pipe holds, the plugin asked about first and last"
+else
+  bad "the pre-flight fixture's inventory holds more than a pipe holds, the plugin asked about first and last" \
+      "${#_spg_inv} bytes, first [$(printf '%s\n' "$_spg_inv" | sed -n 1p)], last [$(printf '%s\n' "$_spg_inv" | sed -n '$p')]"
+fi
+_spg_ready() {   # owner: the report for one play of that owner, declared in stack.tsv
+  printf 'plugin\t%s@spgmkt\t-\tlow\talways\n' "$1" > "$_spg_R/proj/stack.tsv"
+  printf 'spgroute\tspg\tcore\t%s:thing\n' "$1" > "$_spg_R/proj/routes.tsv"
+  ( HOME="$_spg_R/home" PATH="$_spg_R/bin:/usr/bin:/bin"
+    . "$FROOT/harness/lib/ready.sh"; felix_ready_report "$_spg_R/proj" ) 2>&1
+}
+is "a bundled plugin first among many in the inventory reads as usable" \
+   "$(_spg_ready spga)" "usable	spga:thing	bundled, live in every session"
+is "and a bundled plugin last among them" \
+   "$(_spg_ready spgz)" "usable	spgz:thing	bundled, live in every session"
+
+printf '\nthe CLI reads an answer to its end before it decides on it\n'
+# Three CLI verdicts rested on `producer | grep -q`, and under pipefail that
+# reads "absent" whenever grep matches and leaves while the producer still has
+# lines to write: the producer's next write is EPIPE, it dies 141, and the
+# pipeline's status is 141. Each fixture below makes the producer's output far
+# larger than a pipe holds with the match on its first line, which turns the
+# race into a certainty, and pairs it with the same call whose match is on the
+# LAST line, which no reader can leave early. The pair is what keeps a red here
+# honest: a fixture the engine rejected for some other reason would fail the
+# control too.
+#
+# A home and a memory root of this block's own, so no project the rest of the
+# suite counts or iterates gains a neighbour.
+_spc_home="$TMP/_spc_home"; _spc_mem="$TMP/_spc_mem"; _spc_kc="$TMP/_spc_kc"
+_spc_proj="$_spc_home/projects/_spc_cli"
+mkdir -p "$_spc_proj" "$_spc_mem"
+printf '{"name":"_spc_cli","gate":"true"}\n' > "$_spc_proj/project.json"
+printf '# _spc_cli\n' > "$_spc_proj/CLAUDE.md"
+_spc_repo="$TMP/_spc_repo"; mkdir -p "$_spc_repo"
+( cd "$_spc_repo" && git init -q -b main && printf '_spc_cli\n' > .felix && printf 'x\n' > a.txt \
+  && git add -A >/dev/null && git -c user.name=t -c user.email=t@t commit -qm base >/dev/null )
+_spc_repo="$(cd "$_spc_repo" && pwd -P)"
+_spc_felix() { ( _spc_at="$1"; shift; cd "$_spc_at" || exit 99
+                 FELIX_KERNEL='' FELIX_KERNEL_CACHE="$_spc_kc" FELIX_HOME="$_spc_home" FELIX_MEMORY="$_spc_mem" \
+                   "$FELIX" "$@" ); }
+
+# felix maintenance --ran. The name is checked against `_felix_maint_rows | cut
+# -f1`, and a false miss dies `no routine named X` for a routine the table
+# declares, so a run that happened goes unrecorded.
+awk 'BEGIN { for (i = 1; i <= 20000; i++) printf "routine-%06d\t7\talways\tupkeep number %d\n", i, i }' \
+  > "$_spc_proj/maintenance.tsv"
+_spc_n="$(cut -f1 "$_spc_proj/maintenance.tsv" | wc -c | tr -d ' ')"
+[ "${_spc_n:-0}" -ge 262144 ] \
+  && ok "the maintenance fixture names more routines than a pipe holds" \
+  || bad "the maintenance fixture names more routines than a pipe holds" "only ${_spc_n:-0} bytes of names"
+_spc_out="$(_spc_felix "$_spc_repo" maintenance --ran routine-000001 2>&1)"; _spc_rc=$?
+if [ "$_spc_rc" -eq 0 ] && grep -q '^routine-000001	' "$_spc_proj/maintenance.log" 2>/dev/null; then
+  has "a run of the first routine is recorded however many routines follow it" "$_spc_out" "recorded a run of routine-000001"
+else
+  bad "a run of the first routine is recorded however many routines follow it" \
+      "the routine is row 1 of the table and the run was refused and not logged (rc=$_spc_rc): $_spc_out"
+fi
+_spc_out="$(_spc_felix "$_spc_repo" maintenance --ran routine-020000 2>&1)"; _spc_rc=$?
+if [ "$_spc_rc" -eq 0 ] && grep -q '^routine-020000	' "$_spc_proj/maintenance.log" 2>/dev/null; then
+  has "and a run of the last routine is recorded too" "$_spc_out" "recorded a run of routine-020000"
+else
+  bad "and a run of the last routine is recorded too" "rc=$_spc_rc: $_spc_out"
+fi
+# A routine name is one line. A value holding a newline names no routine, even
+# when its lines are two routines next to each other in the table: logged, it
+# leaves a line with no epoch, and that routine reads as never run. The lines
+# are the table's last two, so no early exit is what refuses them.
+_spc_out="$(_spc_felix "$_spc_repo" maintenance --ran "$(printf 'routine-019999\nroutine-020000')" 2>&1)"; _spc_rc=$?
+if [ "$_spc_rc" -ne 0 ] && ! grep -q '^routine-019999' "$_spc_proj/maintenance.log" 2>/dev/null; then
+  ok  "a routine name holding a newline is refused, even when its lines are two adjacent routines"
+else
+  bad "a routine name holding a newline is refused, even when its lines are two adjacent routines" \
+      "the two-line name was taken for a routine and logged, leaving a line with no epoch (rc=$_spc_rc): $_spc_out"
+fi
+
+# felix evidence. A base that resolves to nothing yields one `unknown` row and
+# no other, and the report must end on it and exit 1 (#63). A false miss falls
+# through to the rendering, which has no arm for `unknown`, and signs off with
+# "No evidence gaps." and exit 0: the false all-clear #56 removed. The row is
+# multi-line only when the base NAME holds newlines — nothing else puts text
+# after it — so that is the fixture.
+#
+# Sourced and called rather than executed, and only for this one: Linux caps a
+# single argv string at 128 KB (MAX_ARG_STRLEN), under the margin that makes
+# the race certain, and a refusal from execve would be red for the wrong
+# reason. The git calls inside meet the same cap there and fail, which reads
+# as "does not resolve" — the answer this base gets anyway.
+printf 'unit\t^src/\t^tests?/\tcode changes need a test\n' > "$_spc_proj/evidence.tsv"
+_spc_big="$(awk 'BEGIN { for (i = 1; i <= 20000; i++) printf "no-such-ref-%06d\n", i }')"
+_spc_one="$(printf '%s' "$_spc_big" | tr '\n' '-')"
+[ "${#_spc_big}" -ge 262144 ] \
+  && ok "the evidence fixture's base is larger than a pipe holds" \
+  || bad "the evidence fixture's base is larger than a pipe holds" "only ${#_spc_big} bytes"
+_spc_ev() { ( _spc_b="$1"; cd "$_spc_repo" || exit 99
+              export FELIX_HOME="$_spc_home" FELIX_MEMORY="$_spc_mem"
+              . "$FELIX" help >/dev/null 2>&1
+              cmd_evidence --base "$_spc_b" ) > "$TMP/_spc_ev.out" 2>&1; }
+_spc_ev "$_spc_big"; _spc_rc=$?
+_spc_tail="$(tail -n 4 "$TMP/_spc_ev.out")"
+case "$_spc_rc:$_spc_tail" in
+  *"No evidence gaps"*)
+    bad "an unknown evidence row is not an all-clear however much text follows it" \
+        "the unknown row was missed and the report signed off (rc=$_spc_rc): $_spc_tail" ;;
+  "1:"*"Nothing was compared"*)
+    ok  "an unknown evidence row is not an all-clear however much text follows it" ;;
+  *)
+    bad "an unknown evidence row is not an all-clear however much text follows it" "rc=$_spc_rc: $_spc_tail" ;;
+esac
+# The control: the same base, the same size, as one line. One line is the last
+# line, and grep cannot call it matched before it has read all of it.
+_spc_ev "$_spc_one"; _spc_rc=$?
+_spc_tail="$(tail -n 4 "$TMP/_spc_ev.out")"
+case "$_spc_rc:$_spc_tail" in
+  "1:"*"Nothing was compared"*) ok  "and a base of the same size on one line is reported unknown too" ;;
+  *)                            bad "and a base of the same size on one line is reported unknown too" "rc=$_spc_rc: $_spc_tail" ;;
+esac
+
+# felix merge. A self-governed branch that touches engine/harness/ is refused
+# when the judge is byte-identical to the tree it judges. The test reads
+# felix_changed_paths, which ends in `sort -u`, and a false miss skips the
+# refusal: the candidate is judged by itself. Two checkouts that differ only in
+# where the engine path sorts among 700 long changed paths — first, under zz/,
+# and last, under aa/. The engine in them is one file, so main's missing
+# resolve.sh is what the next check trips on if this one is skipped, and
+# nothing here reaches a receipt or gh.
+_spc_mgrepo() {   # dir, top directory of the filler
+  _spc_d="$1"; _spc_top="$2"; _spc_i=1
+  mkdir -p "$_spc_d/engine/.claude-plugin" "$_spc_d/engine/harness/lib"
+  printf '{ "version": "1.0.0" }\n' > "$_spc_d/engine/.claude-plugin/plugin.json"
+  printf '# judged\n' > "$_spc_d/engine/harness/lib/x.sh"
+  printf '_spc_cli\n' > "$_spc_d/.felix"
+  ( cd "$_spc_d" && git init -q -b main && git add -A >/dev/null \
+    && git -c user.name=t -c user.email=t@t commit -qm base >/dev/null && git checkout -q -b feature )
+  printf -v _spc_long '%0200d' 0
+  mkdir -p "$_spc_d/$_spc_top/$_spc_long"
+  while [ "$_spc_i" -le 700 ]; do
+    printf -v _spc_f 'f%0199d' "$_spc_i"; : > "$_spc_d/$_spc_top/$_spc_long/$_spc_f"
+    _spc_i=$((_spc_i + 1))
+  done
+  printf '# candidate edit\n' >> "$_spc_d/engine/harness/lib/x.sh"
+  ( cd "$_spc_d" && git add -A >/dev/null && git -c user.name=t -c user.email=t@t commit -qm candidate >/dev/null )
+}
+_spc_early="$TMP/_spc_mg_early"; _spc_late="$TMP/_spc_mg_late"
+_spc_mgrepo "$_spc_early" zz; _spc_mgrepo "$_spc_late" aa
+_spc_early="$(cd "$_spc_early" && pwd -P)"; _spc_late="$(cd "$_spc_late" && pwd -P)"
+# The judge for main's version, cut from the candidate: identical to the tree.
+mkdir -p "$_spc_kc/1.0.0"
+cp -R "$_spc_early/engine/harness" "$_spc_kc/1.0.0/harness"
+git -C "$_spc_early" diff --name-only --no-renames 'HEAD~1...HEAD' | LC_ALL=C sort -u > "$TMP/_spc_mg.paths"
+_spc_n="$(wc -c < "$TMP/_spc_mg.paths" | tr -d ' ')"; _spc_first="$(head -1 "$TMP/_spc_mg.paths")"
+if [ "${_spc_n:-0}" -ge 262144 ] && [ "$_spc_first" = "engine/harness/lib/x.sh" ]; then
+  ok "the merge fixture changes more paths than a pipe holds, the engine's first"
+else
+  bad "the merge fixture changes more paths than a pipe holds, the engine's first" "${_spc_n:-0} bytes, first: $_spc_first"
+fi
+_spc_felix "$_spc_early" merge --base HEAD~1 > "$TMP/_spc_mg.out" 2>&1; _spc_rc=$?
+if [ "$_spc_rc" -eq 1 ] && grep -q 'judging itself' "$TMP/_spc_mg.out"; then
+  ok "a judge identical to the tree is refused when the engine path sorts first of many"
+else
+  bad "a judge identical to the tree is refused when the engine path sorts first of many" \
+      "the engine change was missed and the candidate went on to be judged by itself (rc=$_spc_rc): $(cat "$TMP/_spc_mg.out")"
+fi
+_spc_felix "$_spc_late" merge --base HEAD~1 > "$TMP/_spc_mg.out" 2>&1; _spc_rc=$?
+if [ "$_spc_rc" -eq 1 ] && grep -q 'judging itself' "$TMP/_spc_mg.out"; then
+  ok "and the judge is refused when the engine path sorts last"
+else
+  bad "and the judge is refused when the engine path sorts last" "rc=$_spc_rc: $(cat "$TMP/_spc_mg.out")"
+fi
+
+printf '\nqualification, commissioning, adoption, the ledger and routes read a long list to its end\n'
+# Eight more engine tests asked whether a value is one line of a list by piping
+# the list into grep under pipefail. Two used grep -q (qualify.sh). Six used a
+# grep with no early option and its standard output on /dev/null, which GNU
+# grep, the grep on Linux, treats as -q: it stops at its first match. Either
+# way the writer's next write meets a closed pipe, it dies of SIGPIPE, pipefail
+# makes the pipeline 141, and a line that is there reads as absent. Past a
+# pipe's 64 KB with the match early that happens every time, so each list below
+# is well over 256 KB with the line asked about first, beside the same question
+# about the LAST line, which no early exit can miss: that control is what shows
+# the fixture reaches the test, so a red is the race and not a broken fixture.
+# Two more readers kept a first line with head, and are at the end.
+_spa="$TMP/_spa"; mkdir -p "$_spa"
+_spa_nl='
+'
+# Whole-line membership in captured output, read without a pipe.
+_spa_line() { case "$_spa_nl$1$_spa_nl" in *"$_spa_nl$2$_spa_nl"*) return 0 ;; esac; return 1; }
+_spa_first() { printf '%s' "${1%%"$_spa_nl"*}"; }
+_spa_last()  { printf '%s' "${1##*"$_spa_nl"}"; }
+# The rows of captured output whose column $3 is $2, for a failure message.
+_spa_rows()  { _SPA_K="$2" awk -F'\t' -v c="$3" '$c == ENVIRON["_SPA_K"]' <<<"$1" | cut -c1-120 | tr '\n' ' '; }
+# Ninety characters of filler, so a few thousand names make a few hundred KB.
+_spa_pad="$(awk 'BEGIN { s = sprintf("%090d", 0); gsub(/0/, "x", s); print s }')"
+
+# ------------------------------------------------------------- fixtures ----
+# felix_qualify_missing_controls reads one checker's declared controls. Its
+# first row declares violation, 25,000 declare restoration, and its last row
+# declares irrelevant; the other three it never declares.
+_spa_qm="$_spa/qual-missing"; mkdir -p "$_spa_qm"
+awk 'BEGIN {
+  printf "spa-big\ttrue\tviolation\tfail\ttrue\n"
+  for (i = 1; i <= 25000; i++) printf "spa-big\ttrue\trestoration\tpass\ttrue\n"
+  printf "spa-big\ttrue\tirrelevant\tpass\ttrue\n" }' > "$_spa_qm/qualification.tsv"
+
+# felix_qualify_ungoverned reads every qualified checker name after a C-locale
+# sort: spa-a-first, 3,000 fillers, spa-z-last. The gate prints the first, the
+# last, and one the table never qualifies.
+_spa_qu="$_spa/qual-ungoverned"; mkdir -p "$_spa_qu"
+awk -v pad="$_spa_pad" 'BEGIN {
+  printf "spa-a-first\ttrue\tviolation\tfail\ttrue\n"
+  for (i = 1; i <= 3000; i++) printf "spa-m-%s-%05d\ttrue\tviolation\tfail\ttrue\n", pad, i
+  printf "spa-z-last\ttrue\tviolation\tfail\ttrue\n" }' > "$_spa_qu/qualification.tsv"
+_spa_gate="$(printf 'felix gate\n  spa-a-first            ok\n  spa-never-qualified    ok\n  spa-z-last             FAIL\n')"
+
+# One stack.tsv for commissioning's admit and apply and for discovery's adopt:
+# each reads its names without the marketplace suffix. spa-a-first is the first
+# row, 3,000 fillers follow, spa-z-last is the last.
+_spa_C="$_spa/commission"
+mkdir -p "$_spa_C/spa-admit" "$_spa_C/spa-apply" "$_spa_C/spa-adopt" "$_spa_C/mem/spa-admit/commission" \
+         "$_spa_C/home" "$_spa_C/bin" "$_spa_C/tmp" "$_spa_C/dhome/state/discover"
+awk -v pad="$_spa_pad" 'BEGIN {
+  printf "# kind\tname\tsource\trisk\tcapability\tgrounding\n"
+  printf "plugin\tspa-a-first@spamkt\t-\tlow\tspacap\n"
+  for (i = 1; i <= 3000; i++) printf "plugin\tspa-m-%s-%05d@spamkt\t-\tlow\tspacap\n", pad, i
+  printf "plugin\tspa-z-last@spamkt\t-\tlow\tspacap\n" }' > "$_spa_C/stack.tsv"
+cp "$_spa_C/stack.tsv" "$_spa_C/spa-admit/stack.tsv"
+cp "$_spa_C/stack.tsv" "$_spa_C/spa-apply/stack.tsv"
+cp "$_spa_C/stack.tsv" "$_spa_C/spa-adopt/stack.tsv"
+# The admit phase's answer: the first declared name, the last, and one nobody
+# declared. A claude that lists nothing and a HOME with no registry send that
+# last one to `unknown` offline, so a declared name missed in the list would too.
+printf 'plugin\tspa-a-first\tspa-source\tspacap\tnamed first in stack.tsv\nplugin\tspa-z-last\tspa-source\tspacap\tnamed last in stack.tsv\nplugin\tspa-new\tspa-source\tspacap\tnamed nowhere\ndone\t3\n' \
+  > "$_spa_C/mem/spa-admit/commission/spa_need.tsv"
+printf '#!/bin/sh\nexit 1\n' > "$_spa_C/bin/claude"; chmod +x "$_spa_C/bin/claude"
+_spa_commission() {   # fn, args... under the fixture's memory, HOME, claude and scratch
+  ( FELIX_MEMORY="$_spa_C/mem" HOME="$_spa_C/home" PATH="$_spa_C/bin:$PATH" TMPDIR="$_spa_C/tmp"
+    export FELIX_MEMORY HOME PATH TMPDIR
+    . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/discover.sh"
+    . "$FROOT/harness/lib/commission-provider.sh"
+    "$@" ) 2>/dev/null
+}
+# Discovery's cache, stamped the way the engine stamps it, so adopt reads it.
+_spa_stamp="$( . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/discover.sh"
+               _felix_discover_stamp_line "$FROOT/harness/templates" )"
+printf '%s\nspa-a-first\tspacap\tlow\t-\nspa-z-last\tspacap\tlow\t-\nspa-new\tspacap\tlow\t-\n' "$_spa_stamp" \
+  > "$_spa_C/dhome/state/discover/spa-adopt.tsv"
+
+# The ledger's rollup. A name is long so a dozen signals make a few hundred KB,
+# and the kinds are chosen for the order sort gives them: agent first, mcp
+# fillers, tool last. So the first name reached for is spa-z:first-seen and the
+# last is spa-a:last-seen, and the named rows, sorted by name, ask about the
+# last one before the first: a first-row miss appends to the list and must not
+# move the control off the last line. Two sessions, so neither half's miss can
+# move the other's control.
+_spa_L="$_spa/ledger"
+mkdir -p "$_spa_L/home/state/ledger" "$_spa_L/mem" "$_spa_L/spa-ledger-named" "$_spa_L/spa-ledger-owner"
+_spa_signals="$(awk 'BEGIN {
+  s = "x"; while (length(s) < 25000) s = s s
+  printf "agent\tspa-z:first-seen\n"
+  for (i = 1; i <= 12; i++) printf "mcp\tspa-m-%s-%02d\n", substr(s, 1, 25000), i
+  printf "tool\tspa-a:last-seen\n" }')"
+printf '%s\nnamed\tspa-a:last-seen\nnamed\tspa-n:never-reached\nnamed\tspa-z:first-seen\n' "$_spa_signals" \
+  > "$_spa_L/home/state/ledger/spa-sess-named.tsv"
+printf '%s\n' "$_spa_signals" > "$_spa_L/home/state/ledger/spa-sess-owner.tsv"
+printf 'plugin\tspa-a@spamkt\t-\tlow\tspacap\nplugin\tspa-z@spamkt\t-\tlow\tspacap\nplugin\tspa-q@spamkt\t-\tlow\tspacap\n' \
+  > "$_spa_L/spa-ledger-owner/stack.tsv"
+_spa_rollup() {   # proj, session -> the fold it wrote
+  ( FELIX_MEMORY="$_spa_L/mem"; export FELIX_MEMORY
+    . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/ledger.sh"
+    felix_ledger_rollup "$_spa_L/$1" "$_spa_L/home" "$2" 2026-09-25 ) >/dev/null 2>&1
+  cat "$_spa_L/mem/$1/ledger.d/$2.tsv" 2>/dev/null
+}
+
+# felix_toolbox_routed reads the owner of every play the routes name.
+_spa_T="$_spa/toolbox/spa-toolbox"; mkdir -p "$_spa_T"
+awk -v pad="$_spa_pad" 'BEGIN {
+  printf "spa-route-first\tspa\tcore\tspa-a:thing\n"
+  for (i = 1; i <= 3000; i++) printf "spa-route-%05d\tspa\tcore\tspa-m-%s-%05d:thing\n", i, pad, i
+  printf "spa-route-last\tspa\tcore\tspa-z:thing\n" }' > "$_spa_T/routes.tsv"
+_spa_routed() { ( . "$FROOT/harness/lib/toolbox.sh"; felix_toolbox_routed "$_spa_T" "$1" ) >/dev/null 2>&1; }
+
+# The lists each test reads, measured here from the fixtures: every one is
+# well past a pipe's 64 KB, with the line asked about first and the control
+# last. A ledger list starts with an empty line (the engine builds it that way),
+# so its first name is its second line, which is as early as its writer allows.
+_spa_short=""
+_spa_fits() {   # label, list, first, last
+  [ "${#2}" -ge 262144 ] && [ "$(_spa_first "$2")" = "$3" ] && [ "$(_spa_last "$2")" = "$4" ] \
+    || _spa_short="$_spa_short $1 (${#2} bytes, first [$(_spa_first "$2" | cut -c1-40)], last [$(_spa_last "$2" | cut -c1-40)])"
+}
+_spa_fits felix_qualify_missing_controls \
+  "$( . "$FROOT/harness/lib/qualify.sh"; felix_qualify_rows "$_spa_qm" | awk -F'\t' '$1 == "spa-big" { print $3 }' )" \
+  violation irrelevant
+# The declared checkers, as felix_qualify_ungoverned reads them: the first
+# column of the rows, once each. felix_qualify_checkers did this until felix
+# gate stopped reading the table a second time and it had no caller left.
+_spa_fits felix_qualify_ungoverned \
+  "$( . "$FROOT/harness/lib/qualify.sh"; felix_qualify_rows "$_spa_qu" | LC_ALL=C cut -f1 | LC_ALL=C sort -u )" \
+  spa-a-first spa-z-last
+_spa_declared="$(grep -vE '^[[:space:]]*(#|$)' "$_spa_C/stack.tsv" | cut -f2 | sed 's/@.*//')"
+_spa_fits "felix_commission_admit, felix_commission_apply_declares, felix_discover_adopt" \
+  "$_spa_declared" spa-a-first spa-z-last
+_spa_fits "felix_ledger_rollup:seen" \
+  "$(sort -u "$_spa_L/home/state/ledger/spa-sess-named.tsv" | awk -F'\t' '$1 != "named" { print $2 }')" \
+  spa-z:first-seen spa-a:last-seen
+_spa_fits "felix_ledger_rollup:seen_owner" \
+  "$(sort -u "$_spa_L/home/state/ledger/spa-sess-owner.tsv" \
+       | awk -F'\t' '$1 != "named" { o = $2; sub(/:.*/, "", o); sub(/@.*/, "", o); print o }')" \
+  spa-z spa-a
+_spa_fits felix_toolbox_routed \
+  "$(grep -vE '^[[:space:]]*(#|$)' "$_spa_T/routes.tsv" | cut -f4 | tr ' ' '\n' | sed 's/:.*//')" \
+  spa-a spa-z
+[ -z "$_spa_short" ] \
+  && ok  "every list fixture below holds more than 256 KB with the line asked about first and the control last" \
+  || bad "every list fixture below holds more than 256 KB with the line asked about first and the control last" \
+         "too small or out of order, so a pass below would prove nothing:$_spa_short"
+
+# ------------------------------------------ felix_qualify_missing_controls ----
+# grep -q: red on the old engine on any host.
+_spa_out="$( . "$FROOT/harness/lib/qualify.sh"; felix_qualify_missing_controls "$_spa_qm" spa-big 2>/dev/null )"
+if [ "$_spa_out" = "alternate${_spa_nl}decoupled_violation${_spa_nl}decoupled_satisfaction" ]; then
+  ok  "a checker whose first of 25,000 rows declares a control is short only the three controls it never declares"
+else
+  bad "a checker whose first of 25,000 rows declares a control is short only the three controls it never declares" \
+      "reported missing [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: grep -qxF left at the first declared control, the list's writer died of SIGPIPE, pipefail read a declared control as missing, and the gate printed a shortfall the table does not have"
+fi
+if ! _spa_line "$_spa_out" irrelevant && _spa_line "$_spa_out" alternate \
+   && _spa_line "$_spa_out" decoupled_violation && _spa_line "$_spa_out" decoupled_satisfaction; then
+  ok  "and the control it declares only on its last row is not reported missing"
+else
+  bad "and the control it declares only on its last row is not reported missing" \
+      "reported missing [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: the fixture does not reach the membership test"
+fi
+
+# ------------------------------------------------ felix_qualify_ungoverned ----
+_spa_out="$( . "$FROOT/harness/lib/qualify.sh"; felix_qualify_ungoverned "$_spa_qu" "$_spa_gate" 2>/dev/null )"
+[ "$_spa_out" = "spa-never-qualified" ] \
+  && ok  "a checker the gate prints that sorts first of 3,002 qualified checkers is not called ungoverned" \
+  || bad "a checker the gate prints that sorts first of 3,002 qualified checkers is not called ungoverned" \
+         "called ungoverned [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: grep -qxF left at the first qualified checker, the roster's writer died of SIGPIPE, and a qualified checker was reported as a gap"
+if ! _spa_line "$_spa_out" spa-z-last && _spa_line "$_spa_out" spa-never-qualified; then
+  ok  "nor one that sorts last, while one no row qualifies is"
+else
+  bad "nor one that sorts last, while one no row qualifies is" \
+      "called ungoverned [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: the fixture does not reach the membership test"
+fi
+
+# ---------------------------------------- grep with its output on /dev/null ----
+# The six below are red on a host whose grep is GNU grep (ubuntu CI), where a
+# standard output of /dev/null makes grep stop at its first match. This Mac's
+# BSD grep reads to the end whatever its output is, so on the base engine they
+# pass here. Each asserts the verdict the engine owes, first and last.
+
+# felix_commission_admit, commission-provider.sh:390.
+_spa_out="$(_spa_commission felix_commission_admit "$_spa_C/spa-admit" "$FROOT" spa_need "$FROOT/harness/templates")"
+_spa_line "$_spa_out" "already	plugin	spa-a-first	-	-	-	named in stack.tsv already" \
+  && ok  "the admit phase answers already for a nomination stack.tsv declares first of 3,002 rows" \
+  || bad "the admit phase answers already for a nomination stack.tsv declares first of 3,002 rows" \
+         "got [$(_spa_rows "$_spa_out" spa-a-first 3)]: grep stopped at the first declared name, the list's writer died of SIGPIPE, and a declared plugin was treated as undeclared"
+if _spa_line "$_spa_out" "already	plugin	spa-z-last	-	-	-	named in stack.tsv already" \
+   && _spa_line "$_spa_out" "unknown	plugin	spa-new	-	-	-	nothing to fetch it by: no pinned url and sha in any configured marketplace"; then
+  ok  "and for one declared last, while one declared nowhere goes on to the fetch"
+else
+  bad "and for one declared last, while one declared nowhere goes on to the fetch" \
+      "got [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: the fixture does not reach the membership test"
+fi
+
+# felix_commission_apply_declares, commission-provider.sh:482. Each call starts
+# from the fixture's stack.tsv, so a row one call appends cannot fail the next.
+_spa_apply() { cp "$_spa_C/stack.tsv" "$_spa_C/spa-apply/stack.tsv"
+               _spa_commission felix_commission_apply_declares "$_spa_C/spa-apply" "$_spa_C" \
+                 "$(printf 'declare\tplugin\t%s@spamkt\tlow\tspacap\t0123456789abcdef\tthe fixture' "$1")" \
+                 spa-tree spa-policy spa_need; }
+_spa_out="$(_spa_apply spa-a-first)"
+if [ "$_spa_out" = "0" ] && cmp -s "$_spa_C/stack.tsv" "$_spa_C/spa-apply/stack.tsv"; then
+  ok  "applying a declare for the first of 3,002 stack rows appends nothing"
+else
+  bad "applying a declare for the first of 3,002 stack rows appends nothing" \
+      "applied [$_spa_out], last row now [$(tail -1 "$_spa_C/spa-apply/stack.tsv" | cut -c1-60)]: grep stopped at the first declared name and a row already in stack.tsv was appended again"
+fi
+_spa_out="$(_spa_apply spa-z-last)"
+if [ "$_spa_out" = "0" ] && cmp -s "$_spa_C/stack.tsv" "$_spa_C/spa-apply/stack.tsv"; then
+  ok  "nor for the last of them"
+else
+  bad "nor for the last of them" "applied [$_spa_out]: the fixture does not reach the membership test"
+fi
+_spa_out="$(_spa_apply spa-new)"
+if [ "$_spa_out" = "1" ] && [ "$(tail -1 "$_spa_C/spa-apply/stack.tsv")" = "$(printf 'plugin\tspa-new@spamkt\t-\tlow\tspacap\tOBSERVED')" ]; then
+  ok  "while a declare for a name no row holds appends its row"
+else
+  bad "while a declare for a name no row holds appends its row" \
+      "applied [$_spa_out], last row [$(tail -1 "$_spa_C/spa-apply/stack.tsv" | cut -c1-60)]: the fixture does not reach the append"
+fi
+
+# felix_discover_adopt, discover.sh:1407.
+_spa_out="$(_spa_commission felix_discover_adopt "$_spa_C/spa-adopt" "$_spa_C/dhome" "$FROOT/harness/templates")"
+_spa_line "$_spa_out" "already	spa-a-first	spacap	low" \
+  && ok  "adopt answers already for a candidate stack.tsv declares first of 3,002 rows" \
+  || bad "adopt answers already for a candidate stack.tsv declares first of 3,002 rows" \
+         "got [$(_spa_rows "$_spa_out" spa-a-first 2)]: grep stopped at the first declared name and an adopted candidate was declared again, a duplicate stack row"
+if _spa_line "$_spa_out" "already	spa-z-last	spacap	low" && _spa_line "$_spa_out" "declare	spa-new	spacap	low"; then
+  ok  "and for one declared last, while a low-risk candidate declared nowhere is declared"
+else
+  bad "and for one declared last, while a low-risk candidate declared nowhere is declared" \
+      "got [$(printf '%s' "$_spa_out" | tr '\n' ' ')]: the fixture does not reach the membership test"
+fi
+
+# felix_ledger_rollup, ledger.sh:467: a named row for a name already reached for.
+_spa_out="$(_spa_rollup spa-ledger-named spa-sess-named)"
+[ -z "$(awk -F'\t' '$3 == "named" && $4 == "spa-z:first-seen"' <<<"$_spa_out")" ] \
+  && ok  "the rollup writes no named row for the first name the session reached for" \
+  || bad "the rollup writes no named row for the first name the session reached for" \
+         "got [$(_spa_rows "$_spa_out" spa-z:first-seen 4)]: grep stopped at the first name seen and the name got a named row beside its own, written twice"
+if [ -z "$(awk -F'\t' '$3 == "named" && $4 == "spa-a:last-seen"' <<<"$_spa_out")" ] \
+   && _spa_line "$_spa_out" "spa-sess-named	2026-09-25	named	spa-n:never-reached	0	1" \
+   && _spa_line "$_spa_out" "spa-sess-named	2026-09-25	agent	spa-z:first-seen	1	1"; then
+  ok  "nor for the last, while a name nothing reached for gets its named row"
+else
+  bad "nor for the last, while a name nothing reached for gets its named row" \
+      "got [$(_spa_rows "$_spa_out" named 3)]: the fixture does not reach the membership test"
+fi
+
+# felix_ledger_rollup, ledger.sh:494: a zero row for an owner that was reached for.
+_spa_out="$(_spa_rollup spa-ledger-owner spa-sess-owner)"
+[ -z "$(_spa_rows "$_spa_out" spa-z@spamkt 4)" ] \
+  && ok  "the rollup writes no zero row for a declared plugin whose owner the session reached for first" \
+  || bad "the rollup writes no zero row for a declared plugin whose owner the session reached for first" \
+         "got [$(_spa_rows "$_spa_out" spa-z@spamkt 4)]: grep stopped at the first owner reached for, and a plugin that was used reads as pointed at and ignored"
+if [ -z "$(_spa_rows "$_spa_out" spa-a@spamkt 4)" ] \
+   && _spa_line "$_spa_out" "spa-sess-owner	2026-09-25	plugin	spa-q@spamkt	0	0"; then
+  ok  "nor for the owner it reached for last, while a declared plugin nothing reached for gets its zero row"
+else
+  bad "nor for the owner it reached for last, while a declared plugin nothing reached for gets its zero row" \
+      "got [$(_spa_rows "$_spa_out" plugin 3)]: the fixture does not reach the membership test"
+fi
+
+# felix_toolbox_routed, toolbox.sh:100.
+_spa_routed spa-a \
+  && ok  "a plugin the first of 3,002 routes names reads as routed" \
+  || bad "a plugin the first of 3,002 routes names reads as routed" \
+         "it read unrouted: grep stopped at the first play's owner, sed died of SIGPIPE, and pipefail made the route's plugin unrouted"
+if _spa_routed spa-z && ! _spa_routed spa-never-routed; then
+  ok  "and one the last route names, while one no route names reads as unrouted"
+else
+  bad "and one the last route names, while one no route names reads as unrouted" \
+      "the fixture does not reach the membership test"
+fi
+
+# ------------------------------------- head -1 where the status is read ----
+# Two readers kept the first line with `| head -1`, and their callers read the
+# status. head leaves after one line, so past a pipe's capacity the writer dies
+# of SIGPIPE and pipefail fails a read that found its line. The engine never
+# writes either input that large: it writes a night's state as one line, with
+# the note's newlines taken out, and the registry holds one installLocation per
+# entry. So no night or deploy of its own races, and these fixtures are the red
+# for readers that keep the first line by reading to the end, not a report of a
+# fault anyone has met. Red on the old engine on any host; each control is the
+# same input at its real size.
+
+# felix_overnight_field, overnight.sh:170, read by felix_overnight_active.
+_spa_O="$_spa/overnight"; mkdir -p "$_spa_O/mem/spa-night/overnight/nights" "$_spa_O/spa-night"
+_spa_now="$(date +%s)"
+printf '%s\t%s\t5\t0\tspa-sess-long\tthe fixture\n' "$_spa_now" "$((_spa_now + 36000))" \
+  > "$_spa_O/mem/spa-night/overnight/nights/spa-sess-long"
+awk -v pad="$_spa_pad" 'BEGIN { for (i = 1; i <= 3000; i++) printf "spa filler %s %05d\n", pad, i }' \
+  >> "$_spa_O/mem/spa-night/overnight/nights/spa-sess-long"
+printf '%s\t%s\t5\t0\tspa-sess-one\tthe fixture\n' "$_spa_now" "$((_spa_now + 36000))" \
+  > "$_spa_O/mem/spa-night/overnight/nights/spa-sess-one"
+_spa_active() { ( FELIX_MEMORY="$_spa_O/mem"; export FELIX_MEMORY
+                  . "$FROOT/harness/lib/resolve.sh"; . "$FROOT/harness/lib/overnight.sh"
+                  felix_overnight_active "$_spa_O/spa-night" "$1" ) >/dev/null 2>&1; }
+if [ "$(wc -c < "$_spa_O/mem/spa-night/overnight/nights/spa-sess-long")" -gt 262144 ] && _spa_active spa-sess-long; then
+  ok  "a live night whose state file runs past a pipe after its first line reads live"
+else
+  bad "a live night whose state file runs past a pipe after its first line reads live" \
+      "it read inactive: head -1 left after the first line, cut died of SIGPIPE, pipefail failed felix_overnight_field, and felix_overnight_active read a night inside every bound as over"
+fi
+_spa_active spa-sess-one \
+  && ok  "and the same night as one line reads live" \
+  || bad "and the same night as one line reads live" "the fixture does not reach felix_overnight_active"
+
+# felix_marketplace_root, resolve.sh:752, read by felix with || mroot="".
+_spa_M="$_spa/marketplace"; mkdir -p "$_spa_M"
+{ printf '{\n  "felix": {\n    "source": {\n      "source": "directory"\n    },\n'
+  printf '    "installLocation": "/spa/first/location",\n'
+  awk -v pad="$_spa_pad" 'BEGIN { for (i = 1; i <= 3000; i++) printf "    \"installLocation\": \"/spa/filler/%s/%05d\",\n", pad, i }'
+  printf '    "lastUpdated": "2026-09-25T00:00:00.000Z"\n  },\n  "other": {\n    "installLocation": "/spa/other"\n  }\n}\n'
+} > "$_spa_M/long.json"
+printf '{\n  "felix": {\n    "installLocation": "/spa/first/location",\n    "lastUpdated": "2026-09-25T00:00:00.000Z"\n  }\n}\n' \
+  > "$_spa_M/one.json"
+_spa_out="$( . "$FROOT/harness/lib/resolve.sh"; felix_marketplace_root "$_spa_M/long.json" 2>/dev/null )"; _spa_rc=$?
+if [ "$_spa_rc" = 0 ] && [ "$_spa_out" = "/spa/first/location" ]; then
+  ok  "the felix marketplace root is read, and reported read, from an entry listing more than a pipe holds"
+else
+  bad "the felix marketplace root is read, and reported read, from an entry listing more than a pipe holds" \
+      "exit $_spa_rc, printed [$_spa_out]: head -1 left after the first location, sed died of SIGPIPE, and the caller emptied the root it had found"
+fi
+_spa_out="$( . "$FROOT/harness/lib/resolve.sh"; felix_marketplace_root "$_spa_M/one.json" 2>/dev/null )"; _spa_rc=$?
+[ "$_spa_rc" = 0 ] && [ "$_spa_out" = "/spa/first/location" ] \
+  && ok  "and from an entry listing one" \
+  || bad "and from an entry listing one" "exit $_spa_rc, printed [$_spa_out]: the fixture does not reach felix_marketplace_root"
 
 printf '\nthe record this branch carries\n'
 # Raised by the same review. After a rebase, red.tsv held two runs' records

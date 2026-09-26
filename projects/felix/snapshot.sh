@@ -88,7 +88,9 @@ SRC="$(git -C "$HOME_TOP" rev-parse --verify -q "$SRC_REF^{commit}")" || die "no
 git -C "$HOME_TOP" merge-base --is-ancestor "$SRC" "$MAIN" || die "$SRC_REF is not on the home's main ($MAIN)" "a snapshot publishes what main accepted, and nothing else"
 # The home's own slug, read and never typed: it is the one remote this file may
 # know, and the public copy of this file must refuse to run as if it were home.
-slug_of() { sed -n 's/.*"remote_match"[^"]*"\([^"]*\)".*/\1/p' | head -1; }
+# sed -n 1p and not head -1, here and in ver_of: head quits after one line, and
+# set -e would end the run on the SIGPIPE that leaves the sed writing the rest.
+slug_of() { sed -n 's/.*"remote_match"[^"]*"\([^"]*\)".*/\1/p' | sed -n 1p; }
 HOME_SLUG="$(git -C "$HOME_TOP" show "$MAIN:projects/$SELF/project.json" | slug_of)"
 [ -n "$HOME_SLUG" ] && [ "$HOME_SLUG" != "$PUBLIC_SLUG" ] || die "this is not the home (remote_match reads '${HOME_SLUG}')" "run it from the private checkout, never from the published copy"
 
@@ -388,7 +390,9 @@ if [ -e "$B/assets" ] || git -C "$CLONE" cat-file -e "$BASE:assets" 2>/dev/null;
 git -C "$CLONE" ls-files -- $STAGE | sort | cmp -s - "$OUT/files.build" || die "the staged paths are not the built tree"
 outside="$(git -C "$CLONE" diff --cached --name-only "$BASE" | grep -vE '^(engine/|projects/|\.gitignore$|\.claude-plugin/|README\.md$|assets/)' || true)"
 [ -z "$outside" ] || die "staging touched paths outside the published set:" $outside
-if [ "$PUBLIC_README" -eq 1 ] && git -C "$CLONE" diff --cached --name-only "$BASE" | grep -qx README.md; then die "README.md changed with --public-readme"; fi
+# A here-string, not a pipe: grep -q quits at README.md, and pipefail would read
+# the SIGPIPE it leaves git, still listing the paths after it, as no change.
+if [ "$PUBLIC_README" -eq 1 ] && grep -qx README.md <<<"$(git -C "$CLONE" diff --cached --name-only "$BASE")"; then die "README.md changed with --public-readme"; fi
 
 if [ -n "$EXPECT" ]; then
   got="$(git -C "$CLONE" write-tree)"
@@ -402,7 +406,7 @@ fi
 [ -n "$(git -C "$CLONE" diff --cached --name-only "$BASE")" ] || die "nothing to publish: the public main already holds this tree"
 
 # ------------------------------------------------------------- commit ------
-ver_of() { sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' | head -1; }
+ver_of() { sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' | sed -n 1p; }
 VER="$(ver_of < "$B/engine/.claude-plugin/plugin.json")"
 PREV="$(git -C "$CLONE" show "$BASE:engine/.claude-plugin/plugin.json" 2>/dev/null | ver_of || true)"
 DAY_SRC="$(git -C "$HOME_TOP" log -1 --format=%cd --date=short "$SRC")"
@@ -454,7 +458,7 @@ say "suite: running on $(git -C "$V" rev-parse --short HEAD), about ten minutes;
 ( cd "$V/engine/harness" && ./tests/run > "$OUT/suite.log" 2>&1 ) && rc=0 || rc=$?
 echo "exit=$rc" >> "$OUT/suite.log"
 SUITE="$(grep -E '^[0-9]+ passed, [0-9]+ failed' "$OUT/suite.log" | tail -1 || true)"
-[ "$rc" -eq 0 ] && printf '%s' "$SUITE" | grep -q ' 0 failed' || die "the suite did not pass on the snapshot (exit $rc): ${SUITE:-no summary}" "$(grep -A2 '^  FAIL' "$OUT/suite.log" | head -12)"
+[ "$rc" -eq 0 ] && grep -q ' 0 failed' <<<"$SUITE" || die "the suite did not pass on the snapshot (exit $rc): ${SUITE:-no summary}" "$(grep -A2 '^  FAIL' "$OUT/suite.log" | head -12)"
 say "suite: $SUITE, exit 0"
 
 # ------------------------------------------------------------- report ------

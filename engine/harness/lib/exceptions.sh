@@ -174,7 +174,7 @@ felix_exception_for() {   # proj obligation class ledger-line [now] -> excepted:
   hash="$(printf '%s\n' "$line" | git hash-object --stdin 2>/dev/null)"
   [ -n "$hash" ] || return 1
   [ -n "$now" ] || now="$(_felix_exceptions_now "$proj")"
-  printf '%s\n' "$now" | grep -qE "$FELIX_EXCEPTION_STAMP" || return 1
+  grep -qE "$FELIX_EXCEPTION_STAMP" <<<"$now" || return 1
   local best="" bestwho="" maxyear=$(( ${now%%-*} + FELIX_EXCEPTION_HORIZON_YEARS ))
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -239,14 +239,19 @@ felix_exceptions_judge() {   # proj [now] [run-output] -> lines
 # repository: in a worktree session $proj is the home checkout's copy of the
 # tables, and the rows a person wrote in this tree live under $root.
 felix_exceptions_unmerged() {   # proj [root] -> rows
-  local proj="$1" root="${2:-}" f="$1/exceptions.tsv" base rel
+  local proj="$1" root="${2:-}" f="$1/exceptions.tsv" base rel have nl='
+'
   if [ -n "$root" ] && command -v felix_same_repo >/dev/null 2>&1 && felix_same_repo "$proj" "$root" 2>/dev/null \
      && rel="$(felix_exceptions_rel "$proj")"; then f="$root/$rel"; fi
   [ -f "$f" ] || return 0
   base="$(felix_exceptions_at_base "$proj" 2>/dev/null)" || base=""
+  # The base's rows once, and each row looked up with a case: piped into
+  # grep -q, a match can end grep before the rows are all written, and
+  # pipefail then shows a merged grant as unmerged.
+  have="$(printf '%s\n' "$base" | felix_exceptions_rows)" || have=""
   felix_exceptions_rows < "$f" | while IFS= read -r row; do
     [ -n "$row" ] || continue
-    printf '%s\n' "$base" | felix_exceptions_rows | grep -qxF -- "$row" || printf '%s\n' "$row"
+    case "$nl$have$nl" in *"$nl$row$nl"*) ;; *) printf '%s\n' "$row" ;; esac
   done
   return 0
 }
