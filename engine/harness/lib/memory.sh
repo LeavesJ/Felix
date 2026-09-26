@@ -134,7 +134,10 @@ _felix_mem_handoff_text() {
 # the header may have been edited by hand, and is replaced as it always was.
 _felix_mem_handoff_generated() {
   [ "$(sed -n 1p "$1")" = "# Handoff" ] || return 1
-  sed -n 3p "$1" | grep -qE '^Regenerated [0-9]{4}-[0-9]{2}-[0-9]{2}\.'
+  # Read, then matched, not piped into grep -q, whose early exit can kill the
+  # writer and have pipefail read a match as none.
+  local l3; l3="$(sed -n 3p "$1")" || return 1
+  grep -qE '^Regenerated [0-9]{4}-[0-9]{2}-[0-9]{2}\.' <<<"$l3"
 }
 
 # 0 when the handoff at F is one this command did not write: not the empty

@@ -29,7 +29,7 @@ felix_brief_evidence() {
     [ -n "${when:-}" ] || continue
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      if printf '%s' "$p" | grep -qE "$when"; then
+      if grep -qE "$when" <<<"$p"; then
         printf '%s\t%s\n' "$name" "${reason:-$requires}"
         break
       fi

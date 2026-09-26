@@ -31,6 +31,12 @@
 # marketplace registry decides nothing any more, so `marketplace_root` left
 # the grounds when it left the question.
 #
-# obligation	class	pathway	applies	evidence	grounds	reason
-lifecycle_wired	RELEASE_BLOCKING	deterministic	test -s engine/hooks/hooks.json	engine/harness/bin/lifecycle-check engine/harness/templates engine/hooks/hooks.json	hook_binding	a moment with nothing at it is a completion nobody checks, and a floor that does not run reports nothing
-engine_deployed	TASK_BLOCKING	deterministic	engine/harness/bin/deploy-check --applies	engine/harness/bin/deploy-check	deployed_engine	written is not installed: the engine main accepted is not the one deployed, and only felix install in the served checkout puts that right
+# The eighth column names what would discharge each row, as a checker id in
+# qualification.tsv: `lifecycle` for the first and `deploy` for the second.
+# That table declares no checker under either id, so both read `absent` in
+# felix obligations, which is the honest state: a capability Felix would have
+# to acquire. The column is report only and moves no verdict.
+#
+# obligation	class	pathway	applies	evidence	grounds	reason	needs
+lifecycle_wired	RELEASE_BLOCKING	deterministic	test -s engine/hooks/hooks.json	engine/harness/bin/lifecycle-check engine/harness/templates engine/hooks/hooks.json	hook_binding	a moment with nothing at it is a completion nobody checks, and a floor that does not run reports nothing	lifecycle
+engine_deployed	TASK_BLOCKING	deterministic	engine/harness/bin/deploy-check --applies	engine/harness/bin/deploy-check	deployed_engine	written is not installed: the engine main accepted is not the one deployed, and only felix install in the served checkout puts that right	deploy

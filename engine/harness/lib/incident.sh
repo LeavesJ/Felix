@@ -105,7 +105,7 @@ felix_incident_severity() {
     hit=0
     while IFS=$'\t' read -r tier kind pattern reason; do
       [ "${kind:-}" = "path" ] || continue
-      printf '%s' "$p" | grep -qE "$pattern" || continue
+      grep -qE "$pattern" <<<"$p" || continue
       hit=1
       case "$tier:$best" in
         red:*)        best="red" ;;

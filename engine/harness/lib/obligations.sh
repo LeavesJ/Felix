@@ -20,7 +20,7 @@
 # One row:
 #
 #   obligation <TAB> class <TAB> pathway <TAB> applies <TAB> evidence
-#                                              <TAB> grounds <TAB> reason
+#                                <TAB> grounds <TAB> reason [<TAB> needs]
 #
 #   class     INFO ADVISORY TASK_BLOCKING RELEASE_BLOCKING AUTHORITY_BLOCKING
 #   pathway   deterministic witness corroborated probabilistic unknown
@@ -33,6 +33,12 @@
 #   grounds   the probe predicate(s) the applicability rests on, comma
 #             separated, each declared in probes.tsv; `-` is ungrounded and
 #             is counted rather than refused.
+#   needs     optional. The capabilities that would discharge the row, comma
+#             separated, each a checker id from qualification.tsv matching
+#             ^[a-z][a-z0-9_-]*$, or `-` for none named. A seven-column row
+#             reads as `-`. REPORT ONLY: felix_obligations_needs resolves it
+#             for felix obligations to print, and nothing that decides
+#             applicability, discharge, blocking or a clearance reads it.
 #
 # The order of questions is the probe's (probes.sh): applicability first, and
 # an obligation that does not apply never has its evidence run. Then the
@@ -50,11 +56,24 @@ FELIX_OBLIGATION_PATHWAYS='deterministic witness corroborated probabilistic unkn
 # One scan decides both what is a row and what is refused, so the two can
 # never disagree about a line. mode `rows` prints the well-formed lines
 # verbatim; mode `bad` prints one reason per refused line.
+#
+# The needs cell is refused here like every other malformed cell, although
+# nothing that decides a verdict reads it. A capability id that cannot match
+# a checker id would resolve as `absent` for ever, and that is a claim about
+# what Felix lacks made by a typo. Empty reads as `-`, as a missing column
+# does: a trailing tab was a valid row before this column existed, and the
+# schema check already refuses the tab itself.
 _felix_obligation_scan() {
   local table="$1/obligations.tsv" mode="$2"
   [ -f "$table" ] || return 0
   awk -F'\t' -v mode="$mode" \
       -v classes=" $FELIX_OBLIGATION_CLASSES " -v paths=" $FELIX_OBLIGATION_PATHWAYS " '
+    function needs_bad(s,   n, i, id) {
+      if (s == "" || s == "-") return 0
+      n = split(s, id, ",")
+      for (i = 1; i <= n; i++) if (id[i] !~ /^[a-z][a-z0-9_-]*$/) return 1
+      return 0
+    }
     /^[[:space:]]*(#|$)/ { next }
     {
       why = ""
@@ -68,6 +87,8 @@ _felix_obligation_scan() {
         why = $1 ": pathway \047" $3 "\047 is not one of" paths
       else if ($3 == "probabilistic" && $2 ~ /_BLOCKING$/)
         why = $1 ": a single probabilistic finding is advisory only and may not block"
+      else if (NF >= 8 && needs_bad($8))
+        why = $1 ": needs \047" $8 "\047 is not - or a comma-separated list of checker ids, each [a-z][a-z0-9_-]*"
       else if (seen[$1]++)
         why = $1 ": admitted twice, and a name that names two rows names neither"
       if (mode == "rows" && why == "") print
@@ -233,5 +254,111 @@ felix_obligations_orphans() {
 # invented ones. But a count nobody prints is a count nobody reads.
 felix_obligations_ungrounded() {
   felix_obligation_rows "$1" | awk -F'\t' '$6 == "" || $6 == "-" { print $1 }'
+  return 0
+}
+
+# What each row says would discharge it, resolved against the checkers
+# qualification.tsv declares. v3.2 §7 makes capability need Felix's to own,
+# and the qualified-judge join (roadmap Phase 1) can only leave a row UNKNOWN
+# "and name the capability it needs" if the ledger names one. This is the name
+# and its resolution, and nothing else: it runs no checker and moves no
+# verdict, and no caller that decides discharge, blocking or a clearance
+# reads it.
+#
+# A capability id is a checker id, column 1 of qualification.tsv. One line per
+# capability a row needs:
+#
+#   obligation <TAB> capability <TAB> resolution <TAB> missing
+#
+#   complete  the checker has a row for every control in FELIX_QUALIFY_CONTROLS.
+#             DECLARED, not run and not met: the gate's `qualified` check is
+#             what runs the controls, and the join, a later item, is what will
+#             consult its verdict. The seventh control, the coverage report, is
+#             not in that list yet, so complete is six of six declared.
+#   short     declared, and `missing` names the controls it has no row for,
+#             comma separated.
+#   absent    no checker by that id is declared: a capability Felix would have
+#             to acquire, which is the Capability Manager's job and not this
+#             file's.
+#
+# and `obligation <TAB> - <TAB> none <TAB> -` for a row that names nothing.
+#
+# Declared means any row of qualification.tsv carries the id, a malformed one
+# included. A checker whose every row is malformed exists and declares no
+# control, which is short of all six; reading it as absent would send somebody
+# to acquire a thing that is already there. `felix qualify --gate` refuses the
+# malformed rows themselves.
+#
+# A qualification.tsv that exists and cannot be read resolves nothing: no line
+# on stdout, not the rows resolved before the read that failed, one line on
+# stderr naming the table, and exit 2, whichever read it was. Read as empty it
+# resolved every capability absent, about a table nobody read. The line is said
+# here, because the reads below discard the libraries' stderr, as they always
+# have; the report is held until every read has held.
+felix_obligations_needs() {   # proj
+  local proj="$1" rows mal declared report line name needs cap missing nl='
+'
+  command -v felix_qualify_missing_controls >/dev/null 2>&1 \
+    || . "$(dirname "${BASH_SOURCE[0]:-$0}")/qualify.sh" 2>/dev/null
+  # No qualification library, no resolution: nothing printed and exit 1, so
+  # a caller leaves the report off. Printing `absent` would claim that every
+  # checker is missing when nobody looked.
+  command -v felix_qualify_missing_controls >/dev/null 2>&1 || return 1
+  # Each status is its own assignment's: a pipeline's, without pipefail, is only
+  # its last command's. The resolution runs in a group that exits 2 at the first
+  # read that fails and 0 when it reaches the end, so a loop whose last test was
+  # false does not read as a failure. A needs cell the scan admits holds only
+  # ids matching [a-z][a-z0-9_-]* and commas, so it splits with nothing to glob.
+  rows="$(felix_qualify_rows "$proj" 2>/dev/null)" \
+    && mal="$(felix_qualify_malformed "$proj" 2>/dev/null)" \
+    && declared="$(printf '%s\n%s\n' "$rows" "$mal" | awk -F'\t' 'NF && !seen[$1]++ { print $1 }')" \
+    && report="$(felix_obligation_rows "$proj" | {
+         while IFS= read -r line; do
+           [ -n "$line" ] || continue
+           name="$(_felix_obligation_field "$line" 1)"
+           needs="$(_felix_obligation_field "$line" 8)"
+           if [ -z "$needs" ] || [ "$needs" = "-" ]; then
+             printf '%s\t-\tnone\t-\n' "$name"; continue
+           fi
+           for cap in ${needs//,/ }; do
+             if ! felix_has_line "$declared" "$cap"; then
+               printf '%s\t%s\tabsent\t-\n' "$name" "$cap"; continue
+             fi
+             missing="$(felix_qualify_missing_controls "$proj" "$cap" 2>/dev/null)" || exit 2
+             if [ -z "$missing" ]; then printf '%s\t%s\tcomplete\t-\n' "$name" "$cap"
+             else                       printf '%s\t%s\tshort\t%s\n' "$name" "$cap" "${missing//$nl/,}"; fi
+           done
+         done
+         exit 0; })" \
+    || { printf 'felix: %s/qualification.tsv could not be read, so no need was resolved against it\n' "$proj" >&2
+         return 2; }
+  [ -z "$report" ] || printf '%s\n' "$report"
+  return 0
+}
+
+# The counts felix obligations prints, from felix_obligations_needs on stdin:
+#
+#   named <TAB> complete <TAB> short <TAB> absent <TAB> none
+#
+# One count per obligation, by its weakest need, so complete, short and absent
+# add up to the number that name anything: a row is complete only when every
+# capability it needs is, absent when any one is, and short otherwise. Counting
+# capabilities instead would let a row needing one complete checker and one
+# absent one be counted as both.
+felix_obligations_needs_count() {
+  awk -F'\t' '
+    NF < 3 { next }
+    !($1 in seen) { seen[$1] = 1; order[++n] = $1; worst[$1] = 0 }
+    $3 == "none"     { none[$1] = 1; next }
+    $3 == "absent"   { worst[$1] = 3; next }
+    $3 == "short"    { if (worst[$1] < 2) worst[$1] = 2; next }
+    $3 == "complete" { if (worst[$1] < 1) worst[$1] = 1; next }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (order[i] in none) { z++; continue }
+        named++; c[worst[order[i]]]++
+      }
+      printf "%d\t%d\t%d\t%d\t%d\n", named, c[1], c[2], c[3], z
+    }'
   return 0
 }

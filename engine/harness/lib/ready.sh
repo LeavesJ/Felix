@@ -178,8 +178,16 @@ EOF
     # already had. It only ever showed up where no CLI answers, which is every
     # CI runner and no laptop, so the suite went green on the machine that
     # could not reach the branch.
-    if [ -z "$found" ] && felix_ready_inventory 2>/dev/null \
-         | grep -qxF "plugin	$owner"; then
+    #
+    # The inventory is read whole and matched with a case, so no pipe into
+    # grep -q is left for the suite's lint to refuse. The pipe could not miss
+    # here, because felix_ready_inventory ends in `return 0` and the sort a
+    # SIGPIPE kills is not the status pipefail reads, but the next producer
+    # might not mask its own.
+    local inv nl='
+'
+    if [ -z "$found" ] && inv="$(felix_ready_inventory 2>/dev/null)" \
+         && case "$nl$inv$nl" in *"${nl}plugin	$owner$nl"*) true ;; *) false ;; esac; then
       printf 'usable\t%s\t%s\n' "$want" "bundled, live in every session"
       continue
     fi

@@ -112,7 +112,7 @@ _felix_classify_pass() {
       path)
         while IFS= read -r f; do
           [ -n "$f" ] || continue
-          if printf '%s' "$f" | grep -qE "$pattern"; then
+          if grep -qE "$pattern" <<<"$f"; then
             printf '%s\t%s\t%s\n' "$tier" "$f" "$reason"
             matched_paths="$matched_paths
 $f"
@@ -122,7 +122,13 @@ $paths
 EOF
         ;;
       content)
-        if [ -n "$added" ] && printf '%s' "$added" | grep -qE "$pattern"; then
+        # A here-string, not a pipe: grep -q stops at its first match, and a
+        # printf still writing a long diff dies of SIGPIPE, which pipefail
+        # reads as no match. $added is a $(...) capture, so it cannot end in a
+        # newline, and the one the here-string adds only ends its last line.
+        # Nothing is stripped first: a % removal of a trailing newline scans
+        # every suffix of a value that has none, which is seconds on a long diff.
+        if [ -n "$added" ] && grep -qE "$pattern" <<<"$added"; then
           printf '%s\tADDED-LINES\t%s\n' "$tier" "$reason"
         fi
         ;;
@@ -172,7 +178,14 @@ felix_classify_diff() {
   paths="$(felix_changed_paths "$root" "$base")"
   # Added lines only. A removed secret is not a new exposure, and counting it as
   # one trains people to ignore the finding.
-  added="$(git -C "$root" diff "$base...HEAD" 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+  #
+  # Read from the same three sources as the paths, with the same merge-refs
+  # correction, by the one function that does that. This line read `base...HEAD`
+  # alone after the paths had moved to felix_changed_paths, so a staged or
+  # unstaged credential was a path whose content no rule saw: `felix scope`
+  # called it in scope, and on a stacked branch every line the branch below
+  # added was read again as this one's. escape.sh already read felix_added_lines.
+  added="$(felix_added_lines "$root" "$base" || true)"
 
   out="$(_felix_classify_pass "$(_felix_risk_rows "$proj")" "$paths" "$added")"
 

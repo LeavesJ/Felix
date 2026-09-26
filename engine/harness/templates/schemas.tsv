@@ -52,7 +52,7 @@ stack.tsv	tree	kind name source risk capability grounding?	allowed
 risk.tsv	tree	tier kind pattern reason channel? confine?	allowed
 # Nothing is refused, present and empty or absent alike (hooks/pre-tool,
 # felix_deny_match). Most projects have none, and felix new seeds none.
-deny.tsv	tree	tool pattern reason	allowed
+deny.tsv	tree	tool pattern reason scope?	allowed
 # Present and empty, the gate's ecosystem check fails as leaks, with nothing
 # allowed and nothing muted. Absent, it fails as blind.
 ecosystem.tsv	tree	kind file token reason	refused
@@ -65,12 +65,14 @@ evidence.tsv	tree	name when requires reason	allowed
 # merge boundary refuses.
 probes.tsv	tree	predicate grounds when probe witness?	refused
 # Present and empty, felix qualify returns 1 and the gate fails qualified.
+# Present and unreadable, felix qualify exits 2 and the gate fails qualified,
+# saying under it that the table could not be read.
 # Absent, the gate skips and announces it.
 qualification.tsv	tree	checker command control expect mutation premise?	refused
 # Present and admitting nothing, an empty ledger is not a clean bill: felix
 # obligations returns 1, the gate fails and the merge boundary refuses. Absent,
 # the gate skips and announces it, and the merge boundary refuses.
-obligations.tsv	tree	obligation class pathway applies evidence grounds? reason?	refused
+obligations.tsv	tree	obligation class pathway applies evidence grounds? reason? needs?	refused
 # The seeded and normal state: no clearance. Absent reads the same, and the
 # copy that clears anything is read from refs/remotes/origin/main
 # (felix_exceptions_rows).

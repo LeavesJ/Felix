@@ -88,7 +88,8 @@ felix_hooks_events() {
 }
 
 felix_coverage_check() {
-  local tpl="$1" hooks="$2" event stance reason holds wired seen="" bound
+  local tpl="$1" hooks="$2" event stance reason holds wired seen="" bound nl='
+'
   [ -f "$tpl/lifecycle.tsv" ] || return 0
   [ -f "$hooks" ] || return 0
   # A hooks file that could not be parsed is not a hooks file binding nothing.
@@ -101,8 +102,12 @@ felix_coverage_check() {
     [ -n "${stance:-}" ] || continue
     seen="$seen $event"
 
+    # Membership by case, not a pipe into grep -q: grep stops at the first
+    # match, and a printf still writing a long roster dies of SIGPIPE, which
+    # pipefail reads as unbound. Not felix_has_line either, because
+    # lifecycle-check sources this file without resolve.sh.
     wired=no
-    printf '%s\n' "$bound" | grep -qxF -- "$event" && wired=yes
+    case "$nl$bound$nl" in *"$nl$event$nl"*) wired=yes ;; esac
 
     case "$stance:$wired" in
       wired:yes)    printf 'ok\t%s\t%s\n'      "$event" "${reason:-wired}" ;;
@@ -185,12 +190,14 @@ felix_coverage_events() {
 # lifecycle by hand — and that named SubagentStart an hour after the table
 # meant to prevent exactly this was written.
 felix_coverage_unconsidered() {
-  local tpl="$1" e known
+  local tpl="$1" e known nl='
+'
   [ -f "$tpl/lifecycle.tsv" ] || return 0
   known="$(grep -vE '^[[:space:]]*(#|$)' "$tpl/lifecycle.tsv" | cut -f1)"
   while IFS= read -r e; do
     [ -n "$e" ] || continue
-    printf '%s\n' "$known" | grep -qxF "$e" || printf '%s\n' "$e"
+    # By case, for the reason felix_coverage_check gives.
+    case "$nl$known$nl" in *"$nl$e$nl"*) ;; *) printf '%s\n' "$e" ;; esac
   done <<EOF
 $(felix_coverage_events)
 EOF

@@ -94,10 +94,16 @@ felix_toolbox_capability() {
 
 # Does any route already name this plugin, under either play form?
 felix_toolbox_routed() {
-  local proj="$1" name="$2" plays
+  local proj="$1" name="$2" plays heads nl='
+'
   [ -f "$proj/routes.tsv" ] || return 1
   plays="$(grep -vE '^[[:space:]]*(#|$)' "$proj/routes.tsv" | cut -f4 | tr ' ' '\n')"
-  printf '%s\n' "$plays" | sed 's/:.*//' | grep -xF "$name" >/dev/null 2>&1
+  # Read whole, then matched by case, not piped into grep: GNU grep writing to
+  # /dev/null stops at its first match as -q does, and pipefail reads the sed it
+  # cut off as no route. The `.` keeps an empty last line that $(...) strips.
+  heads="$(printf '%s\n' "$plays" | sed 's/:.*//' && printf .)" || return 1
+  case "$nl${heads%.}" in *"$nl$name$nl"*) return 0 ;; esac
+  return 1
 }
 
 # The route a capability belongs to: profiles.tsv maps a profile to capabilities,

@@ -195,7 +195,7 @@ felix_commission_provider_rows() {
     kind="$(printf '%s\n' "$line" | cut -f1)"; name="$(printf '%s\n' "$line" | cut -f2)"
     if [ "$want" -eq 5 ]; then
       _felix_commission_kind_ok "$kind" || continue
-      printf '%s' "$name" | grep -qE '^[A-Za-z0-9@._:-]+$' || continue
+      grep -qE '^[A-Za-z0-9@._:-]+$' <<<"$name" || continue
       [ -n "$(_felix_commission_provider_toolong "$line")" ] && continue
     fi
     # A candidate obligation carries two shell commands by design, so the
@@ -221,7 +221,7 @@ felix_commission_provider_rejects() {
     if [ "$n" -ne "$want" ]; then printf '%s\t%s fields where the shape has %s; a risk column is not the model'"'"'s to write\n' "${name:-(unnamed)}" "$n" "$want"; continue; fi
     if [ "$want" -eq 5 ]; then
       _felix_commission_kind_ok "$kind" || { printf '%s\tkind "%s" is not one of %s\n' "$name" "$kind" "$FELIX_COMMISSION_PROVIDER_KINDS"; continue; }
-      printf '%s' "$name" | grep -qE '^[A-Za-z0-9@._:-]+$' || { printf '%s\tnot a name\n' "$name"; continue; }
+      grep -qE '^[A-Za-z0-9@._:-]+$' <<<"$name" || { printf '%s\tnot a name\n' "$name"; continue; }
       long="$(_felix_commission_provider_toolong "$line")"
       if [ -n "$long" ]; then
         printf '%s\ta %s longer than %s characters, which the log could not hold whole\n' \
@@ -355,7 +355,8 @@ felix_commission_admit() {
   # lookup miss and turned every verdict into `unknown` — a silent all-refuse.
   local tpl="${4:-}"
   [ -n "$tpl" ] || tpl="$home/harness/templates"
-  local rules declared scratch rc=0
+  local rules declared scratch rc=0 nl='
+'
 
   # The automation shape only. A score answer is three fields — `score`,
   # `69/100`, a grade — with neither a kind nor a name in them, so run through
@@ -387,10 +388,13 @@ felix_commission_admit() {
         continue ;;
     esac
 
-    if printf '%s\n' "$declared" | grep -xF "$bare" >/dev/null 2>&1; then
+    # Membership by case, not a pipe into grep: GNU grep writing to /dev/null
+    # stops at its first match as -q does, and a printf still writing a long
+    # list dies of SIGPIPE, which pipefail reads as a plugin nobody declared.
+    case "$nl$declared$nl" in *"$nl$bare$nl"*)
       printf 'already\t%s\t%s\t-\t-\t-\tnamed in stack.tsv already\n' "$kind" "$name"
-      continue
-    fi
+      continue ;;
+    esac
     # Installed but undeclared is a different answer from unresolvable, and
     # saying the second when the first is true is what the phase did on its
     # first real run. An installed plugin is absent from the available list —
@@ -473,13 +477,16 @@ felix_commission_admit() {
 # A name already in the manifest is left alone. Prints how many rows it wrote.
 felix_commission_apply_declares() {   # proj, root, admit-output, tid, policy, need -> count
   local proj="$1" root="$2" adm="$3" tid="${4:-unknown-tree}" policy="${5:-}" need="$6"
-  local v k n tier gcap sha why log stamp declared c=0
+  local v k n tier gcap sha why log stamp declared c=0 nl='
+'
   log="$(felix_mem_dir "$proj")/commissioning.log"
   declared="$(grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null | cut -f2 | sed 's/@.*//')"
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   while IFS=$'\t' read -r v k n tier gcap sha why; do
     [ "${v:-}" = "declare" ] && [ -n "${n:-}" ] || continue
-    printf '%s\n' "$declared" | grep -xF "${n%%@*}" >/dev/null 2>&1 && continue
+    # By case, for the reason felix_commission_admit gives: a row already in
+    # stack.tsv read as absent would be appended a second time.
+    case "$nl$declared$nl" in *"$nl${n%%@*}$nl"*) continue ;; esac
     [ -f "$proj/stack.tsv" ] || printf '# kind\tname\tsource\trisk\tcapability\tgrounding\n' > "$proj/stack.tsv"
     # A manifest whose last line has no newline would otherwise fuse the two
     # rows into one, destroying the row that was there and losing this one.
