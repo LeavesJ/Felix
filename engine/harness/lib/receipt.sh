@@ -34,6 +34,13 @@
 if ! command -v felix_changed_paths >/dev/null 2>&1; then
   . "$(dirname "${BASH_SOURCE[0]:-$0}")/resolve.sh"
 fi
+# The evidence block asks evidence.sh's felix_evidence_table_present and runs its
+# judge. Sourced alone, this file used to read an absent judge as an empty
+# evidence block, with no `evidence` in `unknown`, and the question it asks now
+# would also be "command not found" on stderr. Same guard as intake.sh's.
+if ! command -v felix_evidence_table_present >/dev/null 2>&1; then
+  . "$(dirname "${BASH_SOURCE[0]:-$0}")/evidence.sh"
+fi
 
 # Strict JSON string escaping.
 #
@@ -93,9 +100,19 @@ felix_receipt() {
   local unknown="" pname branch head tid
 
   pname="$(basename "$proj")"
-  branch="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
-  head="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || printf '?')"
+  # One field each, from the readers resolve.sh holds for every caller. These
+  # two lines captured git with `|| printf '?'` inside the substitution, and on
+  # an unborn HEAD git prints `HEAD` and then fails, so the fallback was
+  # appended to the answer: the subject said `"branch": "HEAD ?"`, valid json
+  # and wrong, in the one document written for a reader outside Felix. An
+  # unborn HEAD now names its branch and says `unborn`; `?` is kept for a
+  # directory that is no repository at all.
+  branch="$(felix_head_branch "$root")"
+  head="$(felix_head_commit "$root")"
   tid="$(felix_tree_id "$root" "$home" 2>/dev/null || true)"
+  # Inside a repository an empty id is a tree git could not read in full
+  # (2026-10-08), and the document says it does not know which tree this is.
+  [ -z "$tid" ] && git -C "$root" rev-parse --git-dir >/dev/null 2>&1 && unknown="$unknown tree"
 
   # ---- what changed. An unresolvable base is a question nobody can answer, and
   # an empty list is an answer. Reporting the first as the second is the defect
@@ -107,10 +124,13 @@ felix_receipt() {
   # drifted. That is #56: the identical lesson sat in felix_kernel_dir one
   # function away from felix_changed_paths and was never propagated, so an
   # unresolvable base cleared every escape channel there.
-  local base_ok=0 paths=""
+  # A list git broke off is not known either (2026-10-08): it says `changed`
+  # unknown, and `known` is false over the paths it did read.
+  local base_ok=0 paths="" chg_ok=0
   if felix_base_resolves "$root" "$base"; then
     base_ok=1
-    paths="$(felix_changed_paths "$root" "$base" 2>/dev/null || true)"
+    if paths="$(felix_changed_paths "$root" "$base" 2>/dev/null)"; then chg_ok=1
+    else unknown="$unknown changed"; fi
   else
     unknown="$unknown changed"
   fi
@@ -121,6 +141,8 @@ felix_receipt() {
     findings="$(felix_classify_diff "$proj" "$base" "$root" 2>/dev/null || true)"
     tier="$(felix_classify_tier "$findings" 2>/dev/null || printf 'unknown')"
     [ -n "$tier" ] || tier="unknown"
+    # The classifier says unknown for a change it could not read (2026-10-08).
+    [ "$tier" = "unknown" ] && unknown="$unknown risk"
   else
     unknown="$unknown risk"
   fi
@@ -133,10 +155,10 @@ felix_receipt() {
   local rec rtid
   rec="$(felix_verify_receipt "$root" "$home" 2>/dev/null || true)"
   if [ -n "$rec" ]; then
-    rtid="$(printf '%s' "$rec" | cut -f1)"
-    rres="$(printf '%s' "$rec" | cut -f2)"
+    rtid="$(printf '%s' "$rec" | LC_ALL=C cut -f1)"
+    rres="$(printf '%s' "$rec" | LC_ALL=C cut -f2)"
     vres="\"$(_felix_rcpt_esc "$rres")\""
-    vwhen="\"$(_felix_rcpt_esc "$(printf '%s' "$rec" | cut -f3)")\""
+    vwhen="\"$(_felix_rcpt_esc "$(printf '%s' "$rec" | LC_ALL=C cut -f3)")\""
     vtree="\"$(_felix_rcpt_esc "$rtid")\""
     # Current only by verify.sh's reading, which also asks whether the facts
     # the verdict rests on have moved; a receipt that cannot be confirmed is
@@ -152,9 +174,14 @@ felix_receipt() {
 
   # ---- evidence
   local ev="" gaps=""
-  if [ "$base_ok" -eq 1 ] && [ -f "$proj/evidence.tsv" ]; then
+  if [ "$base_ok" -eq 1 ] && felix_evidence_table_present "$proj"; then
     ev="$(felix_evidence_check "$proj" "$base" "$root" 2>/dev/null || true)"
-    gaps="$(printf '%s\n' "$ev" | awk -F'\t' '$1=="gap"{print $2}')"
+    gaps="$(printf '%s\n' "$ev" | LC_ALL=C awk -F'\t' '$1=="gap"{print $2}')"
+    # A row the check could not judge is neither met nor a gap, and a verdict
+    # built without it claims more than was read. The two whole-scan unknowns
+    # (a base that names nothing, a change git cut off) are `changed` already.
+    [ -z "$(printf '%s\n' "$ev" | LC_ALL=C awk -F'\t' '$1=="unknown" && index($3,"not judged")')" ] \
+      || unknown="$unknown evidence"
   fi
 
   # ---- authority. Carried here because no transport carries it, and refused
@@ -162,6 +189,12 @@ felix_receipt() {
   local esc="" founder="false" autonomous="true" granted="none"
   if [ "$base_ok" -eq 1 ]; then
     esc="$(felix_escapes "$proj" "$base" "$root" "$home" 2>/dev/null || true)"
+    # `unknown` from felix_escapes is a change it could not read (2026-10-08).
+    # It is no channel and not the founder's to decide, so it leaves the escape
+    # list for the unknown one. Left in, it set founder_required and read
+    # `blocked`, a person's decision about a tree nobody could read.
+    case "$esc" in unknown*|*$'\n'unknown*) unknown="$unknown escapes" ;; esac
+    esc="$(printf '%s\n' "$esc" | LC_ALL=C awk -F'\t' 'NF && $1 != "unknown"')"
     # What granted the authority, computed rather than asserted. `granted_by`
     # was the string literal "none" and no code path ever produced anything
     # else, while the `reviewed` channel genuinely grants — it is the one place
@@ -183,6 +216,7 @@ felix_receipt() {
     if [ -n "$home" ]; then
       local esc_ungranted
       esc_ungranted="$(felix_escapes "$proj" "$base" "$root" "" 2>/dev/null || true)"
+      esc_ungranted="$(printf '%s\n' "$esc_ungranted" | LC_ALL=C awk -F'\t' 'NF && $1 != "unknown"')"
       [ "$esc" = "$esc_ungranted" ] || granted="reviewed"
     fi
   fi
@@ -196,19 +230,32 @@ felix_receipt() {
   if [ -n "$esc" ] || [ -n "$unknown" ]; then autonomous="false"; fi
 
   # ---- status. Precedence is deliberate. Not knowing outranks everything,
-  # because a blocked-or-verified verdict computed from inputs that were never
+  # because a blocked-or-checked verdict computed from inputs that were never
   # read is exactly the confident wrong answer this is built to refuse.
+  #
+  # felix.receipt/2 (0.49.327) says what is true of the gate's receipt where /1
+  # had two words, because Felix says what was checked and never claims more
+  # (decision 1, 2026-10-31). /1's verified is checked. Its unverified is
+  # failed (the gate ran red on this exact tree), evidence-owed (it ran green
+  # here and evidence is owed) or unchecked (nothing current judged this tree):
+  # one word for the three was false wherever the gate had run on this tree.
+  # The version moved so that a reader of /1 refuses the new words rather than
+  # misreading them.
   local status quality
   if   [ -n "$unknown" ]; then status="indeterminate"; quality="unknown"
   elif [ -n "$esc" ];     then status="blocked";       quality="high"
   elif [ "$vstate" = "current" ] && [ "$rres" = "green" ] && [ -z "$gaps" ]; then
-    status="verified"; quality="high"
+    status="checked"; quality="high"
+  elif [ "$vstate" = "current" ] && [ "$rres" = "red" ]; then
+    status="failed"; quality="low"
+  elif [ "$vstate" = "current" ] && [ "$rres" = "green" ]; then
+    status="evidence-owed"; quality="low"
   else
-    status="unverified"; quality="low"
+    status="unchecked"; quality="low"
   fi
 
   printf '{\n'
-  printf '  "schema": "felix.receipt/1",\n'
+  printf '  "schema": "felix.receipt/2",\n'
   printf '  "domain": "engineering",\n'
   printf '  "project": "%s",\n'   "$(_felix_rcpt_esc "$pname")"
   printf '  "status": "%s",\n'    "$status"
@@ -217,14 +264,14 @@ felix_receipt() {
          "$(_felix_rcpt_esc "$branch")" "$(_felix_rcpt_esc "$head")" \
          "$(_felix_rcpt_esc "$base")"   "$(_felix_rcpt_esc "$tid")"
   printf '  "changed": {"known": %s, "paths": %s},\n' \
-         "$([ "$base_ok" -eq 1 ] && printf 'true' || printf 'false')" \
+         "$([ "$chg_ok" -eq 1 ] && printf 'true' || printf 'false')" \
          "$(printf '%s\n' "$paths" | _felix_rcpt_arr)"
   printf '  "risk": {"tier": "%s", "findings": %s},\n' \
          "$tier" "$(printf '%s\n' "$findings" | _felix_rcpt_rows tier path reason)"
   printf '  "verification": {"state": "%s", "result": %s, "tree": %s, "when": %s},\n' \
          "$vstate" "$vres" "$vtree" "$vwhen"
   printf '  "evidence": {"met": %s, "gap": %s},\n' \
-         "$(printf '%s\n' "$ev" | awk -F'\t' '$1=="met"{print $2}' | _felix_rcpt_arr)" \
+         "$(printf '%s\n' "$ev" | LC_ALL=C awk -F'\t' '$1=="met"{print $2}' | _felix_rcpt_arr)" \
          "$(printf '%s\n' "$gaps" | _felix_rcpt_arr)"
   printf '  "authority": {"autonomous": %s, "founder_required": %s, "granted_by": "%s", "escapes": %s},\n' \
          "$autonomous" "$founder" "$granted" \

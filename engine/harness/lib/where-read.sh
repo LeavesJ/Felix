@@ -10,7 +10,8 @@
 # some path through the line.
 #
 # Input variables: CWD0 the directory the command starts in; HOMEV and TMPV
-# the $HOME and $TMPDIR the hook sees; CDP set when $CDPATH is; GITENV set
+# the $HOME and $TMPDIR the hook sees; CDP set when the hook's caller had
+# CDPATH set (lib/where.sh reads it from _FELIX_CALLER_CDPATH); GITENV set
 # when the environment of the hook carries GIT_DIR or GIT_WORK_TREE.
 #
 # Output, one line each, tab-separated:

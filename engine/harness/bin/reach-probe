@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# The reach test's probe: what a session under the founder's own login can see of, and do to, the authority's desktop.
+#
+#   reach-probe --list
+#   reach-probe --run --user U --home AH --out DIR [--delay S] [--seconds N]
+#
+#   exit 0  --list printed the tries, or --run made them and wrote DIR/probe.tsv
+#   exit 2  usage
+#   exit 3  not this system: a tool the tries need is absent, and nothing was tried
+#
+# Run by a session of the founder's own login, with the founder at the screen (the door design of 2026-11-10,
+# section 5.6). He starts it, switches to the authority's desktop, where reach-witness is running, and waits.
+# After S seconds (20 when unset) the probe makes each try below, for N seconds (60 when unset) where a try
+# repeats, and writes one row a try to DIR/probe.tsv: the try's name, its exit status, and where what it
+# captured was put. The door at the authority's desktop stands on this Mac if nothing of that desktop reached
+# this session and nothing of this session reached that desktop.
+#
+# THE TRIES ARE AN OPEN LIST, and a pass says what was tried. A session also tries with its own screen and
+# browser tools, which are not in this program. What this program has no way to try is listed as not tried.
+#
+# WHAT IT DOES TO THE SESSION IT RUNS IN, when the separation holds: one marker string is typed into whatever
+# is in front there, with no Return; one click lands on the menu bar; the Finder is brought to the front; and
+# the marker is put on the pasteboard. Leave an empty document in front before starting it.
+#
+# It makes and changes no login, key or setting, and it asks for no password: the one command it runs through
+# sudo is run with -n, which never prompts. Bash 3.2.
+set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+tries() {
+  cat <<'EOF'
+capture-screen	captures the screen this session can see, every five seconds, to DIR/capture-N.png
+post-keys	types one marker string, with no Return, into whatever is in front
+post-click	posts one click on the menu bar
+raise-window	brings the Finder to the front
+write-pasteboard	puts the marker on the pasteboard
+run-in-session-launchctl	asks launchd to run /usr/bin/true in the authority's session
+run-in-session-sudo	asks sudo, with no prompt, to run /usr/bin/true as the authority's login
+write-home	makes a file in the authority's home
+read-store	reads the tip of main from the authority's store
+read-keys	not tried: reading the keys typed at another desktop needs an event tap, which this program has no way to make
+EOF
+}
+
+mode=""; user=""; home=""; out=""; delay=20; seconds=60
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list) mode=list; shift ;;
+    --run)  mode=run; shift ;;
+    --user|--home|--out|--delay|--seconds)
+      [ $# -ge 2 ] || { echo "reach-probe: $1 needs a value" >&2; exit 2; }
+      case "$1" in --user) user="$2" ;; --home) home="$2" ;; --out) out="$2" ;; --delay) delay="$2" ;; --seconds) seconds="$2" ;; esac
+      shift 2 ;;
+    *) echo "usage: reach-probe --list | --run --user U --home AH --out DIR [--delay S] [--seconds N]" >&2; exit 2 ;;
+  esac
+done
+case "$mode" in
+  list) tries; exit 0 ;;
+  run)  ;;
+  *) echo "usage: reach-probe --list | --run --user U --home AH --out DIR [--delay S] [--seconds N]" >&2; exit 2 ;;
+esac
+case "$user" in ""|[!A-Za-z_]*|*[!A-Za-z0-9_.-]*) echo "reach-probe: --user takes the authority's login name" >&2; exit 2 ;; esac
+case "$home" in /*) ;; *) echo "reach-probe: --home takes the authority's home, an absolute path" >&2; exit 2 ;; esac
+case "$out" in /*) ;; *) echo "reach-probe: --out takes an absolute path" >&2; exit 2 ;; esac
+case "$delay" in ""|*[!0123456789]*) echo "reach-probe: --delay takes a whole number" >&2; exit 2 ;; esac
+case "$seconds" in ""|*[!0123456789]*) echo "reach-probe: --seconds takes a whole number" >&2; exit 2 ;; esac
+[ "${#delay}" -le 4 ] && [ "${#seconds}" -le 4 ] || { echo "reach-probe: too long a wait" >&2; exit 2; }
+umask 077
+mkdir -p "$out" 2>/dev/null
+[ -d "$out" ] && [ ! -L "$out" ] || { echo "reach-probe: $out could not be made" >&2; exit 2; }
+tsv="$out/probe.tsv"
+
+# T3. A tool the tries need is looked for on PATH, before anything is tried.
+for tool in screencapture osascript pbcopy launchctl sudo git id od; do
+  command -v "$tool" >/dev/null 2>&1 || { printf 'not this system\n' > "$tsv"; echo "reach-probe: not this system: $tool is absent; nothing was tried" >&2; exit 3; }
+done
+[ "$(id -un 2>/dev/null)" != "$user" ] || { echo "reach-probe: this session runs as $user itself; the probe runs under the founder's own login" >&2; exit 2; }
+uid="$(id -u "$user" 2>/dev/null)" || { echo "reach-probe: $user is not a login of this machine" >&2; exit 2; }
+
+run="$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"; marker="felix-reach-$run"
+: > "$tsv"
+row() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:--}" >> "$tsv"; }
+
+echo "reach-probe: run $run. In $delay seconds it makes each try for up to $seconds seconds."
+echo "reach-probe: switch to the authority's desktop now, where reach-witness is running, and touch nothing."
+sleep "$delay"
+
+# capture-screen: the first status is the row's; each capture is kept.
+n=0; first=""; start=$SECONDS
+while :; do
+  n=$((n + 1))
+  screencapture -x "$out/capture-$n.png" >/dev/null 2>&1; rc=$?
+  [ -n "$first" ] || first="$rc"
+  [ $((SECONDS - start + 5)) -lt "$seconds" ] && [ "$n" -lt 50 ] || break
+  sleep 5
+done
+row capture-screen "$first" "$out/capture-1.png to capture-$n.png"
+
+osascript -e "tell application \"System Events\" to keystroke \"$marker\"" >/dev/null 2>&1; row post-keys "$?" "the marker $marker"
+osascript -e 'tell application "System Events" to click at {40, 12}' >/dev/null 2>&1; row post-click "$?"
+osascript -e 'tell application "Finder" to activate' >/dev/null 2>&1; row raise-window "$?"
+printf '%s' "$marker" | pbcopy >/dev/null 2>&1; row write-pasteboard "$?" "the marker $marker"
+launchctl asuser "$uid" /usr/bin/true >/dev/null 2>&1; row run-in-session-launchctl "$?"
+sudo -n -u "$user" /usr/bin/true >/dev/null 2>&1 </dev/null; row run-in-session-sudo "$?"
+( : > "$home/reach-probe-$run.mark" ) >/dev/null 2>&1; rc=$?; row write-home "$rc" "$home/reach-probe-$run.mark"
+tip="$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git --git-dir="$home/store.git" rev-parse --verify --quiet refs/heads/main 2>/dev/null)"; rc=$?
+row read-store "$rc" "${tip:--}"
+row read-keys "not tried" "no event tap"
+
+echo "reach-probe: done. The rows are in $tsv."
+echo "reach-probe: an exit status of 0 says the system took the try, and not that it arrived: the witness says what arrived."
+echo "reach-probe: look at each capture. The witness's token must be in none of them."
+exit 0

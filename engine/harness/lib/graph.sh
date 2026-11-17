@@ -22,6 +22,18 @@
 
 FELIX_GRAPH_TAIL="${FELIX_GRAPH_TAIL:-4096}"
 
+# felix_graph_deliver records in the ledger. Sourced by path with the house
+# guard, because the suite sources libraries alone, in subshells. The
+# directory by expansion, not dirname: this loads on every prompt.
+_FELIX_GRAPH_LIB="${BASH_SOURCE[0]:-$0}"
+case "$_FELIX_GRAPH_LIB" in */*) _FELIX_GRAPH_LIB="${_FELIX_GRAPH_LIB%/*}" ;; *) _FELIX_GRAPH_LIB=. ;; esac
+if ! command -v felix_ledger_record >/dev/null 2>&1; then
+  . "$_FELIX_GRAPH_LIB/ledger.sh"
+fi
+if ! command -v _felix_answer_sid_ok >/dev/null 2>&1; then
+  . "$_FELIX_GRAPH_LIB/answer.sh"
+fi
+
 # The graph belongs to the checkout that holds it, not to the tree you are
 # standing in. A worktree has no graphify-out/ of its own and never will: the
 # graph is built from the holding checkout, so that is the tree it describes
@@ -69,7 +81,7 @@ felix_graph_behind() {
   home="$(felix_graph_home "$root")" || return 1
   git -C "$home" cat-file -e "${stamp}^{commit}" 2>/dev/null || return 1
   n="$(git -C "$home" rev-list --count "${stamp}..HEAD" 2>/dev/null)" || return 1
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  case "$n" in ''|*[!0123456789]*) return 1 ;; esac
   printf '%s\n' "$n"
 }
 
@@ -120,19 +132,80 @@ felix_graph_line() {
 # keeps saying so.
 #
 # The lock is a directory because mkdir is atomic everywhere and a stale lock
-# file is not. Same shape as the discovery refresh, for the same reason.
+# file is not. Same shape as the discovery refresh, for the same reason, and a
+# lock older than 30 minutes is broken as there: an update killed by SIGKILL or a
+# power loss never runs its trap, and the graph would otherwise never refresh
+# again (audit b06, C043). The update's one record is the marker written below
+# when it succeeds.
 felix_graph_refresh_bg() {
   local root="${1:-$PWD}" home lock
   command -v graphify >/dev/null 2>&1 || return 0
   home="$(felix_graph_home "$root")" || return 0
   [ -d "$home/graphify-out" ] || return 0
   lock="$home/graphify-out/.felix-refresh.lock"
+  # The age is FELIX_GRAPH_LOCK_STALE minutes, 30 unless set (spec R3), and a
+  # session end, the likeliest moment for a refresh to be killed, now starts
+  # one (hooks/session-end). find, not stat, because the two stats disagree on
+  # their flags.
+  if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -type d -mmin +"${FELIX_GRAPH_LOCK_STALE:-30}" 2>/dev/null)" ]; then
+    rmdir "$lock" 2>/dev/null
+  fi
   mkdir "$lock" 2>/dev/null || return 0   # already running; leave it alone
   (
     trap 'rmdir "$lock" 2>/dev/null' EXIT
     felix_close_inherited_fds
     cd "$home" 2>/dev/null || exit 0
-    graphify update "$home" >/dev/null 2>&1
+    # What this refresh describes, read before it runs, and written only when
+    # it succeeds. graphify writes nothing when the code's topology did not
+    # change, so its stamp stays behind HEAD and, without this, every session
+    # start and end ran another full update that could not clear it. A commit
+    # landing during the run leaves the marker behind HEAD, so the next call
+    # refreshes again, which is right.
+    #
+    # Written to a file made new for it and renamed into place, never through
+    # `>`: a checkout can carry the marker as a link, and `>` would follow it
+    # and overwrite whatever it names. Renamed by perl, which is rename(2)
+    # itself: it replaces a link at the marker path and fails on a directory
+    # there. mv is not: given a directory, or a link to one, it moves the file
+    # inside. Not at all when graphify-out is itself a link, since then the
+    # rename lands wherever that points.
+    _at="$(git -C "$home" rev-parse HEAD 2>/dev/null)"
+    if graphify update "$home" >/dev/null 2>&1 && [ -n "$_at" ] && [ ! -L "$home/graphify-out" ]; then
+      _m="$home/graphify-out/.felix-refreshed-at"
+      _t="$(mktemp "$_m.XXXXXX" 2>/dev/null)" \
+        && { { printf '%s\n' "$_at" > "$_t" \
+          && perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$_t" "$_m"; } 2>/dev/null || rm -f "$_t" 2>/dev/null; }
+    fi
   ) </dev/null >/dev/null 2>&1 &
   return 0
 }
+
+# Due for a refresh: the stamp names a commit the holding checkout has, HEAD
+# has moved past it, and no refresh has already run at this HEAD. Everything
+# else, including a stamp nobody can read, is not due, because a refresh cannot
+# make an unknown graph known. Spec A3 and A4.
+#
+# The marker is a file of the checkout, and session start asks this before its
+# ownership gate. So only a regular file that is not a link is read, and only
+# 64 bytes of it: a review planted the marker as a link to /dev/zero, and an
+# unbounded read of it never returned and held session start until the
+# platform killed the hook. Bytes in any locale: bash 5 counts `read -n` in
+# characters under a UTF-8 one.
+felix_graph_refresh_due() {
+  local root="${1:-$PWD}" f stamp behind home head m mark="" LC_ALL=C
+  f="$(felix_graph_file "$root")" || return 1
+  stamp="$(felix_graph_stamp "$f")" || return 1
+  behind="$(felix_graph_behind "$root" "$stamp")" || return 1
+  [ "$behind" -gt 0 ] || return 1
+  home="${f%/graphify-out/graph.json}"
+  head="$(git -C "$home" rev-parse HEAD 2>/dev/null)" || return 1
+  m="$home/graphify-out/.felix-refreshed-at"
+  if [ -f "$m" ] && [ ! -L "$m" ]; then
+    { IFS= read -r -n 64 mark < "$m"; } 2>/dev/null
+  fi
+  [ "$mark" != "$head" ]
+}
+
+# The graph's answer, handed to a session rather than named to it, is in a file
+# of its own, loaded with this one so that every caller of this file has it.
+. "$_FELIX_GRAPH_LIB/graph-answer.sh"

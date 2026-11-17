@@ -38,12 +38,15 @@ felix_next() {
   local tid receipt line kind subject reason
 
   # 1 — the change in hand.
-  local cur
-  cur="$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" || true
-  case "$cur" in
-    current) ;;
-    stale*)  _felix_next_row 1 felix "$(printf '%s' "$cur" | cut -f2 | sed 's/; run felix gate$//')" "felix gate" ;;
-    *)       _felix_next_row 1 felix "this tree has no green gate receipt" "felix gate" ;;
+  # Status 2 is a git that could not run (2026-11-14): the reason says so, and
+  # running the gate is no remedy until git runs.
+  local cur crc=0
+  cur="$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" || crc=$?
+  case "$crc:$cur" in
+    *:current) ;;
+    2:stale*) _felix_next_row 1 felix "$(printf '%s' "$cur" | cut -f2)" "make git run here, then run this again" ;;
+    *:stale*) _felix_next_row 1 felix "$(printf '%s' "$cur" | cut -f2 | sed 's/; run felix gate$//')" "felix gate" ;;
+    *)        _felix_next_row 1 felix "this tree has no green gate receipt" "felix gate" ;;
   esac
 
   # And the one thing that makes running that gate a waste of the minutes it
@@ -81,9 +84,16 @@ felix_next() {
 
   if command -v felix_evidence_check >/dev/null 2>&1; then
     while IFS=$'\t' read -r kind subject reason; do
-      [ "${kind:-}" = "gap" ] || continue
-      _felix_next_row 1 felix "the change owes evidence: $subject — $reason" \
-        "write the test, then felix evidence"
+      case "${kind:-}" in
+        gap) _felix_next_row 1 felix "the change owes evidence: $subject — $reason" \
+               "write the test, then felix evidence" ;;
+        # A row of the table that could not be read is not a gap and not a
+        # pass. The whole-scan unknowns are the escape loop's, below.
+        unknown) case "$reason" in
+                   *"not judged"*) _felix_next_row 1 felix "an evidence row cannot be judged: $subject — $reason" \
+                        "correct that row of evidence.tsv (a verifier escape), then felix evidence" ;;
+                 esac ;;
+      esac
     done <<EOF
 $(felix_evidence_check "$proj" "$base" "$root" 2>/dev/null)
 EOF
@@ -98,9 +108,24 @@ EOF
       # and there is no diff to show them the reversal path for. Ranked 1 and
       # Felix's, because until it is corrected every row above and below it was
       # computed against a comparison that never happened.
+      # Since 2026-10-08 it also means git could not read the change to the
+      # end, named by its pseudo-path rather than by a base. The reason quotes
+      # git, and the remedy is whichever that names: a path back to a readable
+      # file, an index rebuilt, or a base this branch shares history with.
+      # Since 2026-11-14 it also means git could not run at all, by the
+      # pseudo-subject GIT, and the reason gives git's exit status.
       if [ "$kind" = "unknown" ]; then
-        _felix_next_row 1 felix "nothing was scanned: $subject — $reason" \
-          "name a base that exists here, with --base, then run this again"
+        case "$subject" in
+          GIT)
+            _felix_next_row 1 felix "$reason" \
+              "make git run here, then run this again" ;;
+          ADDED-LINES|CHANGED-PATHS)
+            _felix_next_row 1 felix "not scanned in full: $subject — $reason" \
+              "fix what git names in that reason, then run this again" ;;
+          *)
+            _felix_next_row 1 felix "nothing was scanned: $subject — $reason" \
+              "name a base that exists here, with --base, then run this again" ;;
+        esac
         continue
       fi
       _felix_next_row 2 founder "$kind: $subject — $reason" \
@@ -144,14 +169,22 @@ $(felix_ready_report "$proj" 2>/dev/null)
 EOF
   fi
 
-  # 4 — upkeep.
+  # 4 — upkeep. The status is kept for rank 6, which says the rows whose
+  # capabilities could not be read.
+  local mstat=""
   if command -v felix_maint_status >/dev/null 2>&1; then
-    local st nm age cad desc
+    local st nm age cad desc fnames="" own nl=$'\n'
+    mstat="$(felix_maint_status "$proj" "$(felix_repo_root "$PWD" 2>/dev/null)" 2>/dev/null)"
+    # A row the founder owns is his and not a session's: the public snapshot
+    # needs his yes, and a session told to do it on a branch cannot finish it.
+    command -v felix_maint_founder >/dev/null 2>&1 && fnames="$(felix_maint_founder "$proj" 2>/dev/null)"
     while IFS=$'\t' read -r st nm age cad desc; do
       [ "${st:-}" = "due" ] || continue
-      _felix_next_row 4 felix "upkeep due: $nm — $desc" "felix maintenance"
+      own=felix
+      case "$nl$fnames$nl" in *"$nl$nm$nl"*) own=founder ;; esac
+      _felix_next_row 4 "$own" "upkeep due: $nm — $desc" "felix maintenance"
     done <<EOF
-$(felix_maint_status "$proj" "$(felix_repo_root "$PWD" 2>/dev/null)" 2>/dev/null)
+$mstat
 EOF
   fi
 
@@ -210,16 +243,42 @@ EOF
   # collision, and the guard for it was written and then called by nothing but
   # the suite — every surface that reads maintenance keeps only `^due`, so a
   # typo in the capability column is invisible on all of them, permanently.
+  #
+  # A third column of `unknown` is a list that could not be read at all, which
+  # says nothing about whether the capability is declared. Until 2026-10-01 that
+  # read as "nothing declares it" and sent someone to edit a table that may be
+  # right; it is its own row now, and its action is to ask again.
+  local mname mcap mwhy msaid="|"
   if command -v felix_maint_unreachable >/dev/null 2>&1; then
-    local mname mcap
-    while IFS=$'\t' read -r mname mcap; do
+    while IFS=$'\t' read -r mname mcap mwhy; do
       [ -n "${mname:-}" ] || continue
+      if [ "${mwhy:-}" = "unknown" ]; then
+        _felix_next_row 6 felix "upkeep '$mname': the capabilities this project declares could not be read, so whether $mcap is declared is not known" \
+          "run felix maintenance again"
+        msaid="$msaid$mname|"
+        continue
+      fi
       _felix_next_row 6 felix "upkeep '$mname' waits on a capability nothing declares: $mcap" \
         "fix the capability in $proj/maintenance.tsv, or declare it — it can never come due as written"
     done <<EOF
 $(felix_maint_unreachable "$proj" 2>/dev/null)
 EOF
   fi
+  # The rest of the routines the status calls unknown. felix_maint_unreachable
+  # passes over the capabilities it trusts as spelled (ci, tests, ...), so
+  # until 2026-10-01 a routine on one of those, over a list that could not be
+  # read, reached no rank here, and `felix next` printed "no upkeep is past its
+  # cadence" over it. A routine said above with its capability is not said
+  # twice.
+  local ust unm urest
+  while IFS=$'\t' read -r ust unm urest; do
+    [ "${ust:-}" = "unknown" ] || continue
+    case "$msaid" in *"|$unm|"*) continue ;; esac
+    _felix_next_row 6 felix "upkeep '$unm': the capabilities this project declares could not be read, so whether it is due is not known" \
+      "run felix maintenance again"
+  done <<EOF
+$mstat
+EOF
 
   # 7 — routing. Mounted, never pointed at. Not the same as "no route names it":
   # the table may name it while its keywords never match the work anybody does,

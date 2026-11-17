@@ -77,21 +77,21 @@ _felix_candidates_answer_epoch() {
 # The rules in the order a reader can act on them; each reason is distinct so
 # a refused row says what to change.
 felix_candidates_rules() {
-  local proj="$1" root="$2" f line n name cls applies ev grounds reason g bad preds admitted
+  local proj="$1" root="$2" f line n name cls applies ev grounds reason g bad preds admitted LC_ALL=C
   local nl='
 '
   f="$(felix_candidates_answer_path "$proj")"
   [ -f "$f" ] || return 0
-  preds="$(felix_probe_rows "$proj" 2>/dev/null | cut -f1 | LC_ALL=C sort -u)"
+  preds="$(felix_probe_rows "$proj" 2>/dev/null | LC_ALL=C cut -f1 | LC_ALL=C sort -u)"
   admitted="$(felix_obligation_names "$proj" 2>/dev/null)"
-  grep -vE '^[[:space:]]*(#|$)' "$f" | grep -v $'^done\t' | while IFS= read -r line; do
+  LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$f" | LC_ALL=C grep -v $'^done\t' | while IFS= read -r line; do
     [ -n "$line" ] || continue
-    n="$(printf '%s\n' "$line" | awk -F'\t' '{ print NF }')"
-    name="$(printf '%s\n' "$line" | cut -f1)"
+    n="$(printf '%s\n' "$line" | LC_ALL=C awk -F'\t' '{ print NF }')"
+    name="$(printf '%s\n' "$line" | LC_ALL=C cut -f1)"
     if [ "$n" -ne 7 ]; then
       printf 'refuse\t%s\t%s fields where the shape has 7\n' "${name:-(unnamed)}" "$n"; continue
     fi
-    if ! grep -qE '^[a-z][a-z0-9_]*$' <<<"$name"; then
+    if ! LC_ALL=C grep -qE '^[a-z][a-z0-9_]*$' <<<"$name"; then
       printf 'refuse\t%s\tnot a name: an obligation is lowercase letters, digits and underscores\n' "${name:-(unnamed)}"; continue
     fi
     # Membership by case, not a pipe into grep -q: grep stops at the first
@@ -100,7 +100,7 @@ felix_candidates_rules() {
     case "$nl$admitted$nl" in
       *"$nl$name$nl"*) printf 'refuse\t%s\talready admitted in obligations.tsv\n' "$name"; continue ;;
     esac
-    cls="$(printf '%s\n' "$line" | cut -f2)"
+    cls="$(printf '%s\n' "$line" | LC_ALL=C cut -f2)"
     case "$cls" in
       *_BLOCKING) printf 'refuse\t%s\tclass %s may not block: a single model finding is advisory only, and a person admits it with the class they can defend\n' "$name" "$cls"; continue ;;
     esac
@@ -108,20 +108,20 @@ felix_candidates_rules() {
       *" $cls "*) ;;
       *) printf 'refuse\t%s\tclass "%s" is not one of %s\n' "$name" "$cls" "$FELIX_CANDIDATES_CLASSES"; continue ;;
     esac
-    ev="$(printf '%s\n' "$line" | cut -f4)"
+    ev="$(printf '%s\n' "$line" | LC_ALL=C cut -f4)"
     if [ -z "$ev" ] || [ "$ev" = "-" ]; then
       printf 'refuse\t%s\tno evidence: a candidate nothing could ever discharge is a wish\n' "$name"; continue
     fi
-    grounds="$(printf '%s\n' "$line" | cut -f5)"
+    grounds="$(printf '%s\n' "$line" | LC_ALL=C cut -f5)"
     bad=""
-    for g in $(printf '%s' "$grounds" | tr ',' ' '); do
+    for g in $(printf '%s' "$grounds" | LC_ALL=C tr ',' ' '); do
       case "$nl$preds$nl" in *"$nl$g$nl"*) ;; *) bad="$g" ;; esac
     done
     [ -z "$grounds" ] && bad="-"
     if [ -n "$bad" ]; then
       printf 'refuse\t%s\tground "%s" is not a declared probe: a proposal grounded on nothing Felix reads is the fabrication the spec forbids\n' "$name" "$bad"; continue
     fi
-    reason="$(printf '%s\n' "$line" | cut -f7)"
+    reason="$(printf '%s\n' "$line" | LC_ALL=C cut -f7)"
     if [ "${#reason}" -gt "$FELIX_CANDIDATES_REASON_MAX" ]; then
       printf 'refuse\t%s\ta reason longer than %s characters, which the log could not hold whole\n' "$name" "$FELIX_CANDIDATES_REASON_MAX"; continue
     fi
@@ -138,12 +138,12 @@ felix_candidates_record() {
   local proj="$1" root="$2" f hash prov epoch stamp tid out n=0 line
   f="$(felix_candidates_answer_path "$proj")"
   [ -f "$f" ] || { printf 0; return 0; }
-  [ "$(felix_commission_provider_state "$proj" "$root" "$FELIX_CANDIDATES_NEED" | cut -f1)" = "answered" ] \
+  [ "$(felix_commission_provider_state "$proj" "$root" "$FELIX_CANDIDATES_NEED" | LC_ALL=C cut -f1)" = "answered" ] \
     || { printf 0; return 0; }
   hash="$(_felix_hash < "$f")"
   prov="$(basename "$f")@$hash"
   out="$(felix_candidates_path "$proj")"
-  if [ -f "$out" ] && grep -qF "	$prov	" "$out" 2>/dev/null; then printf 0; return 0; fi
+  if [ -f "$out" ] && LC_ALL=C grep -qF "	$prov	" "$out" 2>/dev/null; then printf 0; return 0; fi
   mkdir -p "$(dirname "$out")" 2>/dev/null || { printf 0; return 1; }
   epoch="$(_felix_candidates_answer_epoch "$f")"
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -153,8 +153,8 @@ felix_candidates_record() {
     line="${line#accept	}"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tprobabilistic\t%s\n' \
       "$stamp" "${tid:-unknown-tree}" "${epoch:--}" "$(felix_commission_provider_provenance felix)" "$prov" \
-      "$(printf '%s\n' "$line" | cut -f1)" "$(printf '%s\n' "$line" | cut -f2)" \
-      "$(printf '%s\n' "$line" | cut -f3-)" >> "$out" || { printf '%s' "$n"; return 1; }
+      "$(printf '%s\n' "$line" | LC_ALL=C cut -f1)" "$(printf '%s\n' "$line" | LC_ALL=C cut -f2)" \
+      "$(printf '%s\n' "$line" | LC_ALL=C cut -f3-)" >> "$out" || { printf '%s' "$n"; return 1; }
     n=$((n + 1))
   done <<ROWS
 $(felix_candidates_rules "$proj" "$root")
@@ -165,7 +165,7 @@ ROWS
 felix_candidates_read() {
   local f; f="$(felix_candidates_path "$1")"
   [ -f "$f" ] || return 0
-  grep -vE '^[[:space:]]*(#|$)' "$f"
+  LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$f"
   return 0
 }
 
@@ -191,9 +191,17 @@ felix_candidates_stale() {
 # the request carries the epoch the answer will be proposed under, and a
 # request about a topology the probes could not read would ask for a proposal
 # grounded on nothing. Prints the request path.
+#
+# 3 when the request could not be written because the declared list could not
+# be read, and nothing was written. 2 stays the epoch's refusal, and is not
+# borrowed for this, so a caller can tell a topology the probes could not read
+# from a list nobody read. Until 2026-10-01 the request wrote itself over an
+# empty list and named the wrong capabilities.
 felix_candidates_request() {
-  local proj="$1" root="$2" tpl="$3" ep
+  local proj="$1" root="$2" tpl="$3" ep rrc
   ep="$(felix_epoch "$proj" "$root" 2>/dev/null)" || ep=""
   [ -n "$ep" ] || return 2
-  felix_commission_request "$proj" "$root" "$FELIX_CANDIDATES_NEED" "$tpl"
+  felix_commission_request "$proj" "$root" "$FELIX_CANDIDATES_NEED" "$tpl"; rrc=$?
+  [ "$rrc" -eq 2 ] && return 3
+  return "$rrc"
 }

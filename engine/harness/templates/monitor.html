@@ -92,7 +92,7 @@ body{background:var(--void);color:var(--bone);font-family:var(--mono);font-size:
 
 .kv{display:grid;grid-template-columns:1fr auto;gap:5px 10px;font-size:11px;align-content:start}
 .kv .k{color:var(--ash);letter-spacing:.1em}
-.kv .v{color:var(--bone);text-align:right}
+.kv .v{color:var(--bone);text-align:right} .kv .v.warn{color:var(--amber)}
 .rt{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:11px;align-content:start}
 .rt .n{color:var(--cy);letter-spacing:.06em}
 .rt .p{color:var(--ash);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
@@ -257,7 +257,7 @@ const at=id=>document.getElementById(id);
 
 const D=(DATA&&DATA.projects)?DATA:{generated:'',projects:[]};
 const S={proj:0};
-const cur=()=>D.projects[S.proj]||{name:'—',says:[],routes:[],routeLog:[],verifyLog:[],mistakes:[],stack:[],lessons:0};
+const cur=()=>D.projects[S.proj]||{name:'—',says:[],routes:[],routeLog:[],verifyLog:[],mistakes:[],stack:[],capabilities:[],lessons:0};
 /* The logs are written in UTC, deliberately, so records from different machines
    sort. The page previously sliced the string straight out of the timestamp,
    which showed UTC wearing a local clock's label: a 12:56 session read 19:56.
@@ -270,7 +270,7 @@ const isToday=t=>{const d=_d(t);if(!d)return false;const n=new Date();
   return d.toDateString()===n.toDateString();};
 const unesc=s=>String(s||'').replace(/\\n/g,'\n').replace(/\\\\/g,'\\');
 
-const LABEL={brief:'routed',held:'held',skipped:'flagged','plugin-blocked':'alarm',unrecorded:'note',excepted:'excepted',merged:'merged'};
+const LABEL={brief:'routed',held:'held',skipped:'flagged','plugin-blocked':'alarm',unrecorded:'note',excepted:'excepted',merged:'merged',unjudged:'could not judge',debt:'let go','prompt-unfinished':'hook cut off'};
 
 /* A prompt can arrive carrying an attached file path and escaped quotes. Shown
    raw it is unreadable and, before the min-width fixes above, it also pushed a
@@ -411,11 +411,24 @@ function renderMem(){
      windows, and rendering a window's length as a total read "things said 60"
      over a log holding 755. `stack` is the whole manifest, so its length is
      the count. */
+  /* 2026-10-01: only an array is a capabilities list that was read, and its
+     length is the count. Anything else is not known: the payload's
+     {"unknown":WHY} for a list that could not be read, and null, a missing key
+     or a stray value for data that does not say. Each shows in amber with the
+     reason as its title, and an empty reason takes the fallback, so no unread
+     cell is ever plain. Not `p.capabilities||[]`, which is how null or a
+     missing key would read as zero declared, the claim this row exists to stop
+     the monitor making. */
+  const c=p.capabilities,known=Array.isArray(c);
+  const why=(c&&typeof c==='object'&&typeof c.unknown==='string'&&c.unknown)?c.unknown
+           :"this page's data does not say which capabilities this project declares";
   const rows=[['lessons on file',p.lessons||0],
               ['gate failures',p.mistakesTotal??(p.mistakes||[]).length],
               ['tools declared',(p.stack||[]).length],
+              ['capabilities declared',known?c.length:'not known',known?'':why],
               ['things said',p.saysTotal??(p.says||[]).length]];
-  rows.forEach(([k,v])=>{box.appendChild(el('span','k',k));box.appendChild(el('span','v',v));});
+  rows.forEach(([k,v,t])=>{box.appendChild(el('span','k',k));
+    const n=el('span',t?'v warn':'v',v);if(t)n.title=t;box.appendChild(n);});
 }
 function meter(label,val,pct,cls){
   const m=el('div','meter'+(cls?' '+cls:''));const t=el('div','t');
@@ -472,7 +485,7 @@ function renderLog(){
   pastSays().forEach(s=>ev.push({t:s.t,m:(LABEL[s.kind]||s.kind)+' · '+gist(s),
     c:(s.kind==='held'||s.kind==='plugin-blocked')?'bad':(s.kind==='skipped'||s.kind==='unrecorded')?'warn':''}));
   (p.verifyLog||[]).forEach(v=>ev.push({t:v.t,m:'gate '+v.verdict+' · '+v.reason,
-    c:v.verdict==='blocked'?'bad':v.verdict==='override'?'warn':'ok'}));
+    c:v.verdict==='allowed'?'ok':v.verdict==='blocked'?'bad':'warn'}));
   ev.sort((a,b)=>String(b.t).localeCompare(String(a.t)));
   const n=new Set(pastSays().map(s=>s.session||'unknown')).size;
   at('logTag').textContent=n?n+' past session'+(n===1?'':'s'):'archive';

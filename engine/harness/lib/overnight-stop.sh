@@ -36,16 +36,16 @@ felix_overnight_quiet() {   # proj, sid, transcript -> 1 when quiet, 0 when the 
   mark="$(_felix_overnight_mark "$proj" "$sid")" || { printf '1'; return 0; }
   { [ -n "$tp" ] && [ -f "$tp" ] && [ -r "$tp" ]; } || { printf '1'; return 0; }
   size="$(wc -c < "$tp" 2>/dev/null | tr -d ' ')"
-  case "$size" in ''|*[!0-9]*) printf '1'; return 0 ;; esac
+  case "$size" in ''|*[!0123456789]*) printf '1'; return 0 ;; esac
   from="$(cat "$mark" 2>/dev/null)"
-  case "$from" in ''|*[!0-9]*) from=0 ;; esac
+  case "$from" in ''|*[!0123456789]*) from=0 ;; esac
   # Shorter than the mark is a transcript that was replaced, not one that
   # shrank, so it is read from its start.
   [ "$from" -le "$size" ] || from=0
   n="$(tail -c +"$(( from + 1 ))" "$tp" 2>/dev/null \
        | grep -cE '"type"[[:space:]]*:[[:space:]]*"tool_use"' 2>/dev/null)"
   mkdir -p "$(dirname "$mark")" 2>/dev/null && printf '%s\n' "$size" > "$mark" 2>/dev/null
-  case "${n:-0}" in ''|*[!0-9]*|0) printf '1' ;; *) printf '0' ;; esac
+  case "${n:-0}" in ''|*[!0123456789]*|0) printf '1' ;; *) printf '0' ;; esac
   return 0
 }
 

@@ -1,0 +1,4 @@
+# The lanes this project counts (lib/lane.sh), from docs/2026-10-29-capability-lane-first-slices-design.md §6.3.
+# lane, counts (an ERE over changed paths), share (n/d), window (days). Read as committed, never from the
+# working tree. A change here lands on green; felix lane names the commit that last changed a lane's row.
+capability	^engine/	1/4	14

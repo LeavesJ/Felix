@@ -1,0 +1,38 @@
+# Groups of parts that run as one unit under tests/run -j N (contract D5).
+# A line is a group's name, a tab, and a part's file name; empty lines and lines
+# starting # are ignored. A group's lines are adjacent, its members follow one
+# another in the driver's order with no part between, it has two to six, a part
+# is in at most one, and none of 0001 to 0009 or 9990 is in any. tests/run -j 1
+# does not read this file.
+#
+# ib: 0940 reads the $IB/runs/*.err files that 0900 to 0930 write (97 files in
+# order, 28 alone), so under -j N they run in one process, in order.
+ib	0900-felix-inventory-the-settled-contract-of-2026.sh
+ib	0910-continued.sh
+ib	0920-continued.sh
+ib	0930-continued.sh
+ib	0940-the-handoff-as-sections-no-two-sessions-writ.sh
+# rx: 1100 builds the reach fixture (tests/lib/reach.sh), 1110 takes it up and 1120 takes it up and removes
+# its base, so under -j N they run in one process, in order. Where $TMP's ancestors are writable by others
+# the base is a directory outside $TMP that the fixture guard's roots gain, and 1120 puts them back.
+rx	1100-declared-tools-reach-the-pulse-and-felix-status.sh
+rx	1110-found-after-the-blind-part-status-index-and-long-list.sh
+rx	1120-found-in-review-reach-runs-in-an-empty-directory.sh
+# gp: 0201's check that no refusal its block provoked reached the suite's refusal record (0201:308-311) reads
+# from _gp_rec0, which lib/gitproof.sh sets once, at 0200's first call, so serially it judges the refusals 0200
+# and 0201 provoked and alone only 0201's. Under -j N they run in one process, in order (25 s serially).
+gp	0200-generated-constitution.sh
+gp	0201-continued.sh
+# au: 0850's check that nothing changed outside the review fixtures and that no claude, gh, curl or wget was
+# called (0850:182-197) reads the stub log and the snapshots taken before 0810's first audit run, so serially it
+# judges the audit runs of 0810 to 0850 and alone only 0850's. Under -j N they run in one process, in order
+# (50 s serially).
+au	0810-felix-audit-a-read-only-report-over-claude-c.sh
+au	0820-felix-new-no-commission-governed-not-commiss.sh
+au	0830-felix-audit-what-the-reviews-left-open.sh
+au	0840-felix-audit-what-the-third-review-found.sh
+au	0850-felix-audit-what-the-fourth-review-found.sh
+# ts3: 2177 continues 2176 (trust step 3, slice 1): it takes up the fixture R, the entry, the helpers and the receipts
+# 2176 builds under $TMP/ts3, and removes them at its end, so under -j N they run in one process, in order.
+ts3	2176-trust-step3-policy-from-p-blind.sh
+ts3	2177-trust-step3-policy-from-p-blind-b.sh

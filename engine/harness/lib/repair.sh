@@ -28,7 +28,8 @@
 #      workflow, no branch checked out, or gh did not answer. Also the failing
 #      run's own log, when gh does not answer, GitHub no longer holds it, or
 #      it is empty. And a run that failed to start, which left no log, or one
-#      whose conclusion this code does not know
+#      whose conclusion this code does not know. And an --implicated file
+#      that could not be written
 #   2  the repair ceiling is reached, or could not be counted: gh did not
 #      answer, or the newest 100 gate runs held no success and fewer failures
 #      than the ceiling
@@ -58,6 +59,14 @@
 # no failing output.
 # startup_failure is left alone too, whether or not the ceiling counts it: the
 # gate never ran, so no step left a log to read.
+#
+# `--implicated <file>` is the contract's second half. The file is emptied on
+# every run, and a brief (0) writes into it the files the failing log names,
+# one per line, the set the brief lists under "implicated files". The template
+# holds a repair to that set: it stops at scope when the set is empty, since a
+# repair would have nothing it may change, and refuses a diff that reaches
+# outside it. Until 2026-09-24 that boundary was a sentence in the model's
+# prompt and nothing checked it.
 #
 # felix brief keeps this shape and uses 0, 1, 2 and 3 of it: its 2 is a failed
 # resolve, and it has no 5, because an issue is always something to act on.
@@ -99,7 +108,9 @@ felix_repair_branch() {
 # startup_failure and any conclusion this code has not met. A run that ended
 # without a verdict (cancelled, skipped, neutral, stale, action_required) is
 # passed over like one still going, and neither spends the ceiling nor resets
-# it. Until 2026-09-23 each of those ended the count, so failure, cancelled,
+# it. action_required is also how github.com holds a pull_request run that a
+# workflow's GITHUB_TOKEN caused, and each unattended push leaves one. Until
+# 2026-09-23 each of those ended the count, so failure, cancelled,
 # failure, failure read as one attempt and not three, and a gate that cancels
 # in progress, or anyone cancelling a run, could keep an unattended loop from
 # ever reaching its ceiling.
@@ -126,7 +137,7 @@ felix_repair_attempts() {
             --json conclusion -q 'length, .[].conclusion' 2>/dev/null)" || return 1
   {
     read -r total
-    case "$total" in ''|*[!0-9]*) return 1 ;; esac
+    case "$total" in ''|*[!0123456789]*) return 1 ;; esac
     while read -r c; do
       case "$c" in
         success) printf '%s' "$n"; return 0 ;;
@@ -163,9 +174,9 @@ felix_repair_excerpt() {
   local run_id="$1" repo="$2" log out
   log="$(gh run view "$run_id" --repo "$repo" --log-failed 2>/dev/null)" || return 1
   out="$(printf '%s\n' "$log" \
-    | sed 's/^[^\t]*\t[^\t]*\t//' \
-    | sed 's/^[0-9TZ:.-]*Z //' \
-    | grep -vE '^\s*$' \
+    | LC_ALL=C sed 's/^[^\t]*\t[^\t]*\t//' \
+    | LC_ALL=C sed 's/^[0-9TZ:.-]*Z //' \
+    | LC_ALL=C grep -vE '^\s*$' \
     | tail -40)"
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"

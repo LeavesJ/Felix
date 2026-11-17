@@ -25,14 +25,19 @@
 # which has no space: a phrase with spaces inside a path made `test -f` a usage
 # error, and later turned a redirect into one to a file named for the first
 # word. Anywhere else it is prose and becomes the phrase, in lower case; an
-# escape such as \n before it counts as a space. Then the pieces, and only
-# where no ordinary word can be meant: two halves split anywhere, each a whole
-# word, with up to eight characters between and no letter or digit among them;
-# and a whole word that is the name with one character standing in, where that
-# character is a mark (a dot, say) or a capital among lower-case letters. Each
-# becomes the token's pieces. The first and last characters are never taken as
-# stand-ins here. An ordinary word one letter away from a name (planter against
-# planner) is never rewritten: the audit stops on it for a person to read.
+# escape such as \n before it counts as a space. Then the pieces: two halves
+# split anywhere, each a whole word, with up to eight characters between and no
+# letter or digit among them; and a whole word that is the name with one
+# character standing in, where that character is a mark (a dot, say) or a
+# capital among lower-case letters. Each becomes the token's pieces. The first
+# and last characters are never taken as stand-ins here. An ordinary word one
+# letter away from a name (planter against planner) is never rewritten: the
+# audit stops on it for a person to read. Two ordinary words that happen to
+# join into a name are rewritten, though, and nothing here can tell them from
+# a name split on purpose; so each line these two rules change is printed on
+# stdout, once for each rule, as `scrub: RULE NAME PATH:LINE` (RULE is halves
+# or stand-in, PATH as LIST gives it), for a person to read before anything
+# goes out. The report is never written into a file.
 #
 # A shell variable named after a project is renamed whole, never in part. In a
 # shell file (*.sh, or a #! line naming a shell) a name standing as a variable,
@@ -146,18 +151,23 @@ for my $s (split ' ', $rm // '') {
 }
 my $o = $_;
 s{\Q$n\E}{rep($o, $-[0], $+[0], $&)}gie;
+my $h = $_;
 for my $k (1 .. $L - 1) {
   my ($x, $y) = (substr($n, 0, $k), substr($n, $k));
   my ($tx, $ty) = (substr($t, 0, $k), $k < length $t ? substr($t, $k) : "");
   next if $ty eq "";
   s{(?<![A-Za-z0-9])\Q$x\E([^A-Za-z0-9]{1,8}?)\Q$y\E(?![A-Za-z0-9])}{$tx$1$ty}g;
 }
+print STDOUT "scrub: halves $n $ARGV:$.\n" if $_ ne $h;
+$h = $_;
 for my $k (1 .. $L - 2) {
   my ($x, $y) = (substr($n, 0, $k), substr($n, $k + 1));
   my ($tx, $ty) = (substr($t, 0, $k), $k < length $t ? substr($t, $k) : "");
   next if $ty eq "";
   s{(?<![A-Za-z0-9])\Q$x\E([^A-Za-z0-9\s]|[A-Z])\Q$y\E(?![A-Za-z0-9])}{$tx$1$ty}g;
 }
+print STDOUT "scrub: stand-in $n $ARGV:$.\n" if $_ ne $h;
+close ARGV if eof;
 PERL
 [ -s "$2" ] || exit 0
 while IFS="$(printf '\t')" read -r n tok ph rm; do

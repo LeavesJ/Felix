@@ -99,6 +99,7 @@ _felix_overnight_log()      { printf '%s/log.tsv'      "$(felix_overnight_dir "$
 # unchecked is a write anywhere. A leading dash is refused as well, because a
 # dash is what an older engine's state line holds where a session would be.
 _felix_overnight_sid_ok() {   # sid -> 0 when it is a usable session id
+  local LC_ALL=C
   case "${1:-}" in ''|.|..|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac
   [ "${#1}" -le 128 ]
 }
@@ -169,7 +170,7 @@ felix_overnight_field() {   # proj, field-number [, sid] -> value
   [ -f "$f" ] || return 1
   # sed -n 1p, not head -1: head stops reading after one line, and a cut still
   # writing would die of SIGPIPE, which pipefail hands the callers as no night.
-  cut -f"$2" < "$f" 2>/dev/null | sed -n 1p
+  LC_ALL=C cut -f"$2" < "$f" 2>/dev/null | LC_ALL=C sed -n 1p
 }
 
 felix_overnight_now() { date +%s; }
@@ -185,7 +186,7 @@ felix_overnight_active() {   # proj [, sid] -> 0 when the night is live
   turns="$(felix_overnight_field "$proj" 3 "$sid")" || return 1
   quiets="$(felix_overnight_quiets "$proj" "$sid")"
   now="$(felix_overnight_now)"
-  case "$deadline$turns" in *[!0-9]*|'') return 1 ;; esac
+  case "$deadline$turns" in *[!0123456789]*|'') return 1 ;; esac
   [ "$now" -lt "$deadline" ] || return 1
   [ "$turns" -gt 0 ] || return 1
   [ "$quiets" -lt "$FELIX_OVERNIGHT_QUIET_LIMIT" ] || return 1
@@ -203,7 +204,7 @@ felix_overnight_expired() {   # proj [, sid] -> reason, or nothing
   deadline="$(felix_overnight_field "$proj" 2 "$sid")"; turns="$(felix_overnight_field "$proj" 3 "$sid")"
   quiets="$(felix_overnight_quiets "$proj" "$sid")"
   now="$(felix_overnight_now)"
-  case "$deadline$turns" in *[!0-9]*|'') printf 'the state file is unreadable'; return 0 ;; esac
+  case "$deadline$turns" in *[!0123456789]*|'') printf 'the state file is unreadable'; return 0 ;; esac
   [ "$now" -ge "$deadline" ] && { printf 'the granted time ran out'; return 0; }
   [ "$turns" -le 0 ] && { printf 'the granted continuations ran out'; return 0; }
   [ "$quiets" -ge "$FELIX_OVERNIGHT_QUIET_LIMIT" ] && { printf 'two continuations in a row called no tool'; return 0; }
@@ -243,8 +244,8 @@ felix_overnight_granted() {   # proj, sid -> "turns hours" granted inside the wi
 felix_overnight_start() {   # proj, hours, turns, session, note -> 0, or 1 with a reason on stdout
   local proj="$1" hours="${2:-$FELIX_OVERNIGHT_DEFAULT_HOURS}" turns="${3:-$FELIX_OVERNIGHT_DEFAULT_TURNS}"
   local sid="${4:-}" note="${5:-}" now deadline f mark
-  case "$hours" in ''|*[!0-9]*) printf 'hours must be a whole number of hours'; return 1 ;; esac
-  case "$turns" in ''|*[!0-9]*) printf 'turns must be a whole number'; return 1 ;; esac
+  case "$hours" in ''|*[!0123456789]*) printf 'hours must be a whole number of hours'; return 1 ;; esac
+  case "$turns" in ''|*[!0123456789]*) printf 'turns must be a whole number'; return 1 ;; esac
   [ "$hours" -ge 1 ] || { printf 'a night shorter than an hour is a normal session'; return 1; }
   [ "$hours" -le "$FELIX_OVERNIGHT_MAX_HOURS" ] || {
     printf 'the ceiling is %s hours; start another night rather than one long one' "$FELIX_OVERNIGHT_MAX_HOURS"; return 1; }
@@ -301,8 +302,8 @@ felix_overnight_spend() {   # proj, quiet(0|1) [, sid] -> remaining
   f="$(_felix_overnight_state "$proj" "$sid")" || { printf '0'; return 1; }
   [ -f "$f" ] || { printf '0'; return 1; }
   IFS=$'\t' read -r started deadline turns quiets owner note < "$f" 2>/dev/null || true
-  case "$turns" in ''|*[!0-9]*) turns=0 ;; esac
-  case "$quiets" in ''|*[!0-9]*) quiets=0 ;; esac
+  case "$turns" in ''|*[!0123456789]*) turns=0 ;; esac
+  case "$quiets" in ''|*[!0123456789]*) quiets=0 ;; esac
   [ "$turns" -gt 0 ] && turns=$(( turns - 1 ))
   if [ "$quiet" = "1" ]; then quiets=$(( quiets + 1 )); else quiets=0; fi
   # Written beside and renamed over, and only while the night is still there.
@@ -325,7 +326,7 @@ felix_overnight_spend() {   # proj, quiet(0|1) [, sid] -> remaining
 
 felix_overnight_quiets() {   # proj [, sid] -> consecutive continuations that called no tool
   local q; q="$(felix_overnight_field "$1" 4 "${2:-}" 2>/dev/null)"
-  case "$q" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$q" ;; esac
+  case "$q" in ''|*[!0123456789]*) printf '0' ;; *) printf '%s' "$q" ;; esac
 }
 
 # Nights whose deadline passed while nobody was there to end them. With a
@@ -344,7 +345,7 @@ felix_overnight_sweep() {   # proj [, the caller's sid] -> how many were ended
     [ -n "$mine" ] && [ "$id" = "$mine" ] && continue
     key="$id"; [ "$id" = "-" ] && key=""
     deadline="$(felix_overnight_field "$proj" 2 "$key")" || continue
-    case "$deadline" in ''|*[!0-9]*) continue ;; esac
+    case "$deadline" in ''|*[!0123456789]*) continue ;; esac
     [ "$now" -ge "$deadline" ] || continue
     felix_overnight_end "$proj" "the granted time ran out; closed by a later session" "$key"
     n=$(( n + 1 ))
@@ -381,7 +382,7 @@ felix_overnight_deferred_rows() {   # proj -> the queue, oldest first
 
 felix_overnight_deferred_count() {   # proj -> how many decisions are waiting
   local n; n="$(felix_overnight_deferred_rows "$1" | grep -c . 2>/dev/null)"
-  case "${n:-}" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$n" ;; esac
+  case "${n:-}" in ''|*[!0123456789]*) printf '0' ;; *) printf '%s' "$n" ;; esac
 }
 
 # The queue is cleared by a person, not by a session, and clearing is its own
@@ -435,7 +436,7 @@ felix_overnight_report() {   # proj [, sid] -> prose on stdout
     printf '  %s\n' "$label"
     printf '    started    %s\n' "$(date -r "$started" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$started")"
     printf '    deadline   %s\n' "$(date -r "$deadline" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$deadline")"
-    case "$deadline" in ''|*[!0-9]*) ;; *)
+    case "$deadline" in ''|*[!0123456789]*) ;; *)
       printf '    left       %s continuation(s), %s hour(s)\n' "$turns" "$(( (deadline - now) / 3600 ))" ;;
     esac
     [ -n "${note:-}" ] && printf '    note       %s\n' "$note"

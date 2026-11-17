@@ -83,7 +83,7 @@ felix_table_rel() {
 _felix_risk_rows() {
   local proj="$1"
   [ -f "$proj/risk.tsv" ] || return 0
-  grep -vE '^\s*(#|$)' "$proj/risk.tsv"
+  LC_ALL=C grep -vE '^\s*(#|$)' "$proj/risk.tsv"
 }
 
 # The rows the tree under judgement inherited. Empty when this branch added the
@@ -91,7 +91,7 @@ _felix_risk_rows() {
 # introducing a whole table has not yet earned the right to be judged by it.
 _felix_risk_rows_at() {
   local root="$1" ref="$2" rel="$3"
-  git -C "$root" show "$ref:$rel" 2>/dev/null | grep -vE '^\s*(#|$)'
+  git -C "$root" show "$ref:$rel" 2>/dev/null | LC_ALL=C grep -vE '^\s*(#|$)'
 }
 
 _felix_tier_rank() {
@@ -112,7 +112,7 @@ _felix_classify_pass() {
       path)
         while IFS= read -r f; do
           [ -n "$f" ] || continue
-          if grep -qE "$pattern" <<<"$f"; then
+          if LC_ALL=C grep -qE "$pattern" <<<"$f"; then
             printf '%s\t%s\t%s\n' "$tier" "$f" "$reason"
             matched_paths="$matched_paths
 $f"
@@ -128,7 +128,7 @@ EOF
         # newline, and the one the here-string adds only ends its last line.
         # Nothing is stripped first: a % removal of a trailing newline scans
         # every suffix of a value that has none, which is seconds on a long diff.
-        if [ -n "$added" ] && grep -qE "$pattern" <<<"$added"; then
+        if [ -n "$added" ] && LC_ALL=C grep -qE "$pattern" <<<"$added"; then
           printf '%s\tADDED-LINES\t%s\n' "$tier" "$reason"
         fi
         ;;
@@ -170,12 +170,30 @@ felix_classify_diff() {
   # reads stdout and drops the exit code. felix_classify_tier promotes this to
   # `unknown`, which outranks every tier — receipt.sh's stated precedence, since
   # a verdict computed from inputs nobody read is the confident wrong answer.
-  if [ -n "$base" ] && ! felix_base_resolves "$root" "$base"; then
-    printf 'unknown\t%s\tthis base names nothing here, so nothing was compared\n' "$base"
-    return 0
+  # A git that could not run is named GIT (2026-11-14): nothing was compared
+  # either way, and the remedy is git, not --base.
+  if [ -n "$base" ]; then
+    local brc=0 gwhy=""
+    felix_base_resolves "$root" "$base" gwhy || brc=$?
+    case "$brc" in
+      0) ;;
+      2) printf 'unknown\tGIT\t%s, so the base %s was not looked up and nothing was compared\n' "$gwhy" "$base"
+         return 0 ;;
+      *) printf 'unknown\t%s\tthis base names nothing here, so nothing was compared\n' "$(felix_base_subject "$base")"
+         return 0 ;;
+    esac
   fi
 
-  paths="$(felix_changed_paths "$root" "$base")"
+  # A change git could not read to the end is the same emptiness one step on
+  # (2026-10-08), and it is said the same way. With a tracked named pipe at A.txt
+  # the added lines came back empty, so a credential added to src.txt was in no
+  # finding and the tier fell to green. The rows below still run on what was
+  # read, and this one outranks them.
+  # The row is named by what could not be read, CHANGED-PATHS or ADDED-LINES as
+  # escape.sh names it, and carries git's reason. Named by the base, it read as
+  # a base that resolves to nothing, whose remedy is another base.
+  local unread=""
+  paths="$(felix_changed_paths "$root" "$base")" || unread=CHANGED-PATHS
   # Added lines only. A removed secret is not a new exposure, and counting it as
   # one trains people to ignore the finding.
   #
@@ -185,7 +203,10 @@ felix_classify_diff() {
   # unstaged credential was a path whose content no rule saw: `felix scope`
   # called it in scope, and on a stacked branch every line the branch below
   # added was read again as this one's. escape.sh already read felix_added_lines.
-  added="$(felix_added_lines "$root" "$base" || true)"
+  added="$(felix_added_lines "$root" "$base")" || unread="${unread:-ADDED-LINES}"
+  [ -z "$unread" ] \
+    || printf 'unknown\t%s\tgit could not read this change to the end (%s), so its content was not classified\n' \
+         "$unread" "$(felix_change_why "$root" "$base")"
 
   out="$(_felix_classify_pass "$(_felix_risk_rows "$proj")" "$paths" "$added")"
 

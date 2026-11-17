@@ -53,8 +53,7 @@ lc() { tr '[:upper:]' '[:lower:]'; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SELF="$(basename "$HERE")"
-SRC_REF="origin/main" BASE_REF="" PUBLIC_README=0 OUT="" PCLONE="" EXPECT="" MSGFILE=""
-GIVEN=()
+SRC_REF="origin/main" BASE_REF="" PUBLIC_README=0 OUT="" PCLONE="" EXPECT="" MSGFILE=""; GIVEN=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|--base|--out|--public-clone|--message|--expect-tree|--name)
@@ -115,8 +114,7 @@ else : > "$ACKS"; fi
 git -C "$HOME_TOP" log --first-parent -m --diff-filter=A --reverse --format= --name-only "$SRC" -- 'projects/*/project.json' |
   awk -F/ -v self="$SELF" '/^projects\/[^\/]+\/project\.json$/ && $2 != self && !seen[$2]++ { print $2 }' > "$OUT/scrub.order" ||
   die "could not read the order the manifests landed on main"
-SCRUB=()
-while IFS= read -r n; do SCRUB+=("$n"); done < "$OUT/scrub.order"
+SCRUB=(); while IFS= read -r n; do SCRUB+=("$n"); done < "$OUT/scrub.order"
 [ ${#SCRUB[@]} -le ${#ORD[@]} ] || die "more projects than tokens; extend ORD before publishing"
 
 # AUDIT: wider than SCRUB, and never narrowed by what a checkout on this disk
@@ -129,8 +127,9 @@ while IFS= read -r n; do SCRUB+=("$n"); done < "$OUT/scrub.order"
 #            ~/.felix-home): an untracked stub named by no other source went out
 #            verbatim, and again from a session's worktree, which holds none
 #   memory   every directory of the memory root
-#   remotes  every remote_match a manifest on main has declared: whole, without
-#            separators, and by its components of six or more characters
+#   remotes  every remote_match a manifest on main has declared: the repository
+#            whole, joined and by its words of six or more characters, and each
+#            owner whole, except the public repository's
 #   given    each --name
 #   machine  this login and the last part of $HOME, for a private path
 # less this project's own names. A reviewed row of .snapshot-ack.tsv
@@ -138,10 +137,12 @@ while IFS= read -r n; do SCRUB+=("$n"); done < "$OUT/scrub.order"
 # the engine's exercises leave directories there named in its own vocabulary,
 # and a row that waived the name everywhere would leave it unsearched the day a
 # project of that name lands on main, on disk or is given with --name.
-remote_forms() {
-  sed 's|.*/||; s|\.git$||' | lc |
-    awk -F'[-_. ]' 'NF { print; s = $0; gsub(/[-_. ]/, "", s); print s
-                         for (i = 1; i <= NF; i++) if (length($i) >= 6) print $i }'
+slugs_of() { sed 's|\.git$||; s|^.*[:/]\([^/:][^/:]*/[^/:][^/:]*\)$|\1|'; }  # remote_match values, as owner/repo
+remote_forms() {  # remote_match values on stdin; an owner under three characters goes to the file $1, said and not searched
+  : > "$1"; slugs_of | lc | awk -F/ -v pub="$(printf '%s' "${PUBLIC_SLUG%%/*}" | norm)" -v short="$1" '
+    NF == 2 { n = $1; gsub(/[^a-z0-9]/, "", n); if (n != "" && n != pub) { if (length(n) < 3) print $1 > short; else print $1 } }
+    NF && $NF != "" { print $NF; s = $NF; gsub(/[-_. ]/, "", s); print s; k = split($NF, w, /[-_. ]/)
+                      for (i = 1; i <= k; i++) if (length(w[i]) >= 6) print w[i] }'
 }
 norm() { lc | tr -cd 'a-z0-9\n'; }
 MEM="${FELIX_MEMORY:-$HOME/.felix/memory}"
@@ -150,18 +151,21 @@ NM="$OUT/names"
 git -C "$HOME_TOP" log --full-history --format= --name-only "$MAIN" -- projects/ | awk -F/ 'NF > 2 { print $2 }' | sort -u > "$NM.history" ||
   die "could not read the history of projects/ on the home's main"
 PTR="${FELIX_HOME:-}" PF="$HOME/.felix-home"  # the engine's own order, lib/resolve.sh felix_home
-[ -n "$PTR" ] || [ ! -f "$PF" ] || PTR="$(tr -d '[:space:]' < "$PF")" || die "could not read the home pointer $PF"
+if [ -z "$PTR" ] && [ -f "$PF" ]; then  # read as lib/resolve.sh _felix_home_pointer reads it: the two ends trimmed, since a home path may hold a space
+  PTR="$(cat "$PF")" || die "could not read the home pointer $PF"
+  PTR="${PTR#"${PTR%%[![:space:]]*}"}"; PTR="${PTR%"${PTR##*[![:space:]]}"}"
+fi
 [ -z "$PTR" ] || [ -d "$PTR/projects" ] || die "the home the engine points at, $PTR, has no projects/ to read"
 { printf '%s\n' "$HOME_TOP" ${PTR:+"$PTR"}; git -C "$HOME_TOP" worktree list --porcelain | sed -n 's/^worktree //p'; } | sort -u | while IFS= read -r d; do
   [ ! -d "$d/projects" ] || (cd "$d/projects" && find . -mindepth 1 -maxdepth 1 -type d | sed 's|^\./||'); done | sort -u > "$NM.disk" || die "could not list the folders under projects/"
 (cd "$MEM" && find . -mindepth 1 -maxdepth 1 -type d | sed 's|^\./||' | sort -u) > "$NM.memory" || die "could not list the memory root $MEM"
 git -C "$HOME_TOP" log --full-history -p --format= "$MAIN" -- 'projects/*/project.json' |
-  sed -n 's/^[-+].*"remote_match"[^"]*"\([^"]*\)".*/\1/p' | remote_forms | sort -u > "$NM.remotes" ||
+  sed -n 's/^[-+].*"remote_match"[^"]*"\([^"]*\)".*/\1/p' | remote_forms "$NM.owners.short" | sort -u > "$NM.remotes" ||
   die "could not read the remotes the manifests on the home's main declared"
 for f in history disk memory remotes; do [ -s "$NM.$f" ] || die "the audit's $f source came back empty, and it never is"; done
 printf '%s\n' ${GIVEN[@]+"${GIVEN[@]}"} | sed '/^$/d' | sort -u > "$NM.given"
 { id -un && basename "$HOME"; } | sort -u > "$NM.machine" || die "could not read this machine's login"
-{ printf '%s\n' "$SELF" "${PUBLIC_SLUG##*/}"; printf '%s\n' "$HOME_SLUG" | remote_forms; } | norm | sort -u > "$NM.self"
+{ printf '%s\n' "$SELF" "${PUBLIC_SLUG##*/}"; printf '%s\n' "${HOME_SLUG##*/}" | remote_forms /dev/null; } | norm | sort -u > "$NM.self"
 awk -F'\t' '$1 == "@name" && NF >= 3 { print $2 }' "$ACKS" | norm | sort -u > "$NM.excluded"
 drop() {  # FILE of normalized names; on stdin names; prints those it does not hold
   awk 'FILENAME == ARGV[1] { d[$0] = 1; next } { m = tolower($0); gsub(/[^a-z0-9]/, "", m); if (m != "" && !(m in d)) print }' "$1" -
@@ -171,11 +175,10 @@ sort -u "$NM.history" "$NM.disk" "$NM.memory.kept" "$NM.remotes" "$NM.given" "$N
 drop "$NM.self" < "$NM.union" > "$NM.audit"
 short="$(awk '{ m = tolower($0); gsub(/[^a-z0-9]/, "", m); if (length(m) < 3) print }' "$NM.audit")"
 [ -z "$short" ] || die "audit names too short to search for; exclude each with a reviewed @name row, or rename:" $short
-AUDIT=()
-while IFS= read -r n; do AUDIT+=("$n"); done < "$NM.audit"
+AUDIT=(); while IFS= read -r n; do AUDIT+=("$n"); done < "$NM.audit"
 [ ${#AUDIT[@]} -gt 0 ] || die "no audit names are left, so the audit would search for nothing"
 cnt() { wc -l < "$1" | tr -d ' '; }
-say "names: ${#AUDIT[@]} searched for; history $(cnt "$NM.history"), disk $(cnt "$NM.disk"), memory $(cnt "$NM.memory"), remotes $(cnt "$NM.remotes"), given $(cnt "$NM.given"), machine $(cnt "$NM.machine"); $(($(cnt "$NM.memory") - $(cnt "$NM.memory.kept"))) of memory's excluded by a reviewed row; less $(($(cnt "$NM.union") - ${#AUDIT[@]})) of this project's own"
+say "names: ${#AUDIT[@]} searched for; history $(cnt "$NM.history"), disk $(cnt "$NM.disk"), memory $(cnt "$NM.memory"), remotes $(cnt "$NM.remotes"), given $(cnt "$NM.given"), machine $(cnt "$NM.machine"); $(($(cnt "$NM.memory") - $(cnt "$NM.memory.kept"))) of memory's excluded by a reviewed row; less $(($(cnt "$NM.union") - ${#AUDIT[@]})) of this project's own$([ ! -s "$NM.owners.short" ] || printf '; owner(s) under three characters, not searched: %s' "$(sort -u "$NM.owners.short" | tr '\n' ' ')")"
 
 # The audit is its own file, snapshot-audit.sh beside this one, and shares no
 # pattern with the scrub below; its header says what it looks for. scan DIR
@@ -255,7 +258,7 @@ for n in ${SCRUB[@]+"${SCRUB[@]}"}; do
   tok=${ORD[$i]}; i=$((i + 1))
   if [ "$tok" = another ]; then PH="another governed project"; else PH="a $tok governed project"; fi
   rm="$(git -C "$HOME_TOP" log --full-history -p --format= "$MAIN" -- "projects/$n/project.json" | sed -n 's/^[-+].*"remote_match"[^"]*"\([^"]*\)".*/\1/p' |
-    sed 's|\.git$||; s|^.*[:/]\([^/:][^/:]*/[^/:][^/:]*\)$|\1|' | sort -u | tr '\n' ' ')" || die "could not read the remotes projects/$n declared on main"
+    slugs_of | sort -u | tr '\n' ' ')" || die "could not read the remotes projects/$n declared on main"
   printf '%s\t%s\t%s\t%s\n' "$n" "$tok" "$PH" "$rm" >> "$OUT/scrub.plan"
 done
 find "$B" -type f -print0 | xargs -0 grep -lI --null '' > "$OUT/text.files" || true

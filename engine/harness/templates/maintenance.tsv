@@ -7,10 +7,22 @@
 # requests nobody reviews. Security-critical fixes stay separate, because
 # isolation is what makes them reviewable and shippable on their own.
 #
+# The third column is `always`, a capability, or `founder`. A founder row comes
+# due on its cadence, or its check, exactly as an always row does, and is named
+# to the founder rather than handed to a session: it ends in something only he
+# decides, such as bringing the public snapshot up to main.
+#
 # A fifth column, optional: a CHECK. For a cadence-0 row it is a command run in
 # the checkout, exit 0 meaning not due and anything else meaning due — so an
 # event-driven row can come due from reality instead of never. Rows with four
 # columns keep working unchanged.
+#
+# A check runs with FELIX_HARNESS_DIR set to the engine reading this table, so
+# it can call one of the engine's scripts. A check that passes and prints
+# names work already in flight on a pushed branch: the row reads "in flight,
+# not due", with what it printed, and nobody is asked to start it a second
+# time. Print only for that. A check that fails is due whatever it
+# printed.
 #
 # The seeded graphify check compares file time to commit time at whole seconds,
 # because that is how BSD find reads -newermt. A graph written in the same
@@ -74,4 +86,15 @@ test-flake	0	ci	on repeated CI failure, with evidence
 # the last commit touching something other than this log and Markdown; a
 # handoff section is the most common merge, and without this the row is
 # permanently due, which is the shape the paragraph above already refuses.
-graphify	0	always	refresh the knowledge graph after a merge; it went fifteen days stale on one project while its row read event	G="$(dirname "$(git rev-parse --git-common-dir)")"; test -n "$(find "$G/graphify-out/graph.json" -newermt "$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$(git -C "$G" rev-parse HEAD)" -- . ":(exclude)projects/*/maintenance.log" ":(exclude)*.md")" 2>/dev/null)"
+#
+# A project with no graph is not due. The row read due until graphify-out/graph.json
+# existed, so a project that never installed graphify could not satisfy it: `felix
+# maintenance --ran graphify` records nothing a check reads, the badge never reached
+# zero, and every session was told to refresh a graph nobody had built. With nothing
+# to keep current there is nothing behind. That is said only where git answers.
+# Outside a repository, or holding a graph and no commit to compare it with, the
+# check cannot ask, and a check that cannot ask is due. A commit date is never given
+# to find empty: BSD find accepts -newermt "" and compares against a time of its own,
+# so a graph written today read as newer than nothing. When git answers and no commit
+# touches what the graph models, the graph is behind nothing and passes.
+graphify	0	always	refresh the knowledge graph (graphify-out/graph.json) after a merge; not due where no graph has been built	C="$(git rev-parse --git-common-dir)" || exit 1; G="$(dirname "$C")"; test -f "$G/graphify-out/graph.json" || exit 0; H="$(git -C "$G" rev-parse --verify -q HEAD)" || exit 1; T="$(git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%S%z "$H" -- . ":(exclude)projects/*/maintenance.log" ":(exclude)*.md")" || exit 1; test -z "$T" || test -n "$(find "$G/graphify-out/graph.json" -newermt "$T" 2>/dev/null)"

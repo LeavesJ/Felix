@@ -1,8 +1,14 @@
-# felix_deny_code's awk program: how a Bash command a deny row matched is read
-# a second time, as the shell reads it. lib/deny.sh says what the reading keeps
-# as code and what it sets aside as data, and why; this file holds only the
-# program. Split from lib/deny.sh on 2026-09-23 to keep each file under 500
-# lines, the way lib/audit-read.sh was split from lib/audit.sh.
+# felix_deny_code's awk program: how every Bash command is read, as the shell
+# reads it, before a deny row is matched against it. lib/deny.sh says what the
+# reading keeps as code and what it sets aside as data, and why; this file
+# holds only the program. Split from lib/deny.sh on 2026-09-23 to keep each
+# file under 500 lines, the way lib/audit-read.sh was split from lib/audit.sh.
+#
+# Each command separator is printed as a token of its own, a blank on either
+# side, and an operator of two characters (&&, ||, ;;, |&) stays whole. The
+# shell ends a word at `;`, `&`, `|`, `(` and `)` as it does at a blank, and a
+# row written to end at a blank or at the end of the line has to see one
+# there: `git add -A;` is read `git add -A ; `. Since 2026-09-23.
 #
 # The program is a bash single-quoted string, so it may hold no single quote,
 # not even in a comment: one apostrophe ends the string, the rest runs as bash
@@ -38,8 +44,12 @@ _FELIX_DENY_READ='
     return r
   }
   function base(w) { sub(/^.*\//, "", w); return w }
+  # The flattened reading. Its separators are tokens of their own as well; a
+  # `(` or `)` is left where it stands, since here a `$(` is two characters
+  # of text and nothing says which `)` closes it.
   function lines(s) {
     gsub(/\\\n/, "", s); gsub(/\n/, " ; ", s); gsub(SQ, "", s); gsub(/"/, "", s)
+    gsub(/[;&|]+/, " & ", s)
     return s
   }
   # Text that is read in its own right, appended to the buffer and read there,
@@ -119,13 +129,25 @@ _FELIX_DENY_READ='
   }
   # Whether a quoted span here is a script something will run.
   function script() { return ARG[LV] || HSH[LV] && PREV[LV] ~ /^-[A-Za-z]*c[A-Za-z]*$/ }
+  # A backslash typed inside quotes is printed doubled, as the JSON string
+  # writes it. A row may name an escaped \n, \r or \t for a line break in
+  # the payload, and in this reading a line break is ` ; `, so a lone
+  # backslash before an n here is always text a person typed: a printf
+  # format holding run:\n./scripts/gate.sh names the gate in its text, not
+  # after a line break. Split and joined on a regex for the reason unjson
+  # gives.
+  function dbs(t,   n, P, k, r) {
+    n = split(t, P, /\\/); r = P[1]
+    for (k = 2; k <= n; k++) r = r "\\\\" P[k]
+    return r
+  }
   function quoted(t, glued) {
     if (HS[LV]) { if (INR[LV]) X[++NX] = sub_view(t); return "_" }
     if (script() && (SCRW[LV] || CUR[LV] == "")) { PSCR[LV] = PSCR[LV] t; SCRW[LV] = 1; SHF[LV] = 1; return "_" }
     gsub(/\n/, " ", t)
-    if (RED[LV] || PATHOP[LV] || NW[LV] == 0 && CUR[LV] == "") return t
-    if (t !~ /[ \t\n]/) return t
-    if (t ~ /^(~\/|\.\.?\/|\$[A-Za-z_][A-Za-z0-9_]*\/|\$\{[^}]*\}\/|\$\(_\)\/)/) return t
+    if (RED[LV] || PATHOP[LV] || NW[LV] == 0 && CUR[LV] == "") return dbs(t)
+    if (t !~ /[ \t\n]/) return dbs(t)
+    if (t ~ /^(~\/|\.\.?\/|\$[A-Za-z_][A-Za-z0-9_]*\/|\$\{[^}]*\}\/|\$\(_\)\/)/) return dbs(t)
     # Data, and kept by the command it belongs to: if that command writes a
     # file the same command line then runs, this is what the file says.
     WD[SID[LV]] = WD[SID[LV]] t "\n"
@@ -144,7 +166,7 @@ _FELIX_DENY_READ='
 
   # stop is "" for a whole string, ")" for a $( ), or a backtick; lim is the
   # last character of the string being read.
-  function code(stop, lim,   out, ch, nx, t, e, k, d, dash, hw, hq, nh, HW, HD, HC, HQ, HSID, ls, depth, g, sv, bs, be, body) {
+  function code(stop, lim,   out, ch, nx, op, t, e, k, d, dash, hw, hq, nh, HW, HD, HC, HQ, HSID, ls, depth, g, sv, bs, be, body) {
     # Nesting past a hundred levels is read flattened rather than recursed
     # into: BWK awk recurses on the C stack and dies near six thousand.
     if (LV >= 100) { FB = 1; I = lim + 1; return "" }
@@ -161,16 +183,18 @@ _FELIX_DENY_READ='
         e = closeparen(lim); sv = e + 1; I += 2
         X[++NX] = code("", e - 2); I = sv; out = out word("_"); continue
       }
-      if (ch == "(") { endword(); depth++; out = out "("; I++; newseg("("); continue }
+      if (ch == "(") { endword(); depth++; out = out " ( "; I++; newseg("("); continue }
       if (ch == ")") {
         endword()
-        if (depth > 0) { depth--; out = out ")"; I++; newseg(")"); continue }
+        if (depth > 0) { depth--; out = out " ) "; I++; newseg(")"); continue }
         if (stop == ")") { I++; break }
-        out = out ")"; I++; continue
+        out = out " ) "; I++; continue
       }
       if (ch == "&" && nx == ">") { endword(); out = out "&>"; I += 2; RED[LV] = 1; continue }
       if (ch == ";" || ch == "&" || ch == "|" || ch == "\n") {
-        endword(); out = out (ch == "\n" ? " ; " : ch); I++; newseg(ch)
+        endword(); op = (ch == "\n") ? ";" : ch; I++
+        if (ch != "\n" && I <= lim && C[I] ~ /[;&|]/) { op = op C[I]; I++ }
+        out = out " " op " "; newseg(op)
         if (ch == "\n" && nh > 0) {
           for (k = 1; k <= nh; k++) {
             bs = I; be = 0

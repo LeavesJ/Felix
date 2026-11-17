@@ -52,6 +52,25 @@
 # lifecycle.log to the memory root and this list did not learn the name until
 # the table validator's review read the two side by side, 2026-09-22.
 set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 # Captured first, then tested. `cd "$(git rev-parse ...)"` with the
 # substitution empty is `cd ""`, which bash treats as a no-op that succeeds,
 # so the refusal below was unreachable and the scanner passed outside any
@@ -97,12 +116,12 @@ if [ -n "$leaked" ]; then
   printf '%s\n' "$leaked" | sed 's/^/memory tracked: /'; rc=1
 fi
 named="$(git ls-files -- 'projects/*' 2>/dev/null \
-  | grep -E "(^|/)($MEMORY_NAMES)(\.bak[^/]*)?\$" | grep -v '/memory/')"
+  | LC_ALL=C grep -E "(^|/)($MEMORY_NAMES)(\.bak[^/]*)?\$" | LC_ALL=C grep -v '/memory/')"
 if [ -n "$named" ]; then
   printf '%s\n' "$named" | sed 's/^/memory tracked by name: /'; rc=1
 fi
 indir="$(git ls-files -- 'projects/*' 2>/dev/null \
-  | grep -E "(^|/)($MEMORY_DIRS)/" | grep -v '/memory/')"
+  | LC_ALL=C grep -E "(^|/)($MEMORY_DIRS)/" | LC_ALL=C grep -v '/memory/')"
 if [ -n "$indir" ]; then
   printf '%s\n' "$indir" | sed 's/^/memory tracked in a memory directory: /'; rc=1
 fi

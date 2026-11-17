@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Is a fold of main's handoff already waiting on another branch?
+#
+#   handoff-in-flight [--within HOURS] [<ref>]
+#
+#   exit 0  yes: one line each, "<branch> (folded to <id>; tip <age> old)",
+#           the newest first
+#   exit 1  no, and nothing printed
+#   exit 2  cannot examine: no such ref, not a remote-tracking one, no marker
+#           on it, or a bad option. Never read as "none in flight".
+#
+# grep's convention, so a maintenance check can end in it: the upkeep row that
+# asks for a fold passes when fewer than three sections wait, and otherwise
+# takes this one's answer, so a fold in flight is named rather than asked for
+# again. That row is read by every session at once, and three of them folded
+# overlapping sections on 2026-09-24/25 where one could land.
+#
+# The judgement is felix_handoff_in_flight's, in lib/handoff.sh. <ref> is the
+# remote-tracking main by default, and only its remote's branches are read, as
+# last fetched: no gh and no network. A fold whose tip commit is older than
+# --within hours by committer time (48 by default, 0 for no bound) is taken as
+# abandoned. #377 landed about eleven hours after it was cut, and a fold left
+# for two days would otherwise keep the row quiet for as long as its branch
+# exists.
+set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+within=48
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --within)
+      [ $# -ge 2 ] || { printf 'cannot examine: --within needs a number of hours\n'; exit 2; }
+      within="$2"; shift 2 ;;
+    --) shift; break ;;
+    -*) printf 'cannot examine: no option %s\n' "$1"; exit 2 ;;
+    *) break ;;
+  esac
+done
+case "$within" in ''|*[!0123456789]*) printf 'cannot examine: --within %s is not a whole number of hours\n' "$within"; exit 2 ;; esac
+within=$((10#$within))
+# Found before moving: $0 may be relative to where this was called from.
+HERE="$(cd "$(dirname "$0")/.." && pwd)" || exit 2
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 2
+# shellcheck source=../lib/handoff.sh
+. "$HERE/lib/handoff.sh"
+
+out="$(felix_handoff_in_flight "$PWD" "${1:-refs/remotes/origin/main}" "$((within * 3600))")" \
+  || { printf '%s\n' "$out" | sed 's/	/: /'; exit 2; }
+[ -n "$out" ] || exit 1
+now="$(date +%s)"
+printf '%s\n' "$out" | while IFS=$'\t' read -r b id ep; do
+  [ -n "$b" ] || continue
+  age=$((now - ep))
+  # Said, not clamped to 0m: a clock this far off is worth seeing.
+  if [ "$age" -lt 0 ]; then printf '%s (folded to %s; tip dated ahead of this clock)\n' "$b" "$id"; continue; fi
+  if [ "$age" -lt 3600 ]; then age="$((age / 60))m"; else age="$((age / 3600))h"; fi
+  printf '%s (folded to %s; tip %s old)\n' "$b" "$id" "$age"
+done
+exit 0

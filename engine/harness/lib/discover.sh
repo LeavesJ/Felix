@@ -47,6 +47,12 @@ if ! command -v felix_registry_field >/dev/null 2>&1; then
   . "$(dirname "${BASH_SOURCE[0]:-$0}")/resolve.sh"
 fi
 
+# The background refresh and what it records of itself (audit b06). Sourced by path,
+# for the same reason as the two above.
+if ! command -v felix_discover_refresh_bg >/dev/null 2>&1; then
+  . "$(dirname "${BASH_SOURCE[0]:-$0}")/discover-refresh.sh"
+fi
+
 FELIX_DISCOVER_MAX="${FELIX_DISCOVER_MAX:-8}"
 
 # capability <TAB> keywords, for capabilities this project actually declared.
@@ -82,15 +88,40 @@ FELIX_DISCOVER_MAX="${FELIX_DISCOVER_MAX:-8}"
 # a file people edit freely would have silently re-filed a real plugin.
 # Curated rows first, in the engine's own table order; then the capabilities
 # no row covers, sorted, so a curated row also beats a name-only fallback.
+#
+# 0 with the rules on stdout, and 2 with nothing printed when the declared list
+# could not be read. Until 2026-10-01 an unread list was an empty one, so every
+# declared capability dropped out of the rules, discovery scored nothing, and
+# the quiet form cached "nothing matches" for seven days. The list is read once
+# with felix_declared_into, and once it is read nothing on the way to the rules
+# drops it: both loops walk a string in this shell, the table's and the sorted
+# list's, where a here-document is a temporary file on bash 3.2 and one that
+# cannot be written ends a loop before its first line and the rules come out as
+# none, and the sorted list is captured, since a pipeline that could not run
+# would be an empty one. The table is a plain substitution, since grep -v
+# returns 1 for none and its status means nothing. Its rows are split the way
+# `read` with a tab for IFS splits them: leading and trailing tabs dropped, the
+# rest of the line the second field.
 _felix_discover_rules() {
-  local tpl="$1" proj="$2" cap kws rcap rkws table="" declared ruled=""
+  local tpl="$1" proj="$2" cap kws rcap rkws table="" declared="" sorted="" ruled="" rest line nl=$'\n' tab=$'\t' LC_ALL=C
   [ -f "$tpl/discover-rules.tsv" ] \
     && table="$(grep -vE '^[[:space:]]*(#|$)' "$tpl/discover-rules.tsv" 2>/dev/null)"
-  declared="$(felix_declared "$proj")"
+  felix_declared_into declared "$proj" || return 2
+  felix_capture sorted _felix_sorted_lines "$declared" || return 2
 
-  while IFS=$'\t' read -r rcap rkws; do
-    [ -n "${rcap:-}" ] || continue
-    felix_has_line "$declared" "$rcap" || continue
+  rest="$table"
+  while [ -n "$rest" ]; do
+    line="${rest%%$nl*}"
+    if [ "$line" = "$rest" ]; then rest=""; else rest="${rest#*$nl}"; fi
+    while [ "${line#$tab}" != "$line" ]; do line="${line#$tab}"; done
+    [ -n "$line" ] || continue
+    rcap="${line%%$tab*}"; rkws=""
+    if [ "$rcap" != "$line" ]; then
+      rkws="${line#*$tab}"
+      while [ "${rkws#$tab}" != "$rkws" ]; do rkws="${rkws#$tab}"; done
+      while [ "${rkws%$tab}" != "$rkws" ]; do rkws="${rkws%$tab}"; done
+    fi
+    case "$nl$declared$nl" in *"$nl$rcap$nl"*) ;; *) continue ;; esac
     ruled="$ruled$rcap
 "
     kws="$rkws"
@@ -102,13 +133,14 @@ _felix_discover_rules() {
       *) [ "${#rcap}" -ge 5 ] && kws="$kws $rcap" ;;
     esac
     printf '%s\t%s\n' "$rcap" "${kws# }"
-  done <<EOF
-$table
-EOF
+  done
 
-  while IFS= read -r cap; do
+  rest="$sorted"
+  while [ -n "$rest" ]; do
+    cap="${rest%%$nl*}"
+    if [ "$cap" = "$rest" ]; then rest=""; else rest="${rest#*$nl}"; fi
     [ -n "$cap" ] || continue
-    felix_has_line "$ruled" "$cap" && continue
+    case "$nl$ruled" in *"$nl$cap$nl"*) continue ;; esac
     # A capability name is an identifier. felix_declared strips whole-line
     # comments only, so a line carrying a trailing remark survives as one
     # long "capability" — harmlessly dropped while the table drove the loop,
@@ -117,11 +149,14 @@ EOF
     case "$cap" in *[!a-z0-9_-]*) continue ;; esac
     [ "${#cap}" -ge 5 ] || continue
     printf '%s\t%s\n' "$cap" "$cap"
-  done <<EOF
-$(printf '%s\n' "$declared" | LC_ALL=C sort -u)
-EOF
+  done
   return 0
 }
+
+# The lines of $1 sorted and without repeats, and the status of the pipeline
+# that did it, so that felix_capture can say whether it ran. Until 2026-10-01 the
+# sorted list was a substitution inside a here-document, whose status nobody asked.
+_felix_sorted_lines() { printf '%s\n' "$1" | LC_ALL=C sort -u; }
 
 # Declared capabilities the table has no curated row for, one per line.
 #
@@ -130,17 +165,29 @@ EOF
 # that state is a fact about this project's tables that nothing else says
 # out loud. Same shape as the overbroad-deny report: a rule quietly doing
 # almost nothing is the complaint Felix makes about other people's plugins.
+#
+# 0 with the capabilities on stdout, and 2 with nothing printed when the declared
+# list could not be read. Until 2026-10-01 an unread list was an empty one, so
+# the answer was that no capability lacked a rule. Checked after the template,
+# as before: a template with no rules table is 0 and nothing printed whatever
+# the list. The list is walked in this shell, where a here-document is a
+# temporary file on bash 3.2. Measured on the first pass of this change, one that
+# could not be written ended the loop before its first capability and the function
+# returned nothing, which read as no capability lacking a rule. The table's first
+# column is a plain substitution, since its status means nothing.
 felix_capabilities_unruled() {
-  local proj="$1" tpl="$2" cap ruled
+  local proj="$1" tpl="$2" cap ruled declared="" rest nl=$'\n'
   [ -f "$tpl/discover-rules.tsv" ] || return 0
+  felix_declared_into declared "$proj" || return 2
   ruled="$(grep -vE '^[[:space:]]*(#|$)' "$tpl/discover-rules.tsv" 2>/dev/null | cut -f1)"
-  while IFS= read -r cap; do
+  rest="$declared"
+  while [ -n "$rest" ]; do
+    cap="${rest%%$nl*}"
+    if [ "$cap" = "$rest" ]; then rest=""; else rest="${rest#*$nl}"; fi
     [ -n "$cap" ] || continue
-    felix_has_line "$ruled" "$cap" && continue
+    case "$nl$ruled$nl" in *"$nl$cap$nl"*) continue ;; esac
     printf '%s\n' "$cap"
-  done <<EOF
-$(felix_declared "$proj")
-EOF
+  done
   return 0
 }
 
@@ -158,14 +205,24 @@ EOF
 # days. Nothing that reads the cache could tell a marketplace with nothing for
 # this project from a morning the CLI was broken. Read by an agent from the
 # find-skills plugin, which draws the same line in its own catalogue reader.
+#
+# Exit 2 is rules that could not be read, because the declared list could not:
+# nothing printed and the marketplace not asked. Until 2026-10-01 that read as
+# no rules, so the function returned 0 having scored nothing, and the quiet form
+# cached "nothing matches" for seven days. The rules are captured with
+# felix_capture, because a substitution can end with nothing printed and status
+# 0 when its fork fails, and a status alone would call that an empty rule set. A
+# missing claude is still 3 and still checked first.
 felix_discover_candidates() {
-  local proj="$1" tpl="$2" rules listing
+  local proj="$1" tpl="$2" rules="" listing
   command -v claude >/dev/null 2>&1 || return 3
-  rules="$(_felix_discover_rules "$tpl" "$proj")"
+  felix_capture rules _felix_discover_rules "$tpl" "$proj" || return 2
   [ -n "$rules" ] || return 0
 
-  local declared
-  declared="$(grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null | cut -f2 | sed 's/@.*//')"
+  # stack.tsv only as a regular file: a pipe at the path held this grep open
+  # for a writer that never came (2026-10-01). Anything else declares nothing.
+  local declared=""
+  [ -f "$proj/stack.tsv" ] && declared="$(LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null | LC_ALL=C cut -f2 | LC_ALL=C sed 's/@.*//')"
 
   listing="$(claude plugin list --json --available </dev/null 2>/dev/null)" || return 3
   # A listing is a JSON array or object. An error printed to stdout with a
@@ -179,7 +236,7 @@ felix_discover_candidates() {
   # unreadable — an over-refusal in the one direction nobody can act on, which
   # is how a check gets switched off. The measured failure is the plain-text
   # one and that is what this rejects.
-  case "$(printf '%s' "$listing" | tr -d '[:space:]' | cut -c1)" in
+  case "$(printf '%s' "$listing" | LC_ALL=C tr -d '[:space:]' | LC_ALL=C cut -c1)" in
     '['|'{') ;;
     *) return 3 ;;
   esac
@@ -205,9 +262,9 @@ felix_discover_candidates() {
   # the rest.
   local rows
   rows="$(printf '%s\n' "$listing" \
-    | sed -n -e 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/N \1/p' \
+    | LC_ALL=C sed -n -e 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/N \1/p' \
              -e 's/.*"description"[[:space:]]*:[[:space:]]*"\(.*\)".*/D \1/p' \
-    | awk '/^N /{ if (n != "") print n "\t" d; n=substr($0,3); d="" }
+    | LC_ALL=C awk '/^N /{ if (n != "") print n "\t" d; n=substr($0,3); d="" }
            /^D /{ d=substr($0,3) }
            END{ if (n != "") print n "\t" d }' \
     | while IFS=$'\t' read -r name desc; do
@@ -215,13 +272,13 @@ felix_discover_candidates() {
         felix_has_line "$declared" "$name" && continue
         local hit best best_cap
         hit="$(felix_capability_match "$name" "$desc" "$rules")"
-        best="$(printf '%s' "$hit" | cut -f1)"
-        best_cap="$(printf '%s' "$hit" | cut -f2)"
+        best="$(printf '%s' "$hit" | LC_ALL=C cut -f1)"
+        best_cap="$(printf '%s' "$hit" | LC_ALL=C cut -f2)"
         if [ "$best" -ge "${FELIX_DISCOVER_MIN:-3}" ]; then
           printf '%s\t%s\t%s\t%s\n' "$best" "$best_cap" "$name" "$desc"
         fi
       done)"
-  printf '%s\n' "$rows" | grep . | sort -k1,1nr | head -"$FELIX_DISCOVER_MAX"
+  printf '%s\n' "$rows" | LC_ALL=C grep . | LC_ALL=C sort -k1,1nr | head -"$FELIX_DISCOVER_MAX"
   return 0
 }
 
@@ -321,21 +378,21 @@ felix_discover_fetch() {
 _felix_discover_hooks_facts() {
   local f="$1"
   printf 'hooks\t%s\n' \
-    "$(grep -oE '"(PreToolUse|PostToolUse|SessionStart|SessionEnd|Stop|UserPromptSubmit|PostToolBatch)"' "$f" \
-       | tr -d '"' | sort -u | tr '\n' ' ')"
-  grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]{0,90}' "$f" \
-    | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//' \
+    "$(LC_ALL=C grep -oE '"(PreToolUse|PostToolUse|SessionStart|SessionEnd|Stop|UserPromptSubmit|PostToolBatch)"' "$f" \
+       | LC_ALL=C tr -d '"' | LC_ALL=C sort -u | LC_ALL=C tr '\n' ' ')"
+  LC_ALL=C grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]{0,90}' "$f" \
+    | LC_ALL=C sed 's/.*"command"[[:space:]]*:[[:space:]]*"//' \
     | while IFS= read -r c; do printf 'hook-command\t%s\n' "$c"; done
   return 0
 }
 
 _felix_discover_mcp_facts() {
   local f="$1"
-  grep -qE '"type"[[:space:]]*:[[:space:]]*"(http|sse)"' "$f" \
+  LC_ALL=C grep -qE '"type"[[:space:]]*:[[:space:]]*"(http|sse)"' "$f" \
     && printf 'mcp\tremote endpoint\n' || printf 'mcp\tlocal subprocess\n'
-  grep -oE '\$\{[A-Z_]+' "$f" | tr -d '${' | sort -u \
+  LC_ALL=C grep -oE '\$\{[A-Z_]+' "$f" | LC_ALL=C tr -d '${' | LC_ALL=C sort -u \
     | while IFS= read -r v; do [ -n "$v" ] && printf 'interpolates\t%s\n' "$v"; done
-  grep -qE '@latest|:latest' "$f" && printf 'floating\tan unpinned version in the mcp command\n'
+  LC_ALL=C grep -qE '@latest|:latest' "$f" && printf 'floating\tan unpinned version in the mcp command\n'
   return 0
 }
 
@@ -347,12 +404,12 @@ _felix_discover_mcp_facts() {
 _felix_discover_lsp_facts() {
   local f="$1"
   printf 'lsp\tlocal subprocess\n'
-  grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]{0,90}' "$f" \
-    | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//' \
+  LC_ALL=C grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]{0,90}' "$f" \
+    | LC_ALL=C sed 's/.*"command"[[:space:]]*:[[:space:]]*"//' \
     | while IFS= read -r c; do printf 'lsp-command\t%s\n' "$c"; done
-  grep -oE '\$\{[A-Z_]+' "$f" | tr -d '${' | sort -u \
+  LC_ALL=C grep -oE '\$\{[A-Z_]+' "$f" | LC_ALL=C tr -d '${' | LC_ALL=C sort -u \
     | while IFS= read -r v; do [ -n "$v" ] && printf 'interpolates\t%s\n' "$v"; done
-  grep -qE '@latest|:latest' "$f" && printf 'floating\tan unpinned version in the lsp command\n'
+  LC_ALL=C grep -qE '@latest|:latest' "$f" && printf 'floating\tan unpinned version in the lsp command\n'
   return 0
 }
 
@@ -1068,6 +1125,14 @@ _felix_discover_content() {
 # No files is no digest, and no digest is not an empty one. An empty document
 # hashes to a perfectly good sha that every other empty directory also has, so
 # returning it would say two things are the same copy when neither was read.
+#
+# A file hash-object could not read is no digest either (2026-10-08). A mode-000
+# file hashed to an empty field and the digest went on, so two copies that each
+# held an unreadable file agreed about bytes nobody read. Named pipes, sockets
+# and devices are left out on purpose, as `find -type f -o -type l` always left
+# them out. They hold no bytes to compare, hash-object would block forever on a
+# pipe, and a socket a running server leaves in its own directory would make two
+# identical installs differ.
 felix_discover_digest() {
   local dir="$1" sub="${2:-}" base listing
   base="$dir"
@@ -1080,8 +1145,13 @@ felix_discover_digest() {
     | while IFS= read -r f; do
         if [ -L "$f" ]; then
           printf 'l %s %s\n' "$(readlink "$f" 2>/dev/null)" "$f"
+        elif ! h="$(git hash-object "$f" 2>/dev/null)" || [ -z "$h" ]; then
+          # The loop ends here, and the marker line tells the reader outside
+          # this subshell why. No apostrophe in a comment in here: bash 3.2
+          # reads one inside a command substitution as an open quote.
+          printf '\037unread\n'; exit 1
         elif [ -x "$f" ]; then
-          printf 'x %s %s\n' "$(git hash-object "$f" 2>/dev/null)" "$f"
+          printf 'x %s %s\n' "$h" "$f"
         else
           # `f`, not `-`. A format string beginning with a dash is an
           # OPTION to printf, and this shipped as `- %s %s` for exactly as
@@ -1090,11 +1160,13 @@ felix_discover_digest() {
           # Two nothings compare equal, so the first demonstration showed
           # two identical copies "agreeing" and a changed byte "agreeing"
           # too. A check that cannot fail is not a check.
-          printf 'f %s %s\n' "$(git hash-object "$f" 2>/dev/null)" "$f"
+          printf 'f %s %s\n' "$h" "$f"
         fi
       done
   )"
   [ -n "$listing" ] || return 1
+  # The marker is the last line the loop wrote, so a suffix match finds it.
+  case "$listing" in *$'\037unread') return 1 ;; esac
   printf '%s\n' "$listing" | git hash-object --stdin 2>/dev/null
 }
 
@@ -1264,25 +1336,32 @@ _felix_discover_cache() { printf '%s/state/discover/%s' "$2" "$(basename "$1")";
 # from five days earlier — written by a matcher that has since been fixed —
 # declared and installed a storage plugin under llm, twice: the fix to the
 # matcher changed nothing the adopt path read. So the first line is a stamp
-# over the rules table and the engine version, and every reader treats a
-# cache whose stamp is not the current one as ABSENT, which the foreground
-# fill in discover --adopt then recomputes. A stale verdict is not a verdict.
+# over what writes the rows (this file, lib/detect.sh, the cmd_discover function
+# of felix, and the rules table), and every reader treats a cache whose stamp is
+# not the current one as ABSENT, which the foreground fill in discover --adopt
+# then recomputes. A stale verdict is not a verdict. The engine version is not in
+# it: 71 commits since 2026-09-24 touched plugin.json and 9 touched what writes
+# the rows, so hashing the version made every release throw every cache away.
+# Prints 40 hex characters; prints nothing and returns 1 when any part cannot be
+# read, and then no cache is current, its own empty stamp's included.
 _felix_discover_stamp() {
-  local tpl="${1:-$(dirname "${BASH_SOURCE[0]:-$0}")/../templates}" ver
-  ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-          "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.claude-plugin/plugin.json" 2>/dev/null | head -1)"
-  { printf 'matcher=words\nengine=%s\n' "${ver:-?}"; cat "$tpl/discover-rules.tsv" 2>/dev/null; } \
+  local lib fn; lib="$(dirname "${BASH_SOURCE[0]:-$0}")"
+  fn="$(LC_ALL=C awk '/^cmd_discover\(\) \{/ { p = 1 } p { print } p && /^\}/ { exit }' "$lib/../felix" 2>/dev/null)"
+  [ -n "$fn" ] || return 1
+  { printf 'matcher=words\n%s\n' "$fn"; cat "$lib/discover.sh" "$lib/detect.sh" "${1:-$lib/../templates}/discover-rules.tsv"; } 2>/dev/null \
     | git hash-object --stdin 2>/dev/null
 }
 _felix_discover_stamp_line() { printf '# stamp %s\n' "$(_felix_discover_stamp "${1:-}")"; }
 
-# 0 when the cache exists and was written under the current rules and engine.
+# 0 when the cache exists and was written under the current rules and matcher.
 felix_discover_cache_current() {
-  local proj="$1" home="$2" tpl="${3:-}" cache first
+  local proj="$1" home="$2" tpl="${3:-}" cache first stamp
   cache="$(_felix_discover_cache "$proj" "$home").tsv"
   [ -f "$cache" ] || return 1
+  stamp="$(_felix_discover_stamp "$tpl")"
+  [ -n "$stamp" ] || return 1
   first="$(head -1 "$cache" 2>/dev/null)"
-  [ "$first" = "$(_felix_discover_stamp_line "$tpl" | tr -d '\n')" ]
+  [ "$first" = "# stamp $stamp" ]
 }
 
 # What a thing looks like, scored once.
@@ -1312,7 +1391,7 @@ felix_discover_cache_current() {
 # matched as the two-word phrase it tokenises to. `eval` no longer matches
 # `evaluation` or `evaltool`, and is not meant to: a keyword that matches
 # inside other words is a keyword that matches by accident.
-_felix_cap_tokens() { printf ' %s ' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ' | sed 's/^ *//; s/ *$//')"; }
+_felix_cap_tokens() { printf ' %s ' "$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs 'a-z0-9' ' ' | LC_ALL=C sed 's/^ *//; s/ *$//')"; }
 felix_capability_match() {
   local name="$1" desc="$2" rules="$3" skills="${4:-}"
   local nhay dhay shay cap kws kw kwn score hit best=0 best_cap=""
@@ -1347,7 +1426,7 @@ EOF
 felix_plugin_description() {
   local dir="$1"
   [ -f "$dir/.claude-plugin/plugin.json" ] || return 0
-  sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  LC_ALL=C sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     "$dir/.claude-plugin/plugin.json" 2>/dev/null | head -1
 }
 
@@ -1379,8 +1458,10 @@ felix_discover_adopt() {
 
   # Compared without the marketplace suffix, the same way candidates are
   # filtered, so langfuse@x already declared matches a langfuse candidate.
-  declared="$(grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null \
-              | cut -f2 | sed 's/@.*//')"
+  # Only as a regular file, for the reason felix_discover_candidates gives.
+  declared=""
+  [ -f "$proj/stack.tsv" ] && declared="$(LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$proj/stack.tsv" 2>/dev/null \
+              | LC_ALL=C cut -f2 | LC_ALL=C sed 's/@.*//')"
 
   # Four fields, and the fourth is read even though this function does not use
   # it. A three-field read hands `low<TAB><digest>` to `risk` whole, no tier
@@ -1459,32 +1540,6 @@ felix_discover_stale() {
   local age
   age="$(find "$f" -mtime +"$FELIX_DISCOVER_STALE_DAYS" 2>/dev/null)"
   [ -n "$age" ]
-}
-
-# Refresh in the background, at most one at a time. The lock is a directory
-# because mkdir is atomic everywhere and a stale lock file is not.
-felix_discover_refresh_bg() {
-  local proj="$1" home="$2" felix_bin="$3"
-  local dir lock
-  dir="$home/state/discover"
-  lock="$dir/.lock"
-  mkdir -p "$dir" 2>/dev/null || return 0
-  mkdir "$lock" 2>/dev/null || return 0   # already running; leave it alone
-  (
-    trap 'rmdir "$lock" 2>/dev/null' EXIT
-    felix_close_inherited_fds
-    cd "$(felix_repo_root "$PWD")" 2>/dev/null || exit 0
-    # A refresh that could not read the marketplaces exits non-zero and writes
-    # nothing, and the previous answer stands: an unreadable catalogue is not
-    # an empty one, and must not become one for seven days.
-    if "$felix_bin" discover --inspect --quiet > "$(_felix_discover_cache "$proj" "$home").new.$$" 2>/dev/null; then
-      mv -f "$(_felix_discover_cache "$proj" "$home").new.$$" \
-            "$(_felix_discover_cache "$proj" "$home").tsv" 2>/dev/null
-    else
-      rm -f "$(_felix_discover_cache "$proj" "$home").new.$$" 2>/dev/null
-    fi
-  ) </dev/null >/dev/null 2>&1 &
-  return 0
 }
 
 # Findings not yet mentioned. Reporting the same three plugins every session is

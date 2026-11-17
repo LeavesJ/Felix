@@ -27,6 +27,24 @@
 
 set -uo pipefail
 
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -40,12 +58,24 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/ledger.sh"
 . "${SCRIPT_DIR}/../lib/verify.sh"
 . "${SCRIPT_DIR}/../lib/lifecycle.sh"
+. "${SCRIPT_DIR}/../lib/hook-faults.sh"
+. "${SCRIPT_DIR}/../lib/graph.sh"
+. "${SCRIPT_DIR}/../lib/own.sh"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
+
+# The payload is read before the project is resolved: Claude Desktop starts this
+# hook in the main checkout, and the session's directory is only in the payload
+# (lib/resolve.sh).
+raw="$(cat 2>/dev/null || true)"
+felix_hook_enter "$raw" "$FELIX_HOME_DIR"
 PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
 [ -n "$PROJ" ] || exit 0
 
-raw="$(cat 2>/dev/null || true)"
+# This run is on record until it ends. A run the platform cuts off at its limit
+# leaves the record, and the session's next stop says so (lib/hook-faults.sh).
+# Before anything slow, and without the exits below leaving it behind.
+felix_prompt_start "$FELIX_HOME_DIR" "$raw" 2>/dev/null || true
 
 # A session nobody in it typed into is recorded as nothing, and this is the
 # first thing done with the payload because everything after it writes: the
@@ -71,6 +101,7 @@ if [ "$machine" = session ]; then
   felix_lifecycle_summary "$PROJ" "$PWD" "$_felix_msid" \
     "$(printf '%s' "$raw" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" \
     >/dev/null 2>&1 || true
+  felix_prompt_end
   exit 0
 fi
 
@@ -88,17 +119,27 @@ sid_raw="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]
 sid="$sid_raw"
 [ -n "$sid" ] || sid="repo-$(printf '%s' "$root" | tr -c 'a-zA-Z0-9' '-')"
 
-# The HEAD this session began at, recorded on the first prompt because
-# SessionStart reads only the source from its payload and so has no session id
-# to key on. The first mark wins, so later prompts do not move it and a compact
-# cannot reset it. Stop needs this to tell work that was committed from a tree
-# that merely happens to be clean — before it existed, committing your work
-# skipped the completion check entirely, and committing is what you do at the
-# end.
+# The HEAD this session began at, recorded on the first prompt. SessionStart
+# parses a session id now, but the mark stays here: it is written by a prompt a
+# person typed, and a summary request must not have one, since a mark ends the
+# exemption for it (the #264 rule, lib/verify.sh). The first mark wins, so later
+# prompts do not move it and a compact cannot reset it. Stop needs this to tell
+# work that was committed from a tree that merely happens to be clean — before
+# it existed, committing your work skipped the completion check entirely.
 #
 # Never checked. A session that cannot record this loses one completion check;
 # a session that cannot start loses everything.
 [ -n "$sid_raw" ] && felix_session_mark "$FELIX_HOME_DIR" "$sid_raw" "$root" 2>/dev/null || true
+
+# A person's prompt is a new question about the work, so the Stop hook may hold
+# once more on what it held this session before (felix_hold_tree_seen).
+[ -z "$machine" ] && [ -n "$sid_raw" ] && { felix_hold_tree_clear "$FELIX_HOME_DIR" "$sid_raw" 2>/dev/null || true; }
+
+# And it ends the turn in which the last answer handed to this session could be
+# acted on (lib/answer.sh, felix_answer_prompt): what the session did after it
+# was asked something else is not credited to that answer. Here, before
+# anything slow, so that a run the platform cuts off still ends the turn.
+[ -z "$machine" ] && [ -n "$sid_raw" ] && { felix_answer_prompt "$FELIX_HOME_DIR" "$sid_raw" 2>/dev/null || true; }
 
 # ------------------------------------------------------------------ route ----
 # The runtime uses this channel for its own messages — task completions, system
@@ -114,10 +155,10 @@ if [ -n "$machine" ]; then
 elif [ -f "$PROJ/routes.tsv" ]; then
   ctx="$(felix_route_context "$root")"
   if best="$(felix_route_best "$PROJ" "$raw" "$ctx")"; then
-    r_score="$(printf '%s' "$best" | cut -f1)"
-    r_pscore="$(printf '%s' "$best" | cut -f2)"
-    r_name="$(printf '%s' "$best" | cut -f5)"
-    r_play="$(printf '%s' "$best" | cut -f7)"
+    r_score="$(printf '%s' "$best" | LC_ALL=C cut -f1)"
+    r_pscore="$(printf '%s' "$best" | LC_ALL=C cut -f2)"
+    r_name="$(printf '%s' "$best" | LC_ALL=C cut -f5)"
+    r_play="$(printf '%s' "$best" | LC_ALL=C cut -f7)"
     felix_route_log "$PROJ" "$r_name" "$r_score" "$raw"
 
     # The policy's decision, recorded beside the outcome the ledger already
@@ -149,7 +190,7 @@ elif [ -f "$PROJ/routes.tsv" ]; then
     # itself a reason to speak: the next one is now the thing to do. Keyed on
     # the route alone, Felix named a tool once and went quiet for the rest of
     # the session, which is how a sequence becomes a single suggestion.
-    r_due="$(felix_route_due "$transcript" "$r_play" 2>/dev/null | cut -f1)"
+    r_due="$(felix_route_due "$transcript" "$r_play" 2>/dev/null | LC_ALL=C cut -f1)"
 
     # Where the route came from, kept as a word rather than the score it was
     # derived from. `Stop` reads this to decide whether an unused play is worth
@@ -160,7 +201,7 @@ elif [ -f "$PROJ/routes.tsv" ]; then
     # A word and not `r_pscore`, because the score is an implementation detail
     # of today's ranking function. What the Stop contract needs to survive a
     # re-weighting is whether the obligation was grounded in intent at all.
-    r_cscore="$(printf '%s' "$best" | cut -f3)"
+    r_cscore="$(printf '%s' "$best" | LC_ALL=C cut -f3)"
     if   [ "${r_pscore:-0}" -gt 0 ] && [ "${r_cscore:-0}" -gt 0 ]; then r_prov=mixed
     elif [ "${r_pscore:-0}" -gt 0 ]; then                               r_prov=prompt
     else                                                                r_prov=tree
@@ -178,7 +219,7 @@ elif [ -f "$PROJ/routes.tsv" ]; then
     # this used a due step of `done`, so the unit tests passed against a shape
     # production never emits.
     last=""
-    [ -f "$state" ] && last="$(cut -f1 < "$state" 2>/dev/null)"
+    [ -f "$state" ] && last="$(LC_ALL=C cut -f1 < "$state" 2>/dev/null)"
     # Decision A-prime, approved 2026-08-30: the voice renders at the two
     # moments this hook can defend, and never on a mid-session keyword
     # re-route. The first routed turn of a session is the declaration moment —
@@ -261,10 +302,43 @@ the signature it consumes share no file at all. Read the interfaces first."
   fi
 fi
 
-[ -n "$route_block" ] || [ -n "$lesson_block" ] || [ -n "$shape_block" ] || exit 0
+# ------------------------------------------------------------------ graph ----
+# The graph's answer to what was just asked, handed over rather than named.
+# Named three ways since 2026-09-10 and used by none: a route, a banner line,
+# a refresh. Measured 2026-10-29, the banner line in 193 sessions and the graph
+# queried in 3. A model asked to remember a tool does not; one handed the
+# tool's answer at the moment it plans has it. Each file once a session, so the
+# first prompt carries the map and later ones only what is new
+# (lib/graph-answer.sh, felix_graph_deliver; and the spec,
+# docs/2026-10-29-answers-delivered-spec.md).
+#
+# A person's prompt only, and only in the project's own checkout: graph.json is
+# a file of the checkout, and in one bound by a marker alone its labels are
+# whatever the repository's authors wrote, arriving under Felix's name
+# (lib/own.sh). The cheap tests first, so a project with no graph pays no git
+# for the ownership test, and the prompt is read out of the payload last.
+#
+# The platform ends this hook at 30 seconds, FELIX_PROMPT_DEADLINE here, and a
+# run it ends prints nothing: the route and the lessons above go with the
+# answer. So the ask is given what is left of the 30, less 3 for the rest of
+# this run, and is not made with under a second of that
+# (lib/graph-answer.sh, _felix_graph_ask; spec U4).
+graph_block=""
+if [ -z "$machine" ] && [ -n "$sid_raw" ] && felix_graph_ready "$root" 2>/dev/null; then
+  _gown=2; felix_checkout_is_own "$PROJ" "$root" 2>/dev/null; _gown=$?
+  if [ "$_gown" = 0 ]; then
+    _gdl="${FELIX_PROMPT_DEADLINE:-30}"
+    case "$_gdl" in *[!0123456789]*|?????*) _gdl=30 ;; esac
+    graph_block="$(FELIX_GRAPH_LEFT="$((10#$_gdl - SECONDS - 3))" \
+                   felix_graph_deliver "$FELIX_HOME_DIR" "$sid_raw" "$root" \
+                     "$(felix_graph_prompt "$raw" 2>/dev/null)" 2>/dev/null)" || graph_block=""
+  fi
+fi
+
+[ -n "$route_block" ] || [ -n "$lesson_block" ] || [ -n "$shape_block" ] || [ -n "$graph_block" ] || { felix_prompt_end; exit 0; }
 
 body=""
-for _part in "$route_block" "$shape_block" "$lesson_block"; do
+for _part in "$route_block" "$shape_block" "$graph_block" "$lesson_block"; do
   [ -n "$_part" ] || continue
   body="${body}${body:+
 
@@ -287,4 +361,5 @@ _felix_asked="$(printf '%s' "$raw" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]
 felix_say "$PROJ" "brief" "$body" "$_felix_asked" "${sid:-}"
 printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "UserPromptSubmit",\n    "additionalContext": "%s"\n  }\n}\n' \
   "$(escape_for_json "$body")"
+felix_prompt_end
 exit 0

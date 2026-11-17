@@ -1,0 +1,45 @@
+# Situation classes: what a project owes once a surface appears in it (lib/situations.sh, felix
+# situations). Engine knowledge, read from the templates directory beside the felix that runs. Per-project
+# rows are not in this slice. From docs/2026-10-29-capability-lane-first-slices-design.md, section 7.2.
+#
+# class              the name an obligation row could take: [a-z][a-z0-9_]*, unique
+# applies            terms that must all hold, separated by spaces:
+#                      probe:<capability>=<state>  true when a probe grounding the capability reads that state
+#                      cap:<capability>            decided by the probes that ground it, and by the detector
+#                                                  only when none does; detector silence is never false
+#                      env:maturity>=<value>       from project.json, prototype < internal < public-beta <
+#                                                  production
+# owes               what the situation owes, in plain words
+# class_by_maturity  the obligation class the row would carry at each declared maturity, as
+#                    maturity=CLASS pairs. Printed only: nothing reads it for force
+# source             miss:, candidate: or cite:, then the first 12 hex digits of git hash-object over the
+#                    recorded miss, the survey candidate's row or the cited passage. The passages are kept
+#                    in the handoff note of the change that added the row, never here
+#
+# No term rests on blind or unknown, so a class is never ACTIVE because Felix could not look. Every row
+# holds a probe: or cap: term, the only kind a commit can make false. A row changed after slice 2 seals
+# this file is a new sealed version.
+#
+# class	applies	owes	class_by_maturity	source
+#
+# A public entrypoint that reaches a paid model call: uncontrolled cost.
+paid_ingress	cap:api cap:llm	a request bound and a spend bound on every entrypoint that can reach a paid model call: a limit on each request's size and rate, and a ceiling on paid calls that is armed whichever way the service starts	prototype=ADVISORY,internal=TASK_BLOCKING,public-beta=RELEASE_BLOCKING,production=RELEASE_BLOCKING	candidate:629281b96896
+# A served route that no test requests: a renamed route or field passes the suite.
+route_has_http_test	cap:api cap:tests	a test that requests each served route through the HTTP layer, its body shape included, so a renamed route or field fails the suite instead of passing it	prototype=INFO,internal=ADVISORY,public-beta=TASK_BLOCKING,production=TASK_BLOCKING	candidate:63d76b1dc780
+# A route that accepts text with no size bound: unbounded storage and memory.
+request_body_bounded	cap:api	a declared size bound on every request field a route accepts or stores, checked at the boundary, so one caller cannot grow storage or memory without limit	prototype=INFO,internal=ADVISORY,public-beta=TASK_BLOCKING,production=RELEASE_BLOCKING	candidate:e9a611a8b5c5
+# A deployed service whose health check says ok whatever its state: a false green.
+health_reflects_readiness	cap:api cap:deploy	a health or readiness check that answers ok only when the service can do its work, with its keys, storage and upstreams present, so a deploy or a monitor polling it never reports a dead instance alive	prototype=INFO,internal=ADVISORY,public-beta=ADVISORY,production=TASK_BLOCKING	candidate:48b1d341c3c1
+# A listener meant for one machine's own use, such as a launcher reached only through a tunnel to
+# localhost, bound to every interface: privacy exposure. local_listener is a capability a project's
+# probe grounds by enumerating such listeners. A node that serves a cluster on every interface has
+# none, so its probe reads empty and the class is dormant there.
+local_listener_binds_loopback	probe:local_listener=found	a bind to loopback only for every listener meant for this machine's own use, so nobody else on the network can reach it; traffic from elsewhere arrives through a tunnel or proxy that dials localhost	prototype=ADVISORY,internal=TASK_BLOCKING,public-beta=RELEASE_BLOCKING,production=RELEASE_BLOCKING	candidate:b1f19fc348dd
+# A CI workflow that runs actions by a movable tag: supply-chain compromise. No web term.
+ci_actions_pinned	cap:ci	every action, image and tool a CI workflow fetches from elsewhere pinned to a full commit id or digest, so a moved tag cannot run with the workflow's tokens and keys	prototype=INFO,internal=ADVISORY,public-beta=TASK_BLOCKING,production=RELEASE_BLOCKING	candidate:1d0f456b27c1
+# A CI workflow that reads a secret, such as a signing key, in a scope wider than one step:
+# exfiltration. ci_secret is a capability a probe grounds by enumerating the secrets workflows read.
+ci_secret_scoped_to_step	cap:ci probe:ci_secret=found	each secret a CI workflow reads scoped to the one step that needs it, never set in a workflow-level or job-level environment where install scripts and third-party actions can read it	prototype=ADVISORY,internal=ADVISORY,public-beta=RELEASE_BLOCKING,production=RELEASE_BLOCKING	candidate:eb650849fb47
+# A container image that keeps root while it holds keys or data: privilege escalation. container
+# is a capability a probe grounds by enumerating the images a project builds or runs.
+container_runs_unprivileged	probe:container=found	a non-root user in every container image before its service starts, and no service in a deployed stack run as user 0 on the host network	prototype=INFO,internal=ADVISORY,public-beta=TASK_BLOCKING,production=RELEASE_BLOCKING	candidate:159d1ead7b06

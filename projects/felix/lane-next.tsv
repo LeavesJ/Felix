@@ -1,0 +1,3 @@
+# Each lane's first open item, on one line (lib/lane.sh, design §6.3). Read as committed. The pull
+# request that lands a lane item moves its row in the same change.
+capability	held: the founder put the trust-plane revisit first on 2026-11-06, opening with the engine-language question, so take trust-plane work; come-backs, slice 2 (felix retro, branch claude/lane-retro), starts after that revisit

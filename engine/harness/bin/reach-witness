@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# The reach test's witness: what arrived at the authority's desktop while a worker's session tried to reach it.
+#
+#   reach-witness [--seconds N] [--out DIR]
+#
+#   exit 0  a record was written; its path and its git blob id are printed
+#   exit 2  usage, or the record could not be written
+#
+# Run at the authority's desktop, as the authority's login, with that desktop in front and the founder's own
+# login switched out (the door design of 2026-11-10, section 5.6). It shows a token made for the run, and for N
+# seconds (120 when unset) records what arrives:
+#   - each byte on its standard input, with its time: nobody types while it runs, so a byte here was posted;
+#   - the application in front, each time it changes: a window raised from outside shows here;
+#   - whether the pasteboard changed.
+# It writes one record, a text file under DIR (the authority's home, reach/, when unset). The founder then
+# compares what the probe captured (reach-probe) with what he saw: the token must be in none of it. The result
+# is his statement at the door, `reach pass RECORD` or `reach fail RECORD`, given at the console.
+#
+# WHAT A PASS SAYS: that what was tried did not arrive, on this Mac, on that day. The tries are an open list
+# (reach-probe --list), and a route nobody tried is not shown closed.
+#
+# This program makes and changes no login, key or setting. Where a tool that reads the front application or the
+# pasteboard is absent, the record says not-read. Bash 3.2.
+set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+seconds=120; out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seconds) [ $# -ge 2 ] || { echo "reach-witness: --seconds needs a value" >&2; exit 2; }; seconds="$2"; shift 2 ;;
+    --out)     [ $# -ge 2 ] || { echo "reach-witness: --out needs a value" >&2; exit 2; }; out="$2"; shift 2 ;;
+    *) echo "usage: reach-witness [--seconds N] [--out DIR]" >&2; exit 2 ;;
+  esac
+done
+case "$seconds" in ""|*[!0123456789]*) echo "reach-witness: --seconds takes a whole number" >&2; exit 2 ;; esac
+[ "${#seconds}" -le 5 ] || { echo "reach-witness: --seconds is too long a wait" >&2; exit 2; }
+[ -n "$out" ] || out="${FELIX_AUTHORITY_HOME:-$HOME/.felix/authority}/reach"
+case "$out" in /*) ;; *) echo "reach-witness: --out takes an absolute path" >&2; exit 2 ;; esac
+umask 077
+mkdir -p "$out" 2>/dev/null && [ -d "$out" ] && [ ! -L "$out" ] || { echo "reach-witness: $out could not be made" >&2; exit 2; }
+
+hex() { od -An -N"$1" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+shown="$(hex 4)"; run="$(hex 4)"   # the word this run shows
+[ "${#shown}" -eq 8 ] && [ "${#run}" -eq 8 ] || { echo "reach-witness: the system's random source could not be read" >&2; exit 2; }
+rec="$out/witness-$(date -u +%Y%m%dT%H%M%SZ)-$run.txt"
+
+# The application in front, as one printable word, or not-read.
+front() {
+  local a n
+  command -v lsappinfo >/dev/null 2>&1 || { printf 'not-read'; return 0; }
+  a="$(lsappinfo front 2>/dev/null)"; [ -n "$a" ] || { printf 'not-read'; return 0; }
+  # The first line names it, as "LSDisplayName"="Name" or as "Name" ASN:..., by the system's version.
+  n="$(lsappinfo info -only name "$a" 2>/dev/null | sed -n 1p)"
+  case "$n" in *'="'*) n="${n#*=\"}" ;; '"'*) n="${n#\"}" ;; esac
+  n="$(printf '%s' "${n%%\"*}" | LC_ALL=C tr -c ' -~' '?' | LC_ALL=C cut -c1-120)"
+  printf '%s' "${n:-not-read}"
+}
+# A digest of the pasteboard, or not-read.
+board() {
+  command -v pbpaste >/dev/null 2>&1 || { printf 'not-read'; return 0; }
+  pbpaste 2>/dev/null | cksum 2>/dev/null | LC_ALL=C tr -c '0-9\n' '.' | LC_ALL=C tr -d '\n'
+}
+
+{
+  printf 'felix-reach-witness/v1\nrun: %s\ntoken: %s\nuser: %s\nstarted: %s\nseconds: %s\n' \
+    "$run" "$shown" "$(id -un 2>/dev/null)" "$(now)" "$seconds"
+} > "$rec" || { echo "reach-witness: $rec could not be written" >&2; exit 2; }
+
+if [ "$seconds" -gt 0 ]; then
+  printf '\nFELIX REACH WITNESS. Leave this window in front and touch nothing for %s seconds.\n' "$seconds"
+  printf 'The token of this run. Remember it: it must be in nothing the probe captured.\n\n'
+  for i in 1 2 3; do printf '        %s   %s   %s   %s\n' "${shown:0:2}" "${shown:2:2}" "${shown:4:2}" "${shown:6:2}"; done
+  printf '\n'
+fi
+
+f0="$(front)"; b0="$(board)"; flast="$f0"; bytes=0; changed=no; eof=0
+printf 'front: 0 %s\n' "$f0" >> "$rec"
+start=$SECONDS
+while [ $((SECONDS - start)) -lt "$seconds" ]; do
+  if [ "$eof" -eq 0 ]; then
+    c=""
+    IFS= read -r -s -n 1 -t 1 c; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      bytes=$((bytes + 1))
+      if [ -z "$c" ]; then v=10; else LC_ALL=C printf -v v '%d' "'$c" 2>/dev/null || v=63; fi
+      [ "$bytes" -gt 4096 ] || printf 'stdin: %s %02x\n' "$((SECONDS - start))" "$(( v & 255 ))" >> "$rec"
+    elif [ "$rc" -le 128 ]; then eof=1   # the end of input, not a timeout: nothing more can arrive this way
+    fi
+  else
+    sleep 1
+  fi
+  f="$(front)"
+  if [ "$f" != "$flast" ]; then printf 'front: %s %s\n' "$((SECONDS - start))" "$f" >> "$rec"; flast="$f"; fi
+  [ "$(board)" = "$b0" ] || changed=yes
+done
+[ "$b0" != not-read ] || changed=not-read
+printf 'stdin-bytes: %s\npasteboard-changed: %s\nended: %s\n' "$bytes" "$changed" "$(now)" >> "$rec"
+
+printf 'record: %s\n' "$rec"
+if command -v git >/dev/null 2>&1; then
+  printf 'witness: %s\n' "$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git hash-object --no-filters -- "$rec" 2>/dev/null)"
+else
+  printf 'witness: not computed: git is not here\n'
+fi
+if [ "$seconds" -gt 0 ]; then
+  printf 'bytes that arrived at the keyboard: %s; pasteboard changed: %s; the application in front at the end: %s\n' "$bytes" "$changed" "$flast"
+  printf 'Next: compare what the probe captured with what you saw. Then, at the console after a restart, give the\n'
+  printf 'result at the door: reach pass %s   or   reach fail %s\n' "$rec" "$rec"
+fi
+exit 0

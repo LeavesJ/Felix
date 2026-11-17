@@ -53,6 +53,17 @@ fi
 if ! command -v felix_obligations_run >/dev/null 2>&1; then
   . "$(dirname "${BASH_SOURCE[0]:-$0}")/obligations.sh" 2>/dev/null
 fi
+# And where the merge boundary reads its policy from (policy.sh, trust-plane step 3). Loaded always,
+# never "unless felix_policy_open exists": the judge's child shell imports the functions a session
+# exported, so that guard would let one of them choose the policy directory. A judge that could not
+# load it refuses below rather than reading the working tree.
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/policy.sh" 2>/dev/null || :
+# And what binds the merge to the provider's base and to objects that hash to their names (bind.sh, trust-plane
+# step 3, slice 2), loaded always for the same reason. felix merge refuses when it is not loaded.
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/bind.sh" 2>/dev/null || :
+# And P's instrument parts run over the candidate (instrument.sh, trust-plane step 3, slice 3), loaded always for
+# the same reason. felix merge refuses a self-governed merge when it is not loaded.
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/instrument.sh" 2>/dev/null || :
 
 FELIX_ESCAPE_SCAN="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../bin" 2>/dev/null && pwd)/secret-scan"
 
@@ -75,7 +86,7 @@ FELIX_ESCAPE_SCAN="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../bin" 2>/dev/null 
 # reading, and a row loosened in place removes the old line, so both fire, and
 # adding a row for a new table is free. By basename it would also stop the
 # merge of any product that keeps a data file called schemas.tsv.
-FELIX_ESCAPE_TABLES='risk.tsv evidence.tsv deny.tsv project.json probes.tsv ecosystem.tsv commissioning.tsv obligations.tsv qualification.tsv engine/harness/templates/schemas.tsv'
+FELIX_ESCAPE_TABLES='risk.tsv evidence.tsv deny.tsv project.json probes.tsv ecosystem.tsv commissioning.tsv obligations.tsv qualification.tsv engine/harness/templates/schemas.tsv land.tsv'
 
 # The subset whose rows are EXEMPTIONS, and for which "adding is free" is
 # backwards. A row in the ecosystem table says "this word is not a stack name"
@@ -85,7 +96,31 @@ FELIX_ESCAPE_TABLES='risk.tsv evidence.tsv deny.tsv project.json probes.tsv ecos
 # about to break invariant 1 in, and merge green. Any change to one of these
 # fires — the conformance amendments say so in as many words — because there
 # is no direction of edit to such a table that a reviewer need not look at.
-FELIX_ESCAPE_EXEMPTION_TABLES='ecosystem.tsv'
+# "Any change" is every change to a row, compared as the reader reads it: in
+# file order and byte for byte (_felix_escape_changed). Only comments and blank
+# lines are free.
+#
+# land.tsv (lib/land-table.sh) is the same case twice over. A resolver row is
+# a path the landing actor may settle without a session; a founder or session
+# row is one it may not. So adding a resolver row widens, removing a narrowing
+# row widens too, and no direction of edit is free: the landing-actor design
+# says "any change fires, additions included". A basename, like its siblings,
+# because every project keeps its table at projects/<name>/land.tsv and the
+# engine names none of them. That errs toward the founder: a product's own
+# data file called land.tsv escapes on every change, as one called risk.tsv
+# does.
+#
+# The membership binds from the first engine that carries it. The pull request
+# that adds land.tsv here is judged by the engine main already holds, where
+# land.tsv is in no list, and its schemas.tsv row is an addition, which is
+# free; so that pull request does not escape by itself and is carried to the
+# founder by hand.
+#
+# It is deliberately NOT in FELIX_COMMISSION_TABLES (commission.sh).
+# felix_commission_policy_version hashes a header for every name listed there
+# whether or not the file exists, so adding the name would move every governed
+# project's policy hash on deploy and stale every commission receipt at once.
+FELIX_ESCAPE_EXEMPTION_TABLES='ecosystem.tsv land.tsv'
 
 # Merging this causes a job to run holding whatever secrets the repository has.
 # The revert restores the YAML. It does not un-run the job or un-read the key.
@@ -110,6 +145,10 @@ FELIX_ESCAPE_EXECUTE='^\.github/(workflows|actions)/'
 #
 # Named by shape. projects/<name>/autonomy exists for every governed project,
 # and the engine names none of them.
+#
+# The shape also matches autonomy.lock, felix autonomy's writer lock
+# (felix_autonomy_lock, autonomy.sh). That is an empty directory, which git
+# does not track, so it never reaches a diff and this never fires on it.
 FELIX_ESCAPE_AUTHORITY='(^|/)projects/[^/]+/autonomy(\.[a-z]+)?$'
 
 # exception: the table of grants that clear a TASK_BLOCKING obligation at the
@@ -153,21 +192,41 @@ _felix_escape_confined() {
   local root="$1" base="$2" f="$3" confine="$4" hunk plus minus
   [ -n "$confine" ] && [ "$confine" != "-" ] || return 1
 
-  hunk="$( { git -C "$root" diff -U0 "$base...HEAD" -- "$f" 2>/dev/null
-             git -C "$root" diff -U0 --cached -- "$f" 2>/dev/null
-             git -C "$root" diff -U0 -- "$f" 2>/dev/null
-           } | grep -E '^[-+]' | grep -vE '^(\+\+\+|---)')"
+  # Each source read to the end, or the row fires (2026-10-08). With the file
+  # itself replaced by a named pipe, the working-tree diff exited 128 and gave
+  # nothing. The committed hunk alone was confined, so the row was demoted over
+  # a change nobody could read. The committed hunk is asked only where it can
+  # exist. With no base, or no commit yet, `...HEAD` fails for want of a
+  # commit, and an empty answer there was always the right one.
+  #
+  # No external diff, no textconv and no colour (2026-10-08): the first two could
+  # print a confined-looking hunk for a change that is not one. A textconv that printed
+  # `liba>=1.0` for the old deps.txt and `liba>=2.0` for one that added evilpkg
+  # demoted the row. Why per call: above _felix_git_patch in resolve.sh. A
+  # binary marking leaves no +/- line here, so the row fires, as it should.
+  local one all=""
+  if [ -n "$base" ] && git -C "$root" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    _felix_git_read one git -C "$root" diff --no-ext-diff --no-textconv --no-color -U0 "$base...HEAD" -- "$f" || return 1
+    all="$one"
+  fi
+  _felix_git_read one git -C "$root" diff --no-ext-diff --no-textconv --no-color -U0 --cached -- "$f" || return 1
+  all="$all
+$one"
+  _felix_git_read one git -C "$root" diff --no-ext-diff --no-textconv --no-color -U0 -- "$f" || return 1
+  all="$all
+$one"
+  hunk="$(printf '%s\n' "$all" | LC_ALL=C grep -E '^[-+]' | LC_ALL=C grep -vE '^(\+\+\+|---)')"
   [ -n "$hunk" ] || return 1
 
   # Any line outside the confine means the row fires. A here-string, not a
   # pipe: grep -q stops at the first such line, and a printf still writing a
   # long hunk dies of SIGPIPE, which pipefail reads as every line confined.
-  grep -qvE "$confine" <<<"$hunk" && return 1
+  LC_ALL=C grep -qvE "$confine" <<<"$hunk" && return 1
 
-  plus="$(printf '%s\n' "$hunk"  | grep '^+' \
-          | sed -E 's/^\+[^A-Za-z0-9]*([A-Za-z0-9._-]+).*/\1/' | LC_ALL=C sort)"
-  minus="$(printf '%s\n' "$hunk" | grep '^-' \
-          | sed -E 's/^-[^A-Za-z0-9]*([A-Za-z0-9._-]+).*/\1/' | LC_ALL=C sort)"
+  plus="$(printf '%s\n' "$hunk"  | LC_ALL=C grep '^+' \
+          | LC_ALL=C sed -E 's/^\+[^A-Za-z0-9]*([A-Za-z0-9._-]+).*/\1/' | LC_ALL=C sort)"
+  minus="$(printf '%s\n' "$hunk" | LC_ALL=C grep '^-' \
+          | LC_ALL=C sed -E 's/^-[^A-Za-z0-9]*([A-Za-z0-9._-]+).*/\1/' | LC_ALL=C sort)"
   [ "$plus" = "$minus" ] || return 1
   return 0
 }
@@ -190,8 +249,8 @@ _felix_escape_confined() {
 # since it also teaches them to route around the ones that matter.
 _felix_escape_fewer() {
   local root="$1" base="$2" f="$3" pattern="$4" before after
-  before="$(git -C "$root" show "$base:$f" 2>/dev/null | grep -cE "$pattern")"
-  after="$( felix_file_at "$root" HEAD "$f" | grep -cE "$pattern")"
+  before="$(git -C "$root" show "$base:$f" 2>/dev/null | LC_ALL=C grep -cE "$pattern")"
+  after="$( felix_file_at "$root" HEAD "$f" | LC_ALL=C grep -cE "$pattern")"
   [ "${after:-0}" -lt "${before:-0}" ]
 }
 
@@ -207,10 +266,20 @@ _felix_escape_fewer() {
 # on the most ordinary edit there is. Caught on the commit that declared
 # `consumers`, which added two keys and removed nothing. A genuine removal takes
 # its whole line with it and is still caught.
+# Locale, 2026-10-08: sed stopped at a byte that was not UTF-8 and hid every
+# removal below it. The rules are above felix_json_str in resolve.sh.
+#
+# Only a JSON file forgives the comma (trust-plane step 3, spec S3). Stripped
+# from every table, it made a TSV row and the same row with `,` appended read
+# as one: appending a comma to a risk.tsv row's `count:` confine stops that
+# row counting anything (no line ends in a comma), and the edit that did it
+# was no change here, so it landed on green and loosened every merge after it.
 _felix_escape_lines() {
+  local strip='s/[[:space:]]*,[[:space:]]*$//'
+  case "$3" in *.json) ;; *) strip='s/^//' ;; esac
   felix_file_at "$1" "$2" "$3" \
-    | grep -vE '^[[:space:]]*(#|$)' \
-    | sed -E 's/[[:space:]]*,[[:space:]]*$//' \
+    | LC_ALL=C grep -vE '^[[:space:]]*(#|$)' \
+    | LC_ALL=C sed -E "$strip" \
     | LC_ALL=C sort -u
 }
 
@@ -219,16 +288,37 @@ _felix_escape_shrank() {
   before="$(_felix_escape_lines "$root" "$base" "$f")"
   [ -n "$before" ] || return 1
   after="$(_felix_escape_lines "$root" HEAD "$f")"
-  [ -n "$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))" ]
+  # 2026-10-08: comm compares in its locale's collation, and both sides are
+  # sorted in C. Under LANG=en_US.UTF-8, an added row that sorts before an
+  # existing one in bytes and after it in the locale (Zulu and _under) made
+  # comm print a row nobody removed, so a pure addition read as a removal.
+  # Every sort, comm, join and uniq in the engine runs as LC_ALL=C <tool>,
+  # which tests/run lints.
+  [ -n "$(LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))" ]
 }
 
-# Any row present on one side and not the other, in either direction. Same
-# static blobs, same comment stripping, so a reworded comment is still free.
+# Any change to the rows of an exemption table: the non-comment, non-blank
+# lines of the two sides, in file order and byte for byte, differ. Same static
+# blobs and the same comment stripping, so a reworded comment is still free.
+#
+# Deliberately not _felix_escape_lines. Its comma stripping is for project.json,
+# which is no exemption table, and its sort -u makes order and repetition
+# invisible, while the readers of these tables see both. A land table's reader
+# refuses a row whose last cell gained a comma, so the row it bound is gone;
+# and it keeps the first of two rows on one path, so swapping them changes the
+# row that stands. Compared as sets, both edits read as no change, and a
+# founder or session row could be dropped or overridden with nobody asked.
+# grep -a and the C locale, so a byte that is not text is compared as a byte
+# and never turns one side into grep's "Binary file matches".
+_felix_escape_rows_exact() {
+  felix_file_at "$1" "$2" "$3" | LC_ALL=C grep -avE '^[[:space:]]*(#|$)'
+}
+
 _felix_escape_changed() {
   local root="$1" base="$2" f="$3" before after
-  before="$(_felix_escape_lines "$root" "$base" "$f")"
-  after="$(_felix_escape_lines "$root" HEAD "$f")"
-  [ -n "$(comm -3 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))" ]
+  before="$(_felix_escape_rows_exact "$root" "$base" "$f"; printf .)"
+  after="$(_felix_escape_rows_exact "$root" HEAD "$f"; printf .)"
+  [ "$before" != "$after" ]
 }
 
 felix_escapes() {
@@ -252,36 +342,72 @@ felix_escapes() {
   # it, so nothing can demote it, and neither `reviewed` nor a confine clause
   # reaches it. Callers must route it away from the founder — it is a typo, not
   # a decision about writing outside the tree.
-  if [ -n "$base" ] && ! felix_base_resolves "$root" "$base"; then
-    printf 'unknown\t%s\tthis base names nothing here, so nothing was scanned; no channel was consulted\n' "$base"
-    return 0
+  #
+  # A git that could not run is the same unanswerable scan and not the same
+  # typo (2026-11-14), so its row is named GIT and says so, with git's status.
+  if [ -n "$base" ]; then
+    local brc=0 gwhy=""
+    felix_base_resolves "$root" "$base" gwhy || brc=$?
+    case "$brc" in
+      0) ;;
+      2) printf 'unknown\tGIT\t%s, so the base %s was not looked up and nothing was scanned; no channel was consulted\n' "$gwhy" "$base"
+         return 0 ;;
+      *) printf 'unknown\t%s\tthis base names nothing here, so nothing was scanned; no channel was consulted\n' "$(felix_base_subject "$base")"
+         return 0 ;;
+    esac
   fi
 
-  paths="$(felix_changed_paths "$root" "$base")"
+  # A change git could not read to the end is unknown, on the same reserved
+  # channel as a base that names nothing (2026-10-08). A tracked named pipe at
+  # A.txt ended `git diff` there, so every line added after it was gone. This
+  # scanned an empty change and found it clean, credential and SQL included.
+  # The paths it did read still go through every channel below. The unknown row
+  # is said once, before them, and blocks the merge however they come out.
+  # The reason is git's own (felix_change_why), since a path, an index and a
+  # missing merge base each need a different fix.
+  local unread=""
+  if ! paths="$(felix_changed_paths "$root" "$base")"; then
+    unread=1
+    printf 'unknown\tCHANGED-PATHS\tgit could not list every path this change touches (%s), so the change was not scanned in full\n' \
+      "$(felix_change_why "$root" "$base")"
+  fi
   [ -n "$paths" ] || return 0
 
-  added="$(felix_added_lines "$root" "$base")"
+  if ! added="$(felix_added_lines "$root" "$base")" && [ -z "$unread" ]; then
+    unread=1
+    printf 'unknown\tADDED-LINES\tgit could not read every line this change adds (%s), so they were not scanned\n' \
+      "$(felix_change_why "$root" "$base")"
+  fi
 
   # disclose. Already tuned against real false positives and already in the
   # gate, so this is the same verdict the gate reaches, not a second opinion.
-  if [ -x "$FELIX_ESCAPE_SCAN" ] \
-       && ! ( cd "$root" && "$FELIX_ESCAPE_SCAN" "$base" >/dev/null 2>&1 ); then
-    printf 'disclose\tADDED-LINES\ta credential in the added lines; history keeps the blob\n'
+  # Exit 1 is a finding. Any other failure is a scan that did not read the
+  # change (2026-10-08), so it is unknown, not a credential and not clean.
+  # secret-scan exits 2 for that.
+  if [ -x "$FELIX_ESCAPE_SCAN" ]; then
+    local scan=0
+    ( cd "$root" && "$FELIX_ESCAPE_SCAN" "$base" >/dev/null 2>&1 ) || scan=$?
+    case "$scan" in
+      0) ;;
+      1) printf 'disclose\tADDED-LINES\ta credential in the added lines; history keeps the blob\n' ;;
+      *) [ -n "$unread" ] \
+           || printf 'unknown\tADDED-LINES\tthe secret scan could not read the added lines, so nothing says they hold no credential\n' ;;
+    esac
   fi
 
   while IFS= read -r f; do
     [ -n "$f" ] || continue
 
-    grep -qE "$FELIX_ESCAPE_EXECUTE" <<<"$f" \
+    LC_ALL=C grep -qE "$FELIX_ESCAPE_EXECUTE" <<<"$f" \
       && printf 'execute\t%s\tmerging runs this job holding the repository secrets\n' "$f"
 
-    grep -qE "$FELIX_ESCAPE_AUTHORITY" <<<"$f" \
+    LC_ALL=C grep -qE "$FELIX_ESCAPE_AUTHORITY" <<<"$f" \
       && printf 'authority\t%s\tmerging grants Felix a power it then holds in every session; a revert does not un-run them\n' "$f"
 
-    grep -qE "$FELIX_ESCAPE_EXCEPTION" <<<"$f" \
+    LC_ALL=C grep -qE "$FELIX_ESCAPE_EXCEPTION" <<<"$f" \
       && printf 'exception\t%s\tmerging turns a written row into a grant that clears an obligation, and only a person may give one\n' "$f"
 
-    grep -qE "$FELIX_ESCAPE_DURABLE_PATH" <<<"$f" \
+    LC_ALL=C grep -qE "$FELIX_ESCAPE_DURABLE_PATH" <<<"$f" \
       && printf 'durable\t%s\trows already written are not restored by a revert\n' "$f"
 
     # verifier, for the tables that decide what stops. Adding is free — except
@@ -301,7 +427,7 @@ EOF
 
   # A here-string for the reason _felix_escape_confined gives: SQL on an early
   # line of a long diff would otherwise read as no SQL at all.
-  [ -n "$added" ] && grep -qE "$FELIX_ESCAPE_DURABLE_ADDED" <<<"$added" \
+  [ -n "$added" ] && LC_ALL=C grep -qE "$FELIX_ESCAPE_DURABLE_ADDED" <<<"$added" \
     && printf 'durable\tADDED-LINES\tdestructive SQL in the added lines\n'
 
   # One lookup for the whole diff. `reviewed` is the only channel a verdict can
@@ -336,7 +462,7 @@ EOF
     [ "$channel" = "unknown" ] && channel="declared-unknown"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      grep -qE "$pattern" <<<"$f" || continue
+      LC_ALL=C grep -qE "$pattern" <<<"$f" || continue
       [ "$channel" = "reviewed" ] && [ "$reviewed" = "pass" ] && continue
       case "${confine:-}" in
         count:*) _felix_escape_fewer "$root" "$base" "$f" "${confine#count:}" || continue ;;
@@ -347,7 +473,7 @@ EOF
 $paths
 EOF2
   done <<EOF
-$(grep -vE '^[[:space:]]*(#|$)' "$proj/risk.tsv")
+$(LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$proj/risk.tsv")
 EOF
 }
 
@@ -355,15 +481,21 @@ EOF
 #
 # Emits: kind <TAB> subject <TAB> reason. Empty means merge.
 #
-# Computed entirely from the working tree, the diff and the receipt, so it
-# refuses with no network and no credentials. A merge command that learns its
-# own preconditions from the network cannot refuse offline, and offline is
-# exactly when somebody is most likely to reach for it.
+# Computed from the working tree, the diff and the receipt, so it refuses with
+# no network and no credentials. A merge command that learns its own
+# preconditions from the network cannot refuse offline, and offline is exactly
+# when somebody is most likely to reach for it.
+#
+# One rule asks GitHub, and only for one kind of receipt: rule C9, below, for a
+# gate that reused a suite run (tests:reused). It is the only place this
+# function reaches the network, a gate that ran its suite never asks, and where
+# GitHub cannot be asked the rule refuses, so offline still refuses.
 #
 # Three kinds, and they are not the same kind of thing:
 #
 #   escape      merging writes outside the tree. A founder decision.
-#   unverified  no green receipt for this exact tree. Run the gate.
+#   not-green   no green receipt for this exact tree. Run the gate. (It was
+#               named unverified until 2026-11-07, docs/2026-11-07-not-green-deploy-failed-contract.md.)
 #   evidence    the change owes a test. That is Felix's work, not a queue item
 #               for anybody — the charter calls handing it back a defect — but
 #               it is still a blocker, because merging first would ship the
@@ -390,11 +522,161 @@ felix_merge_checkout() {
     "$tid"
 }
 
+# Whether the project's gate workflow has passed on one commit: rule C9 of
+# felix_merge_blockers, asked only of a receipt that reports tests:reused.
+#
+# felix-home has no branch protection, since the plan does not allow it on a
+# private repository, and `felix merge` does not ask CI: its boundary needs a
+# current green receipt for the exact tree and the evidence rows, and "merge on
+# green CI" has been a convention that nothing in the merge path read. Contract
+# A lets the receipt's tests verdict come from a suite receipt, a second file a
+# session can write. Forging that grants nothing that writing the gate receipt
+# does not already grant, but a defect that reused a run it should not have
+# would reach a merge with nothing independent behind it. The push security
+# review of 2026-10-12 asked for the independent verdict, and the gate
+# workflow's own run on this exact commit is it.
+#
+# Prints nothing and returns 0 when the newest run of that workflow on the
+# commit is completed and concluded success. The newest run is the one that
+# counts, and an older green one never stands in for it (review finding C9-R1):
+# a second run on one head appears when a pull request is reopened after main
+# moved, or when the same head sits in two of them, and it tests the head in a
+# different base. Otherwise returns 1 and prints what held, as the tail of the
+# blocker's reason:
+#
+#   no run on this commit
+#   its run is <status>                 the newest run on it has not completed
+#   its run concluded <conclusion>      the newest run on it completed and did not succeed
+#   GitHub could not be asked (<what failed>)
+#
+# Asked the way lib/repair.sh and lib/automerge.sh ask: `gh run list` for the
+# workflow felix_gate_workflow names and no other, because without --workflow
+# it lists every workflow's runs on the commit, and the unattended repair's or
+# GitHub's Dependency Graph passing is no verdict of the gate. The commit is
+# asked for with --commit, and each run's own headSha is read as well, so an
+# answer about another commit is no evidence however it came to be listed. A run
+# whose headSha is not exactly the commit is not a run on it, and one whose
+# headSha gh did not give at all cannot be placed, which is unreadable and never
+# a pass (review finding C9-R2).
+#
+# Unreadable is never "no run" and never a pass, and pass is the one word
+# anything here is compared to. The count is printed first, as repair.sh does
+# for the same reason: `.[]` over an empty list prints nothing, and gh printing
+# nothing because it failed would otherwise read as a commit nobody ran.
+_felix_merge_gate_held() {
+  local proj="$1" root="$2" sha="$3" wf slug runs rc=0 verdict key val tab=$'\t' lib
+  lib="$(dirname "${BASH_SOURCE[0]:-$0}")"
+  command -v gh >/dev/null 2>&1 || { printf 'GitHub could not be asked (gh is not on PATH)'; return 1; }
+  # Sourced when the rule fires, not at load: they name functions and run
+  # nothing, and every hook and the CLI load this file, almost none of them to
+  # judge a merge. Fails closed on a library that cannot be loaded, like the
+  # probe and obligation libraries above.
+  command -v felix_gate_workflow >/dev/null 2>&1 || . "$lib/bootstrap.sh" 2>/dev/null
+  command -v felix_repo_slug >/dev/null 2>&1 || . "$lib/detect.sh" 2>/dev/null
+  if ! command -v felix_gate_workflow >/dev/null 2>&1 || ! command -v felix_repo_slug >/dev/null 2>&1; then
+    printf 'GitHub could not be asked (the engine could not load what names the gate workflow and the repository)'
+    return 1
+  fi
+  wf="$(felix_gate_workflow "$proj" 2>/dev/null)" || {
+    printf 'GitHub could not be asked (%s)' "$(printf '%s' "$wf" | LC_ALL=C tr '\t\r\n' '   ')"
+    return 1
+  }
+  slug="$(felix_repo_slug "$root" 2>/dev/null)"
+  [ -n "$slug" ] || { printf 'GitHub could not be asked (this checkout has no github remote)'; return 1; }
+  [ -n "$sha" ] || { printf 'GitHub could not be asked (git could not read the head commit)'; return 1; }
+  runs="$(gh run list --repo "$slug" --workflow "$wf" --commit "$sha" --limit 20 \
+            --json status,conclusion,headSha \
+            -q 'def v: if . == null or . == "" then "-" else . end;
+                length, (.[] | "\(.status | v)\t\(.conclusion | v)\t\(.headSha | v)")' 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || { printf 'GitHub could not be asked (gh run list failed with status %s)' "$rc"; return 1; }
+  [ -n "$runs" ] || { printf 'GitHub could not be asked (gh run list printed nothing)'; return 1; }
+  # The first line is the count; the rest are runs, newest first as gh lists
+  # them, as status, conclusion and the commit the run is on, with `-` for a
+  # field gh left empty so no field is ever missing between two tabs.
+  #
+  # The first run that is on this commit decides, and nothing after it is read:
+  # a run before it that cannot be read or placed might have been the newest on
+  # this commit, so it is unreadable and not skipped, and an older success never
+  # outvotes a newer run that failed or has not finished.
+  verdict="$(printf '%s\n' "$runs" | LC_ALL=C awk -F'\t' -v sha="$sha" '
+    NR == 1 { if ($0 !~ /^[0-9]+$/) { bad = "gh run list printed no run count"; exit }
+              total = $0 + 0; next }
+    { lines++
+      st = $1; co = $2; on = $3
+      if (st !~ /^[A-Za-z0-9_]+$/) { bad = "gh run list listed a run whose status cannot be read"; exit }
+      if (on == "-" || on == "") { bad = "gh run list listed a run without the commit it is on"; exit }
+      if (on != sha) { other++; next }
+      if (st != "completed") { newest = "status\t" st; exit }
+      if (co !~ /^[A-Za-z0-9_]+$/) { bad = "gh run list listed a completed run without a conclusion"; exit }
+      newest = (co == "success") ? "pass" : ("concluded\t" co)
+      exit
+    }
+    END {
+      if (NR == 0) { print "unreadable\tgh run list printed nothing"; exit }
+      if (bad != "") { print "unreadable\t" bad; exit }
+      if (newest != "") { print newest; exit }
+      if (total == 0) { print "none"; exit }
+      if (lines == 0) { print "unreadable\tgh run list counted runs and listed none"; exit }
+      if (other == lines) { print "none"; exit }
+      print "unreadable\tgh run list listed runs that cannot be read"
+    }')"
+  key="${verdict%%"$tab"*}"; val="${verdict#*"$tab"}"
+  case "$key" in
+    pass)       return 0 ;;
+    none)       printf 'no run on this commit' ;;
+    status)     printf 'its run is %s' "$val" ;;
+    concluded)  printf 'its run concluded %s' "$val" ;;
+    unreadable) printf 'GitHub could not be asked (%s)' "$val" ;;
+    *)          printf 'GitHub could not be asked (the answer could not be read)' ;;
+  esac
+  return 1
+}
+
+# The tables and the instruments come from P (policy.sh, trust-plane step 3,
+# spec S1 and S2): the body below reads every table from POL, the snapshot of
+# the project directory as P holds it, and the commands those tables hold run
+# P's instruments. PROJ stays the project's own path for what is said, and the
+# snapshot keeps its name, so memory and receipts are found by name as before.
+# A policy that cannot be read is one blocker, and nothing else is judged:
+# no table in a working tree stands in for it. Always 0, as before, because
+# the judge's exit status says whether it could judge, not what it found.
 felix_merge_blockers() {
   local proj="$1" base="$2" root="$3" home="$4"
-  local tid receipt line
+  local _FELIX_POL_TMP="" _FELIX_POL_DIR="" _FELIX_P_TREE="" _FELIX_P_WORDS=""
+  # Spec S1.10. A base that names no commit has no P: it is judged as it was before, from the
+  # directory, and the escape scan's unknown line refuses it (#56). An empty base, which only a
+  # library caller passes (cmd_merge refuses one), reads the directory as before too.
+  if [ -z "$base" ] || ! git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 </dev/null; then
+    _felix_merge_blockers_at "$proj" "$base" "$root" "$home" "$proj"
+    return 0
+  fi
+  # No policy library: one policy line, which refuses, and the rest from the directory, so the other
+  # libraries' faults are named beside it.
+  if ! command -v felix_policy_open >/dev/null 2>&1; then
+    printf 'policy\tengine\tthe policy library is not loaded, so nothing says which tables are the authorized ones\n'
+    _felix_merge_blockers_at "$proj" "$base" "$root" "$home" "$proj"
+    return 0
+  fi
+  if felix_policy_open "$proj" "$base" "$root" && felix_policy_instruments "$root" "$base"; then
+    _felix_merge_blockers_at "$proj" "$base" "$root" "$home" "$_FELIX_POL_DIR"
+  fi
+  felix_policy_close
+  return 0
+}
 
-  felix_escapes "$proj" "$base" "$root" "$home" | while IFS=$'\t' read -r ch path reason; do
+_felix_merge_blockers_at() {
+  local proj="$1" base="$2" root="$3" home="$4" pol="$5"
+  local tid receipt line
+  # owed and behind (lib/land-table.sh), report-only: they write says.log
+  # would-refuse rows and print nothing here. A subshell, so nothing either
+  # does, an unset variable under the judge's set -u included, can reach this
+  # function's output, its status, or the shell that called it; and no input,
+  # so nothing it runs can wait on a terminal.
+  # The land table reads its own rows at refs/remotes/origin/main (land-table.sh), so it is handed the
+  # project's own path: the snapshot sits in no repository it could ask.
+  ( felix_land_would_refuse "$proj" "$base" "$root" ) </dev/null >/dev/null 2>&1
+
+  felix_escapes "$pol" "$base" "$root" "$home" | while IFS=$'\t' read -r ch path reason; do
     [ -n "${ch:-}" ] || continue
     # `unknown` blocks like everything else here, and is deliberately not an
     # escape. cmd_merge counts escapes as founder escalations — interruptions
@@ -413,18 +695,56 @@ felix_merge_blockers() {
   # the Stop hook cannot disagree. Stale for a fact that moved outside the tree
   # is named as such, because "run felix gate" on a tree that did not change
   # reads as the hook being broken until the reason is beside it.
-  local cur
-  cur="$(felix_verify_current "$root" "$home" "$proj" 2>/dev/null)" || true
+  #
+  # The receipt is read once, here, and that text is what is judged and what
+  # rule C9 reads its reported checks from. felix_verify_current runs the
+  # project's probes, about a third of a second, and the gate rewrites the
+  # receipt with a truncating `>`: a second read after the judgement need not be
+  # the receipt that was judged, and an empty one would have dropped C9 and
+  # merged (review finding C9-R3).
+  local cur rcpt
+  rcpt="$(felix_verify_receipt "$root" "$home" 2>/dev/null)"
+  cur="$(felix_verify_current "$root" "$home" "$pol" "$rcpt" 2>/dev/null)" || true
+  # A remedy that names a file names it where the reader can open it: the snapshot is gone by then.
+  [ "$pol" = "$proj" ] || cur="${cur//"$pol"/"$proj"}"
+  # Spec S1.9: receipts are written over the home's tables and read here against P's. Where the two
+  # differ, re-running the gate in that home records the same mismatch again, so the one remedy that
+  # clears it is named: bring the home to the base first.
+  if [ "$pol" != "$proj" ] && command -v felix_commission_policy_version >/dev/null 2>&1 \
+     && [ "$(felix_commission_policy_version "$proj")" != "$(felix_commission_policy_version "$pol")" ]; then
+    printf 'not-green\thome\tthe home'"'"'s tables at %s are not the ones %s holds, so no receipt written there can be current; bring the home to %s, then run felix gate\n' "$proj" "$base" "$base"
+  fi
   case "$cur" in
     current) ;;
-    stale*)  printf 'unverified\ttree\t%s\n' "$(printf '%s' "$cur" | cut -f2)" ;;
-    *)       printf 'unverified\ttree\tno green receipt for this exact tree; run felix gate\n' ;;
+    stale*)  printf 'not-green\ttree\t%s\n' "$(printf '%s' "$cur" | cut -f2)" ;;
+    *)       printf 'not-green\ttree\tno green receipt for this exact tree; run felix gate\n' ;;
   esac
 
-  felix_evidence_check "$proj" "$base" "$root" 2>/dev/null \
+  # C9 (contract A2, the push security review of 2026-10-12): a gate that
+  # reused a suite run (the receipt reports tests:reused) merges only when the
+  # project's gate workflow has passed on the exact commit being merged. This
+  # repository has no branch protection and `felix merge` asks CI nothing
+  # otherwise, so without it a reused verdict would reach a merge with nothing
+  # independent behind it. Only a current green receipt is asked about, since
+  # any other already blocks above, and only the exact pair tests:reused
+  # counts: a receipt that ran its suite, tests:ok included, is judged as it
+  # always was and makes no call to gh.
+  if [ "$cur" = "current" ]; then
+    local rfield hsha held
+    rfield="$(printf '%s' "$rcpt" | cut -f6)"
+    case ",${rfield}," in
+      *,tests:reused,*)
+        hsha="$(git -C "$root" rev-parse HEAD 2>/dev/null)"
+        if ! held="$(_felix_merge_gate_held "$pol" "$root" "$hsha")"; then
+          printf 'not-green\ttests\tthe gate reused a suite run for this tree (tests:reused), and the gate workflow has not passed on %s: %s\n' \
+            "$(printf '%s' "${hsha:-HEAD}" | cut -c1-8)" "$held"
+        fi ;;
+    esac
+  fi
+
+  felix_evidence_check "$pol" "$base" "$root" 2>/dev/null \
     | while IFS=$'\t' read -r status name reason; do
-        [ "${status:-}" = "gap" ] || continue
-        printf 'evidence\t%s\t%s\n' "$name" "$reason"
+        case "${status:-}:${reason:-}" in gap:*|unknown:*"not judged"*) printf 'evidence\t%s\t%s\n' "$name" "$reason" ;; esac
       done
 
   # probes: the merge boundary is the third place the empty case is refused,
@@ -439,9 +759,9 @@ felix_merge_blockers() {
   # that there is nothing to block on; it has established nothing.
   if ! command -v felix_probes_run >/dev/null 2>&1; then
     printf 'probes\tengine\tthe probe library is not loaded, so nothing was asked of reality\n'
-  elif [ ! -f "$proj/probes.tsv" ]; then
+  elif [ ! -f "$pol/probes.tsv" ]; then
     printf 'probes\ttable\tthis project asks reality nothing; write %s/probes.tsv\n' "$proj"
-  elif [ -z "$(felix_probe_rows "$proj")" ]; then
+  elif [ -z "$(felix_probe_rows "$pol")" ]; then
     printf 'probes\ttable\t%s/probes.tsv declares no probe, which is a shelf with nothing on it\n' "$proj"
   else
     # A malformed row is not skipped on the way to the rows that parse. It is
@@ -449,12 +769,12 @@ felix_merge_blockers() {
     # --gate already refuses it; a merge boundary that let it through would
     # be the weaker of the two checks on the same table, which is the order
     # they must never be in.
-    felix_probe_malformed "$proj" | while IFS= read -r line; do
+    felix_probe_malformed "$pol" | while IFS= read -r line; do
       [ -n "$line" ] || continue
       printf 'probes\ttable\t%s/probes.tsv: the row for %s names a predicate and no command, or a command and no predicate\n' \
         "$proj" "$line"
     done
-    felix_probes_run "$proj" "$root" | felix_probes_blocking \
+    felix_probes_run "$pol" "$root" | felix_probes_blocking \
       | while IFS= read -r line; do
           [ -n "$line" ] || continue
           printf 'probes\t%s\t%s: %s\n' \
@@ -475,24 +795,24 @@ felix_merge_blockers() {
   # nothing is.
   if ! command -v felix_obligations_run >/dev/null 2>&1; then
     printf 'obligations\tengine\tthe obligation library is not loaded, so what this project owes was not asked\n'
-  elif [ ! -f "$proj/obligations.tsv" ]; then
+  elif [ ! -f "$pol/obligations.tsv" ]; then
     printf 'obligations\ttable\tthis project admits no obligation; write %s/obligations.tsv\n' "$proj"
   else
     # Refused rows first, before the table is called empty: a row somebody
     # wrote and nothing reads is the more specific fact, and a ledger whose
     # only row is refused should say which row, not just that nothing is owed.
-    felix_obligation_malformed "$proj" | while IFS= read -r line; do
+    felix_obligation_malformed "$pol" | while IFS= read -r line; do
       [ -n "$line" ] || continue
       printf 'obligations\ttable\t%s/obligations.tsv: %s\n' "$proj" "$line"
     done
-    if [ -z "$(felix_obligation_rows "$proj")" ]; then
+    if [ -z "$(felix_obligation_rows "$pol")" ]; then
       printf 'obligations\ttable\t%s/obligations.tsv admits no obligation, which is a ledger with nothing owed\n' "$proj"
     fi
-    felix_obligations_orphans "$proj" | while IFS= read -r line; do
+    felix_obligations_orphans "$pol" | while IFS= read -r line; do
       [ -n "$line" ] || continue
       printf 'obligations\ttable\ta row grounds on %s, which %s/probes.tsv does not declare\n' "$line" "$proj"
     done
-    felix_obligations_run "$proj" "$root" release | felix_obligations_blocking release \
+    felix_obligations_run "$pol" "$root" release | felix_obligations_blocking release \
       | while IFS= read -r line; do
           [ -n "$line" ] || continue
           printf 'obligations\t%s\t%s %s: %s\n' \
@@ -508,23 +828,44 @@ felix_merge_blockers() {
   # project has never been commissioned on this machine, while its table set
   # or detected surfaces have moved since it was, or while a row could not be
   # asked here (indeterminate). Never on held rows: a toolbox that is not yet
-  # installed is a fact about a machine, not about the code being merged. And
-  # never on provider rows, which hold nothing by class. Fails closed on a
-  # missing library for the same reason the probes block does.
+  # installed is a fact about a machine, not about the code being merged. A
+  # row whose check said it could not be asked (exit 2, since 2026-10-08) is
+  # unknown, not held, and blocks like any unknown: a discover row whose run
+  # could not fill the discovery cache (offline, a marketplace that cannot be
+  # read) is one, where until then it read held and did not block. And
+  # never on a provider row's answer, which holds nothing by class; a provider
+  # row whose answer could not be read is unknown like any row, and blocks
+  # through the indeterminate receipt. Fails closed on a missing library for
+  # the same reason the probes block does.
   if ! command -v felix_commission_rows >/dev/null 2>&1; then
     printf 'commission\tengine\tthe commissioning library is not loaded, so nothing was asked of this project\n'
-  elif [ ! -f "$proj/commissioning.tsv" ]; then
+  elif [ ! -f "$pol/commissioning.tsv" ]; then
     printf 'commission\ttable\tthis project was never commissioned; write %s/commissioning.tsv (felix commission says how)\n' "$proj"
-  elif [ -z "$(felix_commission_rows "$proj")" ]; then
+  elif [ -z "$(felix_commission_rows "$pol")" ]; then
     printf 'commission\ttable\t%s/commissioning.tsv declares no need, which is a shelf with nothing on it\n' "$proj"
   else
-    felix_commission_malformed "$proj" | while IFS=$'\t' read -r need why; do
+    felix_commission_malformed "$pol" | while IFS=$'\t' read -r need why; do
       [ -n "$need" ] || continue
       printf 'commission\ttable\t%s/commissioning.tsv: %s: %s\n' "$proj" "$need" "$why"
     done
     local cwhy
-    if ! cwhy="$(felix_commission_receipt_valid "$home" "$proj" "$root")"; then
+    if ! cwhy="$(felix_commission_receipt_valid "$home" "$pol" "$root")"; then
       printf 'commission\treceipt\t%s\n' "$cwhy"
     fi
   fi
 }
+
+# The land table and its report-only checks, which felix_merge_blockers calls
+# above. Loaded here, after every function this file defines, so the judge's
+# child shell, which sources escape.sh and not land-table.sh, has them; and
+# land-table.sh, which loads this file when felix_escapes is missing, finds it
+# already loaded. A land library that cannot be loaded costs the report and
+# nothing else: the status of sourcing this file stays 0, so the judge does
+# not read it as an engine that could not be loaded.
+#
+# Always, never "unless felix_land_rows exists". The judge's child shell
+# imports the functions the session exported, so that guard would let one of
+# them stand in for the library. When land-table.sh was sourced first and
+# loads this file, it is read a second time, which defines the same functions
+# again and stops there, since felix_escapes is defined by then.
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/land-table.sh" 2>/dev/null || :

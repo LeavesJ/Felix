@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# PostToolUse: one append per tool call, and nothing else.
+# PostToolUse: one alive line, then one append per tool call; in a session that
+# was handed an answer, also a row for each file it named that the call reached.
 #
 # This runs after every tool call in every governed session, so its cost is the
 # design constraint rather than an afterthought. It deliberately does not
@@ -9,26 +10,98 @@
 #
 # It records and never blocks. PostToolUse cannot deny anything anyway, and a
 # measurement that interrupts the thing it measures is not worth having.
+#
+# The alive line is what lets the rollup tell a run that recorded nothing from a
+# session that reached for nothing: a run that dies, or finds no signal, after
+# it leaves a line with no call beside it, where it used to leave no trace and
+# the fold read the session as a measured zero. So it is written before
+# anything that can fail for lack of a process or a library: before the first
+# fork and before either library is sourced. The prologue below does it with
+# builtins alone, from the first bytes of the payload and the home the
+# environment or the install's pointer names. A run that cannot reach either
+# (no FELIX_HOME, no ~/.felix-home, no state/ledger yet, a session id not in
+# the first bytes) writes it where it used to, once the home and the session
+# are known. A run killed before the prologue ends, or never started, leaves
+# nothing, and only a session that recorded nothing at all reads as unknown
+# then.
 
 set -uo pipefail
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+# The alive line, before the first fork and before a library is sourced: bash
+# builtins only. It reads the payload's first 512 bytes (one byte at a time off
+# a pipe, which is why no more) and keeps them, for the rest of the payload to
+# follow in the run below. The session is the first "session_id" key, as
+# felix_ledger_session_id takes it. The home is FELIX_HOME, or what the pointer
+# `felix install` writes names, exactly as felix_home chooses between them; any
+# other shape of either is left to felix_home, and the line is then written
+# below. _felix_pt_alive says whether it has been, so a run writes one.
+_felix_pt_head=""; _felix_pt_more=1; _felix_pt_alive=0
+_felix_pt_early() {
+  local LC_ALL=C re='"session_id"[[:space:]]*:[[:space:]]*"([^"]*)"' sid h="" p="" q=""
+  IFS= read -r -d '' -n 512 _felix_pt_head 2>/dev/null || _felix_pt_more=0
+  [[ $_felix_pt_head =~ $re ]] || return 0
+  sid="${BASH_REMATCH[1]}"
+  [ -n "$sid" ] || return 0
+  if [ -n "${FELIX_HOME:-}" ]; then
+    h="$FELIX_HOME"
+  elif [ -n "${HOME:-}" ] && [ -f "$HOME/.felix-home" ]; then
+    { IFS= read -r p; IFS= read -r q; } 2>/dev/null < "$HOME/.felix-home"
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+    q="${q#"${q%%[![:space:]]*}"}"
+    [ -n "$p" ] && [ -z "$q" ] && [ -d "$p" ] && h="$p"
+  fi
+  [ -n "$h" ] || return 0
+  { printf 'alive\tpost-tool\n' >> "$h/state/ledger/$sid.tsv"; } 2>/dev/null && _felix_pt_alive=1
+  return 0
+}
+_felix_pt_early
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
 . "${SCRIPT_DIR}/../lib/ledger.sh"  2>/dev/null || exit 0
 
-raw="$(cat 2>/dev/null || true)"
+# The rest of the payload, after the bytes the prologue read. None is left when
+# those reached the end of it.
+raw="$_felix_pt_head"
+[ "$_felix_pt_more" = 0 ] || raw="$raw$(cat 2>/dev/null || true)"
 [ -n "$raw" ] || exit 0
 
 home="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
 [ -d "$home" ] || exit 0
 
-session="$(printf '%s' "$raw" \
-  | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-[ -n "$session" ] || exit 0
+# The payload's own session: the first "session_id" key, not the last (see
+# felix_ledger_session_id).
+felix_ledger_session_id "$raw" || exit 0
+session="$FELIX_LEDGER_SID"
+
+[ "$_felix_pt_alive" = 1 ] || felix_ledger_alive "$home" "$session"
 
 signal="$(felix_ledger_signal "$raw")"
 [ -n "$signal" ] || exit 0
 
 felix_ledger_record "$home" "$session" "$signal"
+
+# Where the session went after an answer was handed to it, so the ledger can
+# say whether the answer was used and not only that it was given. A file test
+# for every other session (lib/answer.sh, felix_answer_touch).
+[ -f "$home/state/answer/$session.tsv" ] && felix_answer_touch "$home" "$session" "$signal" "$raw"
 exit 0

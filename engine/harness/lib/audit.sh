@@ -214,7 +214,7 @@ felix_audit() {
   # would be a cutoff nobody meant rather than an error.
   case "$since" in
     '') ;;
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+    [0123456789][0123456789][0123456789][0123456789]-[0123456789][0123456789]-[0123456789][0123456789])
       [ "1${since:5:2}" -ge 101 ] && [ "1${since:5:2}" -le 112 ] \
         && [ "1${since:8:2}" -ge 101 ] && [ "1${since:8:2}" -le 131 ] \
         || { _felix_audit_refuse "--since takes a date, YYYY-MM-DD; got: $since"; return; } ;;

@@ -77,6 +77,22 @@ obligations.tsv	tree	obligation class pathway applies evidence grounds? reason? 
 # copy that clears anything is read from refs/remotes/origin/main
 # (felix_exceptions_rows).
 exceptions.tsv	tree	obligation row_hash expires granted_by reason	allowed
+# How each path is landed (lib/land-table.sh). Read only from
+# refs/remotes/origin/main of the repository holding projects/<name>/, never
+# the working tree. Present and empty, or absent, no path is bound: nothing is
+# owed, and no row routes a path to a session or the founder (felix_land_rows
+# prints nothing).
+land.tsv	tree	path kind trigger arg	allowed
+# The lanes a project counts (lib/lane.sh). Read only as committed at HEAD of
+# the repository holding projects/<name>/, never the working tree. Absent there,
+# or with no row, the project counts no lane: felix lane prints nothing, the lane
+# row of felix status reads none, and session start and the pulse say nothing.
+# Refused by this check, every lane reads unknown. A change to it lands on green.
+lanes.tsv	tree	lane counts share window	allowed
+# Each lane's first open item (lib/lane.sh), read as committed, like lanes.tsv.
+# Absent, or with no row for a lane, that lane's next reads none; refused by this
+# check, every next reads unknown. It never changes a lane's state.
+lane-next.tsv	tree	lane next	allowed
 # Present and declaring no need, the gate fails, felix commission returns 1 and
 # the merge boundary refuses. Absent, the gate skips and announces it, and the
 # merge boundary refuses as never commissioned.
@@ -122,6 +138,9 @@ catalog.tsv	tree	kind name source risk capability keywords?	refused
 # every capability as unruled. Absent is quieter: felix doctor says nothing, as
 # if every capability had a rule (felix_capabilities_unruled).
 discover-rules.tsv	tree	capability keywords	refused
+# Engine-only. Empty or absent, felix situations exits 3 and says the situation
+# table could not be read (lib/situations.sh), with nothing reported.
+situations.tsv	tree	class applies owes class_by_maturity source	refused
 # The public snapshot's acknowledgements. Empty or absent, nothing is waived and
 # every audit hit stops the snapshot; only origin/main's copy waives anything.
 # The snapshot itself does not carry it.
@@ -133,6 +152,12 @@ red.tsv	tree	kind_or_name ref_or_failed_or_times sha_or_passed? version_or_skipp
 # was reached, a pass that checked nothing. Absent, it says no manifest is
 # recorded yet.
 assertions.tsv	tree	count name	refused
+# Empty, no group: every part is a unit of its own under tests/run -j N. Absent,
+# a -j N above 1 refuses to start (part 0001); -j 1 never reads it.
+groups.tsv	tree	group part	allowed
+# Empty or absent, every part the driver sources is instrument (D28): felix merge runs each one a candidate
+# changes as the judged base holds it, and reads this table from that base only (lib/instrument.sh, S7).
+partition.tsv	tree	part class why	allowed
 # Empty, no table has a row and bin/schema-check fails every table as
 # undeclared. Absent, it cannot examine, which is never read as clean.
 schemas.tsv	tree	table lives columns empty	refused

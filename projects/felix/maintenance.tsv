@@ -9,7 +9,10 @@ lessons	30	always	reread lessons.md and cut anything that stopped being true
 # "Nothing due", because no row asked. A cadence and not a check: the honest
 # check compares this engine's version with the public repository's, which needs
 # the network, and nothing here may need the network to say what is due.
-snapshot	14	always	bring the public snapshot up to main, and audit it with a wider net than the scrub
+# The third column is founder: bringing the snapshot forward needs his yes
+# (docs/direction.md section 6), so the row comes due on its cadence like any
+# other and is named to him, not handed to a session as a branch to cut.
+snapshot	14	founder	bring the public snapshot up to main, and audit it with a wider net than the scrub
 # The graph is looked for beside the repository's .git, not in the current
 # directory: a worktree has no graphify-out/ of its own, and a check keyed on
 # the current directory read due in every worktree session whatever the graph's
@@ -48,4 +51,16 @@ graphify	0	always	refresh the knowledge graph after a merge	G="$(dirname "$(git 
 # sessions. Read on the remote-tracking main, where they land, and not on the
 # tree standing here, which a worktree cut this morning does not show. One
 # session folds; a second fold of the same main writes the same bytes.
-handoff	0	always	fold the handoff sections that landed into HANDOFF.md: felix handoff --rotate on a branch cut from main	test "$(git ls-tree --name-only refs/remotes/origin/main docs/handoff/pending/ 2>/dev/null | grep -c '\.md$')" -lt 3
+#
+# But only one fold of a main can land, and every session reads this row at
+# its start. On 2026-09-24/25 three sessions folded overlapping sections
+# (#347, #351, #377) and only #377 landed. So with three waiting the check asks
+# bin/handoff-in-flight whether a remote branch already folds main's current
+# handoff, and passes naming it if one does: the row reads in flight, not
+# due, and the session start says whose fold it is. A fold whose tip commit is
+# two days old counts as abandoned and the row is due again. The engine's
+# script is called through FELIX_HARNESS_DIR, the engine reading this table,
+# and not through this checkout's engine/, which a worktree cut before the
+# script existed lacks; an engine with neither fails the check, so the row
+# stays due.
+handoff	0	always	fold the handoff sections that landed into HANDOFF.md: felix handoff --rotate on a branch cut from main	test "$(git ls-tree --name-only refs/remotes/origin/main docs/handoff/pending/ 2>/dev/null | grep -c '\.md$')" -lt 3 || "$FELIX_HARNESS_DIR/bin/handoff-in-flight" --within 48

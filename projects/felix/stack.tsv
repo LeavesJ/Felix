@@ -27,3 +27,12 @@ plugin	anthropic-skills	-	low	always
 # graphify-out/ in the home checkout and is gitignored; maintenance.tsv says
 # when it is behind the tree.
 skill	graphify	-	low	always
+plugin	test-coverage-intelligence-risk-ranked-coverage-gaps	-	low	tests	OBSERVED
+plugin	ci-optimizer-faster-github-actions-and-gitlab-ci	-	low	ci	OBSERVED
+plugin	pipeline-reconcile	-	low	ci	OBSERVED
+plugin	viral-launch-pipeline	-	low	ci	OBSERVED
+plugin	sabotage	-	low	tests	OBSERVED
+plugin	data-pipeline-builder-dbt-and-airflow-checks	-	low	ci	OBSERVED
+plugin	api-load-tester-latency-and-throughput-tests	-	low	tests	OBSERVED
+plugin	e2e-test-generator-playwright-and-cypress-tests	-	low	tests	OBSERVED
+plugin	service-boundary-tests-containers-contracts-and-mocks	-	low	tests	OBSERVED

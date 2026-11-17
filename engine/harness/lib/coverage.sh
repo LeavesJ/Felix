@@ -117,7 +117,7 @@ felix_coverage_check() {
         # A three-column table predates this column and must keep working, or
         # every governed project's table breaks the day the engine updates.
         if [ -n "${holds:-}" ] && [ "$holds" != "-" ] \
-             && ! grep -qF -- "$holds" "$hooks" 2>/dev/null; then
+             && ! LC_ALL=C grep -qF -- "$holds" "$hooks" 2>/dev/null; then
           printf 'stale-reason\t%s\t%s\n' "$event" \
             "declined because '$reason', but '$holds' is no longer in hooks.json"
         else
@@ -131,7 +131,7 @@ felix_coverage_check() {
   # table was written after the fact: something wired that no row explains. A
   # hook nobody wrote a reason for is a hook nobody can argue with.
   local h
-  for h in $(printf '%s\n' "$bound" | grep . | sort -u); do
+  for h in $(printf '%s\n' "$bound" | LC_ALL=C grep . | LC_ALL=C sort -u); do
     case " $seen " in *" $h "*) continue ;; esac
     printf 'undeclared\t%s\t%s\n' "$h" "wired, but lifecycle.tsv says nothing about it"
   done
@@ -173,9 +173,9 @@ felix_coverage_unchecked() {
 # file that binds Stop, and the grep this used to be would have rostered it.
 felix_coverage_events() {
   local f
-  for f in "$HOME/.claude/settings.json" \
-           "$HOME/.claude/settings.local.json" \
-           "$HOME"/.claude/plugins/cache/*/*/*/hooks/hooks.json; do
+  for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" \
+           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.local.json" \
+           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/*/*/*/hooks/hooks.json; do
     # A file that is absent, or that does not parse, contributes nothing and
     # stops nothing: this is the roster of what something on this machine
     # binds, and one unparseable plugin manifest must not blank the rest. The

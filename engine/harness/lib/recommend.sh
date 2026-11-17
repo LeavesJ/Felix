@@ -21,7 +21,9 @@ felix_recommend_missing() {
   [ -f "$tpl/catalog.tsv" ] || return 0
   while IFS=$'\t' read -r kind name src risk cap kw; do
     [ -n "${kind:-}" ] || continue
-    grep -qF "	$name	" "$proj/stack.tsv" 2>/dev/null && continue
+    # Only as a regular file: a pipe at the path held this grep open, for every
+    # catalogue row (2026-10-01). Anything else declares nothing.
+    [ -f "$proj/stack.tsv" ] && grep -qF "	$name	" "$proj/stack.tsv" 2>/dev/null && continue
     printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$risk" "${cap:-always}"
   done <<EOF
 $(grep -vE '^\s*(#|$)' "$tpl/catalog.tsv")
@@ -39,7 +41,7 @@ felix_recommend_intent() {
   [ -f "$tpl/catalog.tsv" ] || return 0
   local words; words="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' \
     | tr -cs 'a-z0-9' '\n' | grep -vE '^(a|an|the|for|and|with|to|of|i|we|need|want|some|my|our|use|using)$' \
-    | grep -E '^.{3,}$' | sort -u)"
+    | grep -E '^.{3,}$' | LC_ALL=C sort -u)"
   [ -n "$words" ] || return 0
   while IFS=$'\t' read -r kind name src risk cap kw; do
     [ -n "${kind:-}" ] || continue

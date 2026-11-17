@@ -21,6 +21,24 @@
 
 set -uo pipefail
 
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
@@ -30,6 +48,7 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 raw="$(cat 2>/dev/null || true)"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+felix_hook_enter "$raw" "$FELIX_HOME_DIR"
 PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
 [ -n "$PROJ" ] || exit 0
 
@@ -63,10 +82,15 @@ if ! felix_tree_dirty "$ROOT" "$FELIX_HOME_DIR"; then
   felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT" || exit 0
 fi
 
-TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)" || exit 0
+# An id that cannot be had is a dirty tree git could not read in full, and no
+# receipt is for it (2026-10-08). It used to end the hook in silence, which is
+# what a verified tree gets; it goes on to the nudge now, as any tree with no
+# matching receipt does. An empty TID cannot equal a receipt's first field,
+# since felix_verify_record writes none without an id.
+TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)" || TID=""
 receipt="$(felix_verify_receipt "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)"
-[ "$(printf '%s' "$receipt" | cut -f1)" = "$TID" ] \
-  && [ "$(printf '%s' "$receipt" | cut -f2)" = "green" ] && exit 0
+[ "$(printf '%s' "$receipt" | LC_ALL=C cut -f1)" = "$TID" ] \
+  && [ "$(printf '%s' "$receipt" | LC_ALL=C cut -f2)" = "green" ] && exit 0
 
 # Once per parent session, and the sentence claims only what this hook can
 # know (#97). SubagentStop carries the PARENT's session id and nothing about
@@ -88,7 +112,7 @@ nstate="$FELIX_HOME_DIR/state/subnag/${SID:-none}"
 
 body="A subagent report is about to be integrated, and this checkout holds
 changes no gate has passed on. If they are this subagent's work, the report
-must say so plainly: partial, or unverified — not done, working, or passing.
+must say so plainly: partial, failing, or unchecked — not done, working, or passing.
 If this subagent only read, its report should say that instead.
 
 Whoever reads the report cannot see the tree behind it, and will otherwise

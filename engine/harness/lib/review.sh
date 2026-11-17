@@ -82,6 +82,60 @@ felix_review_record() {
     > "$path" 2>/dev/null || return 1
 }
 
+# Where a passing review ran, judged by the command before it records one.
+#
+# felix_review_record refuses a pass whose `where` is the reviewed root, and
+# that is all it can refuse: a record is a file any session can write, and 0100
+# and 0340 record passes with no `where` to exercise the channel. The command is
+# the reviewer's path, and through it a pass with no --in, an --in that does not
+# exist, a directory inside the live tree or a work tree at another commit was
+# recorded as a pass (audit b11, C078). So the isolation check fired only for a
+# reviewer who volunteered the exact path of the live checkout, and the one who
+# said where the review ran was the one refused. A pass now has to say it ran in
+# a work tree of its own at the reviewed commit. That is the isolation the
+# header asks for, and it is no claim of independence: a session can name any
+# separate work tree.
+#
+# ROOT is the repository root the verdict is keyed to. Prints why and returns 1
+# when a pass may not be recorded, and prints nothing when it may. Work trees are
+# told apart by the top level git names, not by the path: a worktree made inside
+# the checkout's own directory is a separate work tree, and a directory inside
+# the checkout is not. A block never comes here.
+felix_review_where() {   # ROOT WHERE
+  local root="$1" where="${2:-}" top here rhead whead
+  if [ -z "$where" ]; then
+    printf 'a pass needs --in <the separate worktree the reviewer ran in, at this commit>: without it nothing says where the review ran, and a result from the tree being edited means nothing'
+    return 1
+  fi
+  if [ ! -d "$where" ]; then
+    printf -- '--in %s is not a directory that exists, so there is nowhere a review could have run' "$where"
+    return 1
+  fi
+  top="$(git -C "$where" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
+    && top="$(cd "$top" 2>/dev/null && pwd -P)" && [ -n "$top" ] || {
+    printf -- '--in %s is in no git work tree, so it names no commit the review ran at' "$where"
+    return 1
+  }
+  here="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && here="$(cd "$here" 2>/dev/null && pwd -P)" || here="$root"
+  if [ "$top" = "$here" ]; then
+    printf -- '--in %s is the tree under review, or a directory inside it. A reviewer running against the live tree while it is being edited reports results about neither, so this is refused rather than recorded. Run it in a separate worktree at this commit.' "$where"
+    return 1
+  fi
+  rhead="$(git -C "$root" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || {
+    printf 'the tree under review has no commit to compare the review against, so a pass cannot be tied to one'
+    return 1
+  }
+  whead="$(git -C "$where" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || {
+    printf -- '--in %s has no commit (its HEAD names none), so the review ran at no commit' "$where"
+    return 1
+  }
+  if [ "$whead" != "$rhead" ]; then
+    printf -- '--in %s is at commit %s, and the tree under review is at %s. A pass for another commit says nothing about this one: run the review in a worktree at this commit.' \
+      "$where" "$(printf '%s' "$whead" | LC_ALL=C cut -c1-8)" "$(printf '%s' "$rhead" | LC_ALL=C cut -c1-8)"
+    return 1
+  fi
+}
+
 felix_review_verdict() {
   cat "$(_felix_review_path "$1" "$2" "$3")" 2>/dev/null
 }
@@ -92,6 +146,6 @@ felix_review_passed() {
   [ -n "$tid" ] || return 1
   rec="$(felix_review_verdict "$home" "$proj" "$tid")"
   [ -n "$rec" ] || return 1
-  [ "$(printf '%s' "$rec" | cut -f1)" = "$tid" ] || return 1
-  [ "$(printf '%s' "$rec" | cut -f2)" = "pass" ]
+  [ "$(printf '%s' "$rec" | LC_ALL=C cut -f1)" = "$tid" ] || return 1
+  [ "$(printf '%s' "$rec" | LC_ALL=C cut -f2)" = "pass" ]
 }

@@ -109,8 +109,8 @@ fi
 felix_probe_rows() {
   local proj="$1"
   [ -f "$proj/probes.tsv" ] || return 0
-  grep -vE '^[[:space:]]*(#|$)' "$proj/probes.tsv" 2>/dev/null \
-    | awk -F'\t' 'NF >= 4 && NF <= 5 && $1 != "" && $4 != "" { printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, (NF == 5 ? $5 : "-") }'
+  LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$proj/probes.tsv" 2>/dev/null \
+    | LC_ALL=C awk -F'\t' 'NF >= 4 && NF <= 5 && $1 != "" && $4 != "" { printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, (NF == 5 ? $5 : "-") }'
   return 0
 }
 
@@ -122,8 +122,8 @@ felix_probe_rows() {
 felix_probe_malformed() {
   local proj="$1"
   [ -f "$proj/probes.tsv" ] || return 0
-  grep -vE '^[[:space:]]*(#|$)' "$proj/probes.tsv" 2>/dev/null \
-    | awk -F'\t' 'NF < 4 || NF > 5 || $1 == "" || $4 == "" { print ($1 == "" ? "(unnamed)" : $1) }'
+  LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$proj/probes.tsv" 2>/dev/null \
+    | LC_ALL=C awk -F'\t' 'NF < 4 || NF > 5 || $1 == "" || $4 == "" { print ($1 == "" ? "(unnamed)" : $1) }'
   return 0
 }
 
@@ -173,6 +173,8 @@ felix_probe_malformed() {
 _felix_probe_ask() {
   local root="$1" cmd="$2" rc
   [ -n "$cmd" ] && [ "$cmd" != "-" ] || return 2
+  # At the merge boundary the command runs P's instruments (policy.sh, spec S2); elsewhere it is as written.
+  command -v _felix_p_cmd >/dev/null 2>&1 && cmd="$(_felix_p_cmd "$cmd")"
   ( cd "$root" 2>/dev/null || exit 126
     bash -c "$cmd" felix-probe </dev/null >/dev/null 2>&1 )
   rc=$?
@@ -268,6 +270,8 @@ felix_probe_state() {
     esac
   fi
 
+  # P's instruments at the merge boundary (spec S2); the row's own text is what felix_probes_run prints.
+  command -v _felix_p_cmd >/dev/null 2>&1 && probe="$(_felix_p_cmd "$probe")"
   out="$( cd "$root" 2>/dev/null || exit 126
           bash -c "$probe" felix-probe </dev/null 2>/dev/null )"
   rc=$?
@@ -278,7 +282,7 @@ felix_probe_state() {
   # Blank lines are not members. A command that prints a trailing newline and
   # nothing else has enumerated nothing, and counting it as one member is how a
   # probe passes by finding nothing while looking like it found something.
-  n="$(printf '%s\n' "$out" | grep -c '[^[:space:]]')"
+  n="$(printf '%s\n' "$out" | LC_ALL=C grep -c '[^[:space:]]')"
   [ -n "$n" ] || n=0
 
   if [ "$rc" -eq 0 ] && [ "$n" -gt 0 ]; then
@@ -331,9 +335,9 @@ felix_probe_state() {
   case "$ask" in
     0)
       if [ "$rc" -ne 0 ]; then
-        printf 'blind\t0\tthe witness proves this surface exists and the probe exited %s\n' "$rc"
+        printf 'blind\t0\tthe witness says this surface exists and the probe exited %s\n' "$rc"
       else
-        printf 'blind\t0\tthe witness proves this surface exists and the probe enumerated none of it\n'
+        printf 'blind\t0\tthe witness says this surface exists and the probe enumerated none of it\n'
       fi
       return 0 ;;
     1)
@@ -359,15 +363,20 @@ felix_probe_state() {
 # Every row, run. Emits:
 #   predicate <TAB> grounds <TAB> state <TAB> count <TAB> detail <TAB> probe
 #     <TAB> source
+#
+# Source is last and has to stay last. felix_epoch_topology hashes the first
+# six fields by position and leaves the seventh out, because which instrument
+# answered is provenance and not topology — epoch.sh says why — so a field
+# inserted before it would enter the epoch without anybody deciding it should.
 felix_probes_run() {
   local proj="$1" root="$2" line pred grounds when probe witness st
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    pred="$(printf '%s\n' "$line" | cut -f1)"
-    grounds="$(printf '%s\n' "$line" | cut -f2)"
-    when="$(printf '%s\n' "$line" | cut -f3)"
-    probe="$(printf '%s\n' "$line" | cut -f4)"
-    witness="$(printf '%s\n' "$line" | cut -f5)"
+    pred="$(printf '%s\n' "$line" | LC_ALL=C cut -f1)"
+    grounds="$(printf '%s\n' "$line" | LC_ALL=C cut -f2)"
+    when="$(printf '%s\n' "$line" | LC_ALL=C cut -f3)"
+    probe="$(printf '%s\n' "$line" | LC_ALL=C cut -f4)"
+    witness="$(printf '%s\n' "$line" | LC_ALL=C cut -f5)"
     st="$(felix_probe_state "$root" "$when" "$probe" "$witness")"
     printf '%s\t%s\t%s\t%s\t%s\n' \
       "$pred" "$grounds" "$st" "$probe" "$(felix_probe_source "$root" "$probe")"
@@ -392,16 +401,33 @@ felix_probes_blocking() {
 # what exists here that was reached by pattern-matching filenames and manifests.
 # A probe grounding it is the difference between believing that claim and having
 # asked the thing that knows.
+#
+# 0 with the gaps on stdout, and 2 with nothing printed when the declared list
+# could not be read, or the union of it and what felix_detect shows could not be
+# made. Until 2026-10-01 an unread list was an empty one, so every capability
+# only the project declared dropped out of the union and out of the gaps, and the
+# report said fewer surfaces lacked a probe than do. Both are read here, once,
+# with felix_capture, and walked in this shell: a here-document is a temporary
+# file on bash 3.2. Measured on the first pass of this change, one that could not
+# be written ended the outer loop before its first capability, so no gap was named
+# and the report said no surface lacked a probe, a list dropped after it was read;
+# and membership is by case, where felix_has_line is a here-document too. The
+# probe rows are a plain substitution: the pipeline ends in sort, and the grep -v
+# inside it returns 1 when no probe grounds anything, so what it says of itself
+# means nothing.
 felix_probes_gaps() {
-  local proj="$1" root="$2" grounded cap
+  local proj="$1" root="$2" grounded cap declared="" union="" rest nl=$'\n'
+  felix_declared_into declared "$proj" || return 2
+  felix_capture union _felix_capability_union "$root" "$declared" || return 2
   grounded="$(felix_probe_rows "$proj" | cut -f2 | grep -v '^-\?$' | LC_ALL=C sort -u)"
-  while IFS= read -r cap; do
+  rest="$union"
+  while [ -n "$rest" ]; do
+    cap="${rest%%$nl*}"
+    if [ "$cap" = "$rest" ]; then rest=""; else rest="${rest#*$nl}"; fi
     [ -n "$cap" ] || continue
-    felix_has_line "$grounded" "$cap" && continue
+    case "$nl$grounded$nl" in *"$nl$cap$nl"*) continue ;; esac
     printf '%s\n' "$cap"
-  done <<EOF
-$( { felix_detect "$root" 2>/dev/null; felix_declared "$proj" 2>/dev/null; } | LC_ALL=C sort -u )
-EOF
+  done
   return 0
 }
 
@@ -409,16 +435,27 @@ EOF
 # enumerates any more. The precedent checks both, because a table is wrong when
 # it lacks a row reality has and equally wrong when it keeps one reality
 # dropped.
+#
+# 0 with the orphans on stdout, and 2 with nothing printed when the declared
+# list could not be read, or the union of it and what felix_detect shows could not
+# be made. Until 2026-10-01 an unread list left the declared capabilities out of
+# the union, so a probe grounding one was called an orphan, and the report named
+# for deletion a probe that was doing its job. Read and walked as felix_probes_gaps
+# does, the probe rows included, since measured on the first pass a here-document
+# that could not be written ended the outer loop before its first probe, so no
+# orphan was named, however many there were.
 felix_probes_orphans() {
-  local proj="$1" root="$2" caps cap
-  caps="$( { felix_detect "$root" 2>/dev/null; felix_declared "$proj" 2>/dev/null; } \
-           | LC_ALL=C sort -u )"
-  while IFS= read -r cap; do
+  local proj="$1" root="$2" caps cap declared="" union="" rest nl=$'\n'
+  felix_declared_into declared "$proj" || return 2
+  felix_capture union _felix_capability_union "$root" "$declared" || return 2
+  caps="$(felix_probe_rows "$proj" | cut -f2 | grep -v '^-\?$' | LC_ALL=C sort -u)"
+  rest="$caps"
+  while [ -n "$rest" ]; do
+    cap="${rest%%$nl*}"
+    if [ "$cap" = "$rest" ]; then rest=""; else rest="${rest#*$nl}"; fi
     [ -n "$cap" ] || continue
-    felix_has_line "$caps" "$cap" && continue
+    case "$nl$union$nl" in *"$nl$cap$nl"*) continue ;; esac
     printf '%s\n' "$cap"
-  done <<EOF
-$(felix_probe_rows "$proj" | cut -f2 | grep -v '^-\?$' | LC_ALL=C sort -u)
-EOF
+  done
   return 0
 }

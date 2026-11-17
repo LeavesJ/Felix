@@ -20,7 +20,9 @@
 #   - Fails open on everything. A missing table, an unparseable payload, a bad
 #     regex, an unresolvable project: all allow. The cost of a false deny is a
 #     person fighting their own tools and switching the harness off; the cost of
-#     a missed deny is the status quo.
+#     a missed deny is the status quo. Allowing is not the same as saying
+#     nothing: a call the hook could not judge leaves a row in hook-faults.log
+#     (hooks/pre-tool), which the next session start reads back (audit C029).
 #
 # It used to be narrow in a fourth way, and that one was a mistake. The matcher
 # in hooks.json bound Bash alone, so no rule could see Read, Edit or Write —
@@ -47,7 +49,10 @@
 _felix_deny_rows() {
   local proj="$1" tool pattern reason scope
   [ -f "$proj/deny.tsv" ] || return 0
-  while IFS=$'\t' read -r tool pattern reason scope; do
+  # The `|| [ -n ]` keeps a last row that has no newline: `read` returns 1 on
+  # it with the fields filled, and the row was dropped, so a deny rule written
+  # last by hand never refused anything (2026-10-01).
+  while IFS=$'\t' read -r tool pattern reason scope || [ -n "${tool:-}" ]; do
     case "$tool" in ''|'#'*) continue ;; esac
     # A row with no pattern is skipped rather than fatal, the same way a
     # malformed routes.tsv row is: one bad line must not stop a table enforcing.
@@ -96,22 +101,26 @@ _felix_deny_field() {
 # to 13 s, a 9K `python3 -c` payload 19 s, and a 45K one did not finish in
 # 110 s. Claude Code's hook timeout is 60 s.
 _FELIX_DENY_INLINE=1024
+#
+# The status says why there is nothing to print, which the hook records (audit
+# C029): 0 the subject was read (an empty one is a subject), 1 the payload has
+# no such field, 2 it holds a raw \001, 3 the awk failed.
 felix_deny_subject() {
   local raw="$1" field rest val
   field="$(_felix_deny_field "${2:-}")"
-  case "$raw" in *"\"$field\""*) ;; *) return 0 ;; esac
+  case "$raw" in *"\"$field\""*) ;; *) return 1 ;; esac
   # A raw \001 is a control character no JSON string may hold, so this is not
   # a payload Claude Code sent, and like any payload that does not parse it
   # has no subject. The expansion below uses \001 as its placeholder, and one
   # already in the payload would read as a quote there and not in the awk.
-  case "$raw" in *$'\001'*) return 0 ;; esac
+  case "$raw" in *$'\001'*) return 2 ;; esac
 
   if [ "${#raw}" -gt "$_FELIX_DENY_INLINE" ]; then
     # Printed only when awk finished. Part of a subject can be refused by a
     # row anchored at its end that the whole would not match, so an awk that
     # dies, or no awk on PATH, reads as no subject, which allows.
     val="$(printf '%s' "$raw" | LC_ALL=C awk -v f="$field" "$_FELIX_DENY_SUBJECT_AWK" 2>/dev/null \
-           && printf x)" || return 0
+           && printf x)" || return 3
     printf '%s' "${val%x}"
     return 0
   fi
@@ -132,15 +141,26 @@ felix_deny_subject() {
 #
 # Linear in BWK awk, mawk and gawk. It uses no gsub and no split on a regex,
 # since in BWK awk, which macOS ships, both cost the length times the number
-# of matches: a gsub of 70,000 escaped quotes in 1M took 12 s. match, index,
-# substr and a split on one character are linear. BWK awk splits on a line
-# break as well when the separator is one character, so the value is split
-# into lines first and each line on its quotes. The records are split on
-# \001, which felix_deny_subject has turned away before this runs, so the
-# payload is always one record: joining many would be quadratic too. The
-# program holds no single quote, since it is a bash single-quoted string.
+# of matches: a gsub of 70,000 escaped quotes in 1M took 12 s. Nor does it
+# subscript an array, call printf or join two strings once per escaped quote,
+# since BWK awk allocates a buffer the size of the record for each of those.
+# On macOS 27 a buffer past about 1M goes back to the system when it is freed
+# and is faulted in again on the next, and 2.1M of escaped quotes took 9 s of
+# CPU to read (2026-10-30, part 0631). So the value is split on its quotes as
+# the fields of $0, and each piece is printed with print and an empty OFS.
+# match, index, substr and field splitting on one character are linear, and
+# field splitting, unlike split(), keeps a line break inside its field while
+# RS is set. The value goes into $0 32K at a time, since mawk before
+# 1.3.4-20140914 (Debian 10's) dies past 32,767 fields, and an awk that dies
+# allows. Every quote in the value has its backslash before it, so a chunk
+# never starts on a quote: one that would is taken into the chunk before. BWK
+# substr takes the length of the whole value, so each chunk costs that too,
+# 2% of the reading at 2.1M and 8% at 8.4M. The records are split on \001,
+# which felix_deny_subject has turned away before this runs, so the payload
+# is always one record: joining many would be quadratic too. The program
+# holds no single quote, since it is a bash single-quoted string.
 _FELIX_DENY_SUBJECT_AWK='
-  BEGIN { RS = "\001" }
+  BEGIN { RS = "\001"; FS = "\""; OFS = ORS = "" }
   { s = (NR > 1) ? s RS $0 : $0 }
   END {
     k = index(s, "\"" f "\"")
@@ -149,12 +169,13 @@ _FELIX_DENY_SUBJECT_AWK='
     if ((q = index(s, "\"")) > 0) s = substr(s, q + 1)
     if (substr(s, 1, 1) == "\"") exit
     if (match(s, /[^\\]"/)) s = substr(s, 1, RSTART)
-    nl = split(s, L, "\n")
-    for (i = 1; i <= nl; i++) {
-      if (i > 1) printf "\n"
-      np = split(L[i], P, "\"")
-      for (j = 1; j < np; j++) printf "%s\"", substr(P[j], 1, length(P[j]) - 1)
-      if (np) printf "%s", P[np]
+    n = length(s)
+    for (p = 1; p <= n; p += c) {
+      c = 32768
+      if (substr(s, p + c, 1) == "\"") c++
+      $0 = substr(s, p, c)
+      for (j = 1; j < NF; j++) print substr($j, 1, length($j) - 1), "\""
+      if (NF) print $NF
     }
   }'
 
@@ -172,7 +193,7 @@ FELIX_DENY_PROBES='git status --short
 /felix/probe/ordinary'
 
 felix_deny_overbroad() {
-  local pattern="$1" probe
+  local pattern="$1" probe LC_ALL=C
   [ -n "$pattern" ] || return 0
   while IFS= read -r probe; do
     [ -n "$probe" ] || continue
@@ -204,8 +225,11 @@ EOF
 # in _FELIX_DENY_REASON, and the status says whether there was one. A variable
 # and not output, so the call that nearly always finds nothing costs no
 # subshell to find it.
+# Locale, 2026-10-08: a pattern holding a byte that was not UTF-8 compiled to
+# nothing under UTF-8, so its row refused nothing. The rules are above
+# felix_json_str in resolve.sh.
 _felix_deny_first() {
-  local proj="$1" want="$2" text="$3" tool pattern reason scope
+  local proj="$1" want="$2" text="$3" tool pattern reason scope LC_ALL=C
   _FELIX_DENY_REASON=""
   while IFS=$'\t' read -r tool pattern reason scope; do
     [ "${tool:-}" = "$want" ] || continue
@@ -245,31 +269,66 @@ EOF
 # `gh api -f` on the next read as a force push. Of the 175 refusals the hooks
 # had logged by then, about thirty were text of those kinds.
 #
-# So a Bash command that matches a row is read a second time, by
-# felix_deny_code, as the shell reads it, and refused only if the row still
-# matches there. That second reading costs a process, and it is spent only on
-# a command about to be refused: every other call pays exactly what it paid
-# before, which matters because this hook runs on every one of them. A reading
-# done in bash itself was tried first and measured: bash 3.2's ${s//...} took
-# fourteen seconds over a 31K command.
+# So a Bash command is judged on felix_deny_code's reading of it, as the shell
+# reads it, and on nothing else. The first form of this, on 2026-09-23,
+# consulted that reading only after the raw string had matched a row, which
+# could only turn a refusal into an allow and left the other direction as it
+# was: the string is one line of JSON, so wherever the shell ends a word and
+# the string puts something other than a blank there — a `;` glued to the
+# word, a line break, the quote closing a `-c` script, a `)` — a row written
+# to end at a blank or the end of the line saw neither, and the command ran.
+# The founder listed twelve such commands that day, each performing what its
+# row names and none of them refused. Reading every command refuses all
+# twelve, and the reader now prints each separator as a token of its own so
+# that the row sees the end of the word. Forty-one commands written blind
+# that only carry a row's words as data are still allowed; the four others
+# of that set of forty-five are refused by the rows as written under any
+# reader. A reading done in bash itself was tried first and measured: bash
+# 3.2's ${s//...} took fourteen seconds over a 31K command.
 #
-# This can only ever turn a refusal into an allow. What it does not do is the
-# other direction, and there are commands a row names that the shell runs and
-# the raw string never matched: `git push -f` with a line break after it, or
-# `bash -c "git push --force"`, whose quote stands where the row wants a
-# space. Refusing those would mean reading every command, not only the ones a
-# row already matched, and that is a separate decision with its own cost.
+# What it costs, since the reading now runs on every Bash call in a project
+# with Bash rows: one awk process, the subshell that captures it, and one
+# source of lib/deny-read.sh per call. Measured 2026-09-23 by child CPU,
+# since wall time on this machine measures its load, which sits at 100 to
+# 300: 150 runs of each engine interleaved on the same payload, `git status
+# --short` costing 31 ms of CPU a call before and 39 after (medians; the
+# minima 28 and 35), and a commit with Claude Code's template 32 before and
+# 41 after. So about 8 ms a call, on a floor of about 30. A prefilter that
+# would skip the awk was priced and not built: a test for the characters
+# that make the reading differ from the string skips 7% of real commands,
+# since most carry a JSON backslash, and a per-row keyword test needs a
+# proof that it never skips a command its row would refuse. Over the real
+# commands in this machine's transcripts the reading newly refuses about one
+# in two hundred, all but two of them performing the row's action; the two
+# hand a gate's path to a shell function as an argument, which a row that
+# matches the path after any blank refuses on any reading. The counts are in
+# the pull request that made the change.
 #
 # START is the directory the command starts in, the payload's cwd. It matters
-# only to a row scoped to the checkout, which is judged on the command as the
-# payload carries it, whichever reading the row matched; the governed
-# checkout is the one this process stands in.
+# only to a row scoped to the checkout. Such a row matches the reading like
+# any other, and is then judged, by lib/where.sh, on the command as the
+# payload carries it; the governed checkout is the one this process stands
+# in.
 felix_deny_match() {
-  local proj="$1" want="$2" cmd="$3" start="${4:-$PWD}"
+  local proj="$1" want="$2" cmd="$3" start="${4:-$PWD}" text s
   [ -n "$cmd" ] || return 1
   _FELIX_DENY_RAW="$cmd"; _FELIX_DENY_START="$start"; _FELIX_DENY_SCOPED=""
-  if _felix_deny_first "$proj" "$want" "$cmd" \
-     && { [ "$want" != "Bash" ] || _felix_deny_first "$proj" Bash "$(felix_deny_code "$cmd")"; }; then
+  if [ "$want" = "Bash" ]; then
+    # A reading that failed is not an empty reading. Exit 2 and the why on
+    # stdout say that no row was applied to this command, where 1 says the
+    # rows were applied and none matched, which the hook records and allows.
+    [ -n "${_FELIX_DENY_READ:-}" ] || . "$_FELIX_DENY_LIB/deny-read.sh" 2>/dev/null
+    if [ -z "${_FELIX_DENY_READ:-}" ]; then
+      printf '%s' "the deny reader could not read the command: lib/deny-read.sh did not load"; return 2
+    fi
+    text="$(felix_deny_code "$cmd")"; s=$?
+    if [ "$s" -ne 0 ]; then
+      printf '%s' "the deny reader could not read the command: awk exited $s"; return 2
+    fi
+  else
+    text="$cmd"
+  fi
+  if _felix_deny_first "$proj" "$want" "$text"; then
     printf '%s' "$_FELIX_DENY_REASON"
     return 0
   fi
@@ -277,9 +336,10 @@ felix_deny_match() {
   return 1
 }
 
-# A scoped row, judged once per command however many readings match it. Bash
-# is tried against the raw text and then the code view, and the judgement is
-# the same both times, so the second asks this cache instead of the reader.
+# A scoped row, judged once per command however many rows share its pattern.
+# The judgement is kept in _FELIX_DENY_SCOPED, which a second row with the
+# same pattern asks instead of the reader, and which the lifts are recorded
+# from.
 _felix_deny_scoped() {
   local want="$1" pattern="$2" reason="$3" line
   while IFS= read -r line; do
@@ -321,7 +381,7 @@ EOF
 # lib/where.sh is loaded here, from beside this file, and not by the hook: the
 # hook runs on every tool call and this runs only after a scoped row matched.
 # If it cannot be loaded nothing is known, and the row stands.
-_FELIX_DENY_LIB="${BASH_SOURCE[0]%/*}"
+case "${BASH_SOURCE[0]}" in */*) _FELIX_DENY_LIB="${BASH_SOURCE[0]%/*}" ;; *) _FELIX_DENY_LIB=. ;; esac
 _felix_deny_scoped_lifts() {
   local want="$1" pattern="$2" subj="$3" start="$4"
   _FELIX_WHERE_WHY=""
@@ -380,14 +440,25 @@ _felix_deny_scoped_lifts() {
 # or run by another name: a script printf wrote to $S/bin/claude and PATH
 # later finds. That is the limit any reading of one command has.
 #
-# One awk process. The program is the same in BWK awk, mawk and gawk:
-# split(s, A, "") is one character per element in all three. Nothing here
+# One awk process, run with LC_ALL=C, so split(s, A, "") is one byte per
+# element in BWK awk, mawk and gawk alike (in a UTF-8 locale macOS's BWK awk
+# still splits bytes but matches by characters, and aborted). Nothing here
 # fails closed: no awk, or a program error, prints nothing, and a row matches
 # nothing in nothing, which allows.
 #
-# The program is lib/deny-read.sh, sourced the first time a command needs it,
-# so the call no row matches does not even read the file.
+# The program is lib/deny-read.sh, sourced the first time a command needs it.
+# Every Bash call in a project with Bash rows needs it; a call for another
+# tool, or in a project without them, never reads the file.
+# Locale, 2026-10-08: this awk ran in the caller's locale and aborted under
+# UTF-8 on any non-ASCII character, so the reading came back empty and every
+# Bash row allowed. The rules are above felix_json_str in resolve.sh.
+# Its status is the awk's, so a reading that failed is not mistaken for an empty
+# one (audit C029); 1 when the program was never loaded. It stays quiet, and
+# felix_deny_match turns the status into a why.
 felix_deny_code() {
+  local s
   [ -n "${_FELIX_DENY_READ:-}" ] || . "$(dirname "${BASH_SOURCE[0]:-$0}")/deny-read.sh" 2>/dev/null
-  printf '%s' "$1" | awk "${_FELIX_DENY_READ:-}" 2>/dev/null
+  [ -n "${_FELIX_DENY_READ:-}" ] || return 1
+  printf '%s' "$1" | LC_ALL=C awk "$_FELIX_DENY_READ" 2>/dev/null; s="${PIPESTATUS[1]}"
+  return "$s"
 }

@@ -1,0 +1,267 @@
+# Which test parts check the trust plane, and which specify an ordinary feature (trust-plane step 3, slice 3, spec S7).
+# A line is a part's file name, a tab, its class, a tab, why. The class is instrument or subject; blank lines and lines
+# starting # are ignored. A part this table does not name, or names with any other word, is instrument (D28: nothing is
+# subject by default). felix merge reads this table from the judged base, never from the candidate: a row the candidate
+# moves to subject is an escape to the founder (S7.2), and an instrument part the candidate changes is run as the base
+# holds it (S8).
+# First version approved by the founder on 2026-11-08 ("approve slice 3"), after three readings of Felix's proposal:
+# 209 instrument and 50 subject. The readings are in the memory root, audits/2026-11-08-trust-plane-step3/.
+0001-the-origin-guard-and-the-temporary-directory.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0002-fixture-git-commands-stay-in-tmp.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0003-the-lint-the-origin-record-and-the-exit-trap.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0004-the-widget-fixture.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0005-fixture-floor.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0006-the-lib-judges.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0007-the-parallel-runner.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0010-resolution.sh	instrument	which engine judges (resolve.sh; inventory A1, A4)
+0020-adopting-over-a-capabilities-entry-that-is-n.sh	instrument	a writer of a policy table (capabilities), where a dropped row is a loosening
+0030-appends-onto-a-hand-written-last-line.sh	instrument	a writer of a policy table, where a dropped row is a loosening
+0040-an-unterminated-last-line-that-cannot-be-end.sh	instrument	a writer of a policy table, where a dropped row is a loosening
+0050-appends-that-fail-paths-that-are-not-files-a.sh	instrument	a writer of a policy table, where a dropped row is a loosening
+0060-a-partial-backfill-a-pipe-at-a-table-and-a-m.sh	instrument	a reader and writer of policy tables, where a dropped row is a loosening
+0070-stack-provisioning.sh	instrument	the stack classification, "where the safety policy lives" (its header)
+0080-risk-classification.sh	instrument	a policy table, or the checker that reads it
+0090-what-a-revert-cannot-undo.sh	instrument	the merge boundary, its receipts and its evidence
+0100-merging.sh	instrument	the merge boundary, its receipts and its evidence
+0110-a-base-ref-that-is-behind-its-remote.sh	instrument	the merge boundary, its receipts and its evidence
+0120-scheduled-maintenance.sh	instrument	moved by the second reading: contains the secret-scanning section, plus scope tiers and the gate run streak; first reading: an ordinary feature: a report, a page, a reader or a command
+0130-only-the-gate-workflow-is-evidence.sh	instrument	the merge boundary, its receipts and its evidence
+0140-the-unattended-repair-acts-only-on-a-brief.sh	instrument	the deny floor and what the unattended path may touch
+0150-the-unattended-repair-leaves-the-model-no-cr.sh	instrument	the deny floor and what the unattended path may touch
+0160-unattended-readiness.sh	instrument	the deny floor and what the unattended path may touch
+0170-mistakes-record-themselves.sh	instrument	moved by the second reading: how the gate records a failure, which commissioning reads; first reading: an ordinary feature: a report, a page, a reader or a command
+0180-fresh-repositories-split-mistakes-rows-heal.sh	instrument	moved by the second reading: heals split rows so commissioning's gate_shown_failing check can see the failure; first reading: an ordinary feature: a report, a page, a reader or a command
+0190-continued.sh	instrument	moved by the second reading: gate recording, unrunnable gates (127/126), red receipt, commissioning human_steps; first reading: continues 0180-fresh-repositories-split-mistakes-rows-heal.sh
+0200-generated-constitution.sh	instrument	moved by the second reading: the suite runner's fixture guard (_fx_cd, _fx_git), its lints, origin check; first reading: an ordinary feature: a report, a page, a reader or a command
+0201-continued.sh	instrument	moved by the second reading: the suite runner's origin check, refusal check and trap; first reading: continues 0200-generated-constitution.sh
+0202-fixture-git-proof-review-round-1.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0203-fixture-git-proof-review-round-2.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0204-hooks-stand-where-the-session-stands.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0205-a-fixture-root-outside-tmp.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0210-the-completion-gate.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0220-the-binding-itself.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0230-the-intent-router.sh	instrument	moved by the second reading: the Stop hook's hold on an ungated tree; summary-session exemption; first reading: an ordinary feature: a report, a page, a reader or a command
+0240-continued.sh	instrument	moved by the second reading: checks the shipped evidence.tsv for a vacuous rule (rest is routing); first reading: continues 0230-the-intent-router.sh
+0250-on-path-via-a-symlink.sh	instrument	which felix runs when it is reached through a link
+0260-a-failure-nobody-wrote-down.sh	instrument	moved by the second reading: the gate's mistakes row stays whole on an unborn checkout; commissioning reads column four; first reading: an ordinary feature: a report, a page, a reader or a command
+0270-unrecorded-catches-per-checkout-blind.sh	instrument	moved by the second reading: the gate's mistakes writer keeps its columns and appends (thin); first reading: an ordinary feature: a report, a page, a reader or a command
+0280-unrecorded-catches-settled-by-their-writer-b.sh	instrument	moved by the third reading (borderline): tests felix_guard_unrecorded, which the Stop hook calls over the gate's catch rows; first reading: an ordinary feature: a report, a page, a reader or a command
+0290-noticing-when-another-plugin-breaks-the-sess.sh	instrument	moved by the second reading: plugin risk tiers (hooks or credentials are high) and quarantine; first reading: an ordinary feature: a report, a page, a reader or a command
+0300-discovery-reads-what-the-prose-and-the-scrip.sh	instrument	moved by the second reading: risk tier decides install or hold for a person; first reading: an ordinary feature: a report, a page, a reader or a command
+0310-discovery-follows-what-the-plugin-manifest-d.sh	instrument	moved by the second reading: risk tier read from declared hooks and servers; unread means high; first reading: an ordinary feature: a report, a page, a reader or a command
+0320-discovery-reads-a-download-piped-into-a-shel.sh	instrument	moved by the second reading: pipe-to-shell raises the tier and holds it; tree identity; first reading: an ordinary feature: a report, a page, a reader or a command
+0330-one-rollup-one-file.sh	instrument	moved by the second reading: scope and classify credential tier, PR label tier, receipt risk tier; first reading: an ordinary feature: a report, a page, a reader or a command
+0340-the-line-that-does-the-work.sh	instrument	the merge boundary, its receipts and its evidence
+0350-what-it-verified-and-what-it-merges-are-the.sh	instrument	the merge boundary, its receipts and its evidence
+0360-what-felix-merge-records-and-what-it-hands-g.sh	instrument	the merge boundary, its receipts and its evidence
+0370-a-receipt-that-cannot-claim-more-than-it-kno.sh	instrument	the merge boundary, its receipts and its evidence
+0380-the-reconciler-reads-the-record-reached-besi.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0390-probes-what-reality-says-and-the-difference.sh	instrument	a policy table, or the checker that reads it
+0400-candidates-what-a-model-proposed-and-nothing.sh	instrument	moved by the second reading: probes, obligations, merge blocked; first reading: an ordinary feature: a report, a page, a reader or a command
+0410-an-answer-that-is-neither-yes-nor-no.sh	instrument	moved by the second reading: obligation and probe applicability; blocks a merge; first reading: an ordinary feature: a report, a page, a reader or a command
+0420-obligations-what-would-discharge-each-by-nam.sh	instrument	a policy table, or the checker that reads it
+0430-hooks-events-reads-keys-not-strings.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0440-gate-installed-the-deployed-engine-is-the-on.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0450-memory-scan-memory-stays-out-doctrine-stays.sh	instrument	the deny floor and what the unattended path may touch
+0460-maintenance-a-check-that-names-work-already.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0470-the-pulse-the-heartbeat-that-does-not-wait-f.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0471-the-pulse-agent-runs-where-macos-lets-it-start-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0480-the-one-line-git-cannot-reconstruct.sh	instrument	what the engine parses from git and from its tables
+0490-qualification-does-a-check-fail-when-what-it.sh	instrument	a policy table, or the checker that reads it
+0500-continued.sh	instrument	continues 0490-qualification-does-a-check-fail-when-what-it.sh
+0510-the-receipt-carries-the-epoch-and-a-fact-tha.sh	instrument	the merge boundary, its receipts and its evidence
+0511-the-deployed-engine-probe-a-cache-prune-is-n.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0520-qualification-a-row-runs-in-a-shell-of-its-o.sh	instrument	a policy table, or the checker that reads it
+0530-continued.sh	instrument	continues 0520-qualification-a-row-runs-in-a-shell-of-its-o.sh
+0540-qualification-a-later-run-sweeps-the-trees-a.sh	instrument	a policy table, or the checker that reads it
+0550-continued.sh	instrument	continues 0540-qualification-a-later-run-sweeps-the-trees-a.sh
+0560-continued.sh	instrument	continues 0550-continued.sh
+0570-qualification-a-control-whose-premise-is-abs.sh	instrument	a policy table, or the checker that reads it
+0571-revoke-is-the-inverse-of-the-reader.sh	instrument	a policy table, or the checker that reads it
+0572-allow-says-allowed-only-when-the-grant-holds.sh	instrument	a policy table, or the checker that reads it
+0573-the-autonomy-file-has-one-writer-at-a-time.sh	instrument	a policy table, or the checker that reads it
+0574-revoke-then-allow-on-a-last-line-with-no-new.sh	instrument	a policy table, or the checker that reads it
+0575-the-suite-s-exit-trap-acts-only-in-its-own-shell.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+0579-the-commission-grant-is-bound-to-its-table.sh	instrument	a policy table, or the checker that reads it
+0580-tidying-with-the-checks-that-make-it-safe.sh	instrument	tidy deletes, and these are the checks that make it safe
+0590-the-pre-flight.sh	instrument	moved by the second reading: ready --fix holds a medium-risk install in the policy's words; engine-wide lint; first reading: an ordinary feature: a report, a page, a reader or a command
+0600-what-to-do-next.sh	instrument	moved by the second reading: deny hook rules and their refusals; first reading: an ordinary feature: a report, a page, a reader or a command
+0610-denial-reads-the-command-the-shell-runs.sh	instrument	the deny floor and what the unattended path may touch
+0620-denial-refuses-what-a-command-changes-not-wh.sh	instrument	the deny floor and what the unattended path may touch
+0630-the-subject-of-a-large-payload.sh	instrument	the deny floor and what the unattended path may touch
+0631-the-subject-of-a-large-payload-reads-linearly-blind.sh	instrument	the deny floor and what the unattended path may touch
+0640-the-deployed-surface-is-three-directories.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0650-ecosystem.sh	instrument	a policy table, or the checker that reads it
+0660-continued.sh	instrument	continues 0650-ecosystem.sh
+0670-continued.sh	instrument	continues 0660-continued.sh
+0671-continued.sh	instrument	continues 0670-continued.sh
+0680-continued.sh	instrument	continues 0671-continued.sh
+0681-continued.sh	instrument	continues 0680-continued.sh
+0690-continued.sh	instrument	continues 0681-continued.sh
+0700-continued.sh	instrument	continues 0690-continued.sh
+0710-commissioning-a-seeded-check-reads-done-only.sh	instrument	a policy table, or the checker that reads it
+0711-commissioning-a-check-says-it-could-not-be-a.sh	instrument	a policy table, or the checker that reads it
+0720-the-engine-manifest.sh	instrument	a policy table, or the checker that reads it
+0730-schema-check-every-table-declared-every-row.sh	instrument	a policy table, or the checker that reads it
+0740-what-a-grant-refuses.sh	instrument	a policy table, or the checker that reads it
+0750-decision-epochs-the-four-things-a-decision-w.sh	instrument	a policy table, or the checker that reads it
+0760-the-graph-nothing-ever-mentioned.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0770-red-the-recorded-red-run.sh	instrument	the merge boundary, its receipts and its evidence
+0780-exceptions-the-scoped-exception-channel.sh	instrument	a policy table, or the checker that reads it
+0790-project-gates-each-run-reads-back-its-own-lo.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0800-the-lifecycle-recorder.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0810-felix-audit-a-read-only-report-over-claude-c.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0820-felix-new-no-commission-governed-not-commiss.sh	instrument	a policy table, or the checker that reads it
+0830-felix-audit-what-the-reviews-left-open.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0840-felix-audit-what-the-third-review-found.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0850-felix-audit-what-the-fourth-review-found.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0860-felix-inventory-where-unlanded-work-is-deriv.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0870-continued.sh	subject	continues 0860-felix-inventory-where-unlanded-work-is-deriv.sh
+0880-felix-inventory-what-review-found-each-held.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0890-felix-inventory-the-spec-decisions-of-2026-0.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0900-felix-inventory-the-settled-contract-of-2026.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0910-continued.sh	subject	continues 0900-felix-inventory-the-settled-contract-of-2026.sh
+0920-continued.sh	subject	continues 0910-continued.sh
+0930-continued.sh	subject	continues 0920-continued.sh
+0940-the-handoff-as-sections-no-two-sessions-writ.sh	instrument	moved by the second reading: handoff-check runs in felix's gate.sh; pins what it refuses; first reading: an ordinary feature: a report, a page, a reader or a command
+0950-a-handoff-fold-already-in-flight-is-named-so.sh	subject	an ordinary feature: a report, a page, a reader or a command
+0960-no-engine-test-reads-a-pipe-through-a-grep-t.sh	instrument	a lint that keeps the suite's own readings honest
+0970-membership-in-a-list-larger-than-a-pipe-cove.sh	instrument	a lint that keeps the suite's own readings honest
+0980-qualification-commissioning-adoption-the-led.sh	instrument	a policy table, or the checker that reads it
+0990-land-table-l2a.sh	instrument	the gate, the lander, the hooks or the deployed engine
+0992-sort-comm-join-and-uniq-read-bytes-in-the-c-l.sh	instrument	a lint that keeps the suite's own readings honest
+0994-bash-s-own-collation-and-the-bsd-text-tools.sh	instrument	a lint that keeps the suite's own readings honest
+0996-continued.sh	instrument	continues 0994-bash-s-own-collation-and-the-bsd-text-tools.sh
+0998-continued.sh	instrument	continues 0996-continued.sh
+1000-the-engine-makes-its-scratch-under-tmpdir.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+1010-the-record-this-branch-carries.sh	instrument	the merge boundary, its receipts and its evidence
+1020-readers-keep-the-unended-last-line-of-a-hand.sh	instrument	what the engine parses from git and from its tables
+1030-a-pipe-at-stack-tsv-read-by-the-stop-hook-in.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1040-the-suite-is-cut-into-parts.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+1050-felix-cost-tokens-spent-read-from-the-transc.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1060-continued.sh	subject	continues 1050-felix-cost-tokens-spent-read-from-the-transc.sh
+1070-felix-cost-the-2026-10-11-addendum.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1075-felix-cost-one-reading-at-a-time-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1080-the-stop-hook-holds-once-per-session-per-tre.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1090-the-stop-hook-holds-once-per-session-tree-re.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1100-declared-tools-reach-the-pulse-and-felix-status.sh	instrument	moved by the second reading: status gate row asserts receipt current/red/stale via felix_verify_current; first reading: an ordinary feature: a report, a page, a reader or a command
+1110-found-after-the-blind-part-status-index-and-long-list.sh	instrument	moved by the second reading: receipt currency: stat-dirty still current, edit stale; first reading: an ordinary feature: a report, a page, a reader or a command
+1120-found-in-review-reach-runs-in-an-empty-directory.sh	instrument	moved by the second reading (unsure, leans instrument): "no hostile repository's server starts at session start": in no listed category; leans instrument; first reading: an ordinary feature: a report, a page, a reader or a command
+1130-unattended-work-runs-only-in-its-own-checkout.sh	instrument	the deny floor and what the unattended path may touch
+1200-gate-friction-a-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1210-gate-friction-a-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1220-gate-friction-a-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1230-gate-friction-a-addendum-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1230-gate-friction-a-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1240-gate-friction-a-survivors-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1250-gate-friction-a2-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1260-gate-friction-a3-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1270-gate-friction-b-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1280-land-on-green-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1281-land-on-green-deploy-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1282-land-on-green-round-2-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1283-land-on-green-round-3-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1284-land-on-green-round-4-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1285-land-on-green-round-5-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1286-land-on-green-round-6-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1287-land-on-green-round-7-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1288-land-on-green-round-8-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1289-land-on-green-round-9-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1290-gate-friction-c-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1291-gate-friction-d-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1292-gate-friction-d-signals-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1293-gate-friction-d-runner-failures-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1294-gate-friction-d-slots-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1295-gate-friction-d-shell-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1296-gate-friction-d-losses-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1300-stuck-pr-page-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1310-stuck-pr-page-states-blind.sh	instrument	moved by the second reading: page decides founder state through felix_escape_listed and felix_land_trust_base; first reading: an ordinary feature: a report, a page, a reader or a command
+1320-stuck-pr-page-readings-blind.sh	instrument	moved by the second reading: escape tables and felix_land_malformed outcomes; first reading: an ordinary feature: a report, a page, a reader or a command
+1330-stuck-pr-page-review-blind.sh	instrument	moved by the second reading: escape rule matches (path-bytes, trust base); first reading: an ordinary feature: a report, a page, a reader or a command
+1340-stuck-pr-page-amendments-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1350-stuck-pr-page-terminal-and-risk-blind.sh	instrument	moved by the second reading: confined risk rows evaluated (R10); first reading: an ordinary feature: a report, a page, a reader or a command
+1360-stuck-pr-page-last-ledger-row-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1400-judge-refs-residue-blind.sh	instrument	the merge boundary, its receipts and its evidence
+1401-judge-refs-residue-b-blind.sh	instrument	the merge boundary, its receipts and its evidence
+1402-judge-refs-residue-a12-blind.sh	instrument	the merge boundary, its receipts and its evidence
+1403-judge-refs-residue-c.sh	instrument	the merge boundary, its receipts and its evidence
+1450-lost-work-inventory-carried-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1460-lost-work-inventory-chips-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1470-lost-work-page-groups-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1480-lost-work-page-readings-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1490-lost-work-review-fixes.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1495-lost-work-page-awk-fails-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1497-lib-awk-gawk-names-blind.sh	instrument	a lint that keeps the suite's own readings honest
+1500-git-colour-never-reaches-what-the-engine-parses.sh	instrument	what the engine parses from git and from its tables
+1510-no-caller-environment-changes-a-tool-s-output.sh	instrument	what the engine parses from git and from its tables
+1520-git-readers-fail-closed.sh	instrument	what the engine parses from git and from its tables
+1530-patch-reads-the-repository-not-a-diff-setting.sh	instrument	what the engine parses from git and from its tables
+1540-patch-reads-the-review-s-cases-and-findings.sh	instrument	what the engine parses from git and from its tables
+1570-helper-worktrees-inventory-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1580-helper-worktrees-page-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1585-helper-worktrees-review-fixes-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1600-felix-refuses-a-pattern-kill-blind.sh	instrument	the deny floor and what the unattended path may touch
+1610-driver-room-blind.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+1650-land-tick-retries-a-refusal-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1660-land-tick-says-every-wait-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1665-land-tick-review-round-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1670-session-start-names-what-waits-blind.sh	instrument	moved by the second reading: the deny hook's behaviour when it breaks; first reading: an ordinary feature: a report, a page, a reader or a command
+1680-the-lander-ages-what-waits-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1690-status-lander-row-blind.sh	instrument	moved by the second reading: paused or locked lander tick lands nothing; first reading: a status row about the lander, a report and not its decision
+1700-hooks-and-gate-rows-blind.sh	instrument	moved by the second reading (unsure, leans instrument): mostly status lines; A69 pins the Stop hook not holding where no gate is declared; first reading: status rows about the hooks and the gate, a report and not their decision
+1710-lander-serves-the-home-only-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1720-lander-alerts-reach-github-blind.sh	instrument	moved by the second reading: paused tick holds; landing unchanged; lander launcher sources no untracked code; first reading: the lander's alerts, a notification and not its decision
+1730-discovery-never-promises-blind.sh	instrument	moved by the second reading: a cache stamped under older risk rules goes stale; first reading: an ordinary feature: a report, a page, a reader or a command
+1740-pulse-backup-and-records-blind.sh	instrument	moved by the second reading: secret scanning on the memory backup and route log; first reading: an ordinary feature: a report, a page, a reader or a command
+1741-pulse-commits-what-it-scanned-blind.sh	instrument	moved by the second reading: the commit is the tree secret-scan read; first reading: an ordinary feature: a report, a page, a reader or a command
+1750-stop-says-what-it-could-not-judge-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1760-prompt-hook-and-cloud-toolbox-blind.sh	instrument	moved by the second reading: Stop hook holds after a killed prompt run; first reading: an ordinary feature: a report, a page, a reader or a command
+1790-inventory-true-owners-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1800-inventory-chip-windows-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1830-evidence-policy-true-verdicts-blind.sh	instrument	the merge boundary, its receipts and its evidence
+1832-b11-round-3-blind.sh	instrument	round 3 of 1830, the evidence policy's verdicts
+1850-grant-base-and-config-dir-blind.sh	instrument	a policy table, or the checker that reads it
+1851-b12-round-3-blind.sh	instrument	round 3 of 1850, a grant's base and config directory
+1860-binding-match-and-record-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1870-merge-judge-handoff-blind.sh	instrument	the merge boundary, its receipts and its evidence
+1880-new-binding-and-install-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1881-new-binding-review-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1890-dated-lessons-mount-their-claim-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1891-handoff-tree-and-seeded-graph-row-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1910-bootstrap-passable-gate-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1920-bootstrap-default-branch-and-reads-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1925-bootstrap-judges-the-workflow-ci-runs-blind.sh	instrument	the gate, the lander, the hooks or the deployed engine
+1970-ledger-unknown-not-zero-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1980-icloud-copies-status-row-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+1985-ledger-icloud-review-round-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2030-readme-claims-match-the-engine-blind.sh	instrument	moved by the second reading: A6-A11 pin felix_epoch, felix_probes_run, felix_tree_id; first reading: an ordinary feature: a report, a page, a reader or a command
+2031-felix-on-path-without-sudo-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2050-snapshot-audit-and-scrub-blind.sh	instrument	the snapshot's scrub of secrets before anything is published
+2051-snapshot-run-blind.sh	instrument	the snapshot's scrub of secrets before anything is published
+2070-cloud-kit-truthfulness-blind.sh	instrument	moved by the second reading: secret-scan exit codes; the gate's secret line; first reading: an ordinary feature: a report, a page, a reader or a command
+2120-wave-1-combine-blind.sh	instrument	moved by the second reading: pause brake, waiting and unaged decisions of the lander tick; first reading: an ordinary feature: a report, a page, a reader or a command
+2130-answers-delivered-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2160-docs-are-not-a-frontend-blind.sh	instrument	moved by the third reading (mixed): pins felix_detect, whose hash felix_commission_receipt_valid compares inside the merge blockers; first reading: an ordinary feature: a report, a page, a reader or a command
+2170-trust-resolver-which-cli-unfinished-reads-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2173-trust-table-status-unfinished-reads-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2176-trust-step3-policy-from-p-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2177-trust-step3-policy-from-p-blind-b.sh	instrument	the merge boundary, its receipts and its evidence
+2178-trust-step3-provider-base-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2200-lane-counts-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2210-lane-states-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2220-lane-command-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2230-lane-status-row-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2240-lane-session-start-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2250-lane-pulse-blind.sh	subject	an ordinary feature: a report, a page, a reader or a command
+2300-checked-not-verified-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2300-evidence-readers-agree-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2301-checked-not-verified-round3-blind.sh	instrument	the merge boundary, its receipts and its evidence
+2400-situations-table-blind.sh	instrument	moved by the second reading: schema-check (a check in felix's gate) refuses a malformed table; first reading: an ordinary feature: a report, a page, a reader or a command
+2410-situations-recorded-blind.sh	instrument	moved by the third reading (judgement call): decides which needs a change owes; lib/situations.sh is report-only today; first reading: an ordinary feature: a report, a page, a reader or a command
+2420-situations-change-blind.sh	instrument	moved by the third reading (judgement call): decides which needs a change owes; lib/situations.sh is report-only today; first reading: an ordinary feature: a report, a page, a reader or a command
+2430-situations-output-blind.sh	instrument	moved by the third reading (judgement call): decides which needs a change owes; lib/situations.sh is report-only today; first reading: an ordinary feature: a report, a page, a reader or a command
+2440-situations-web-fixture-blind.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+2450-situations-cargo-fixture-blind.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
+2460-situations-seed-siblings-blind.sh	instrument	moved by the third reading (judgement call): decides which needs a change owes; lib/situations.sh is report-only today; first reading: an ordinary feature: a report, a page, a reader or a command
+2470-situations-review-focus-blind.sh	instrument	moved by the second reading: admit command writes obligations.tsv; how felix_obligation_rows reads it; first reading: an ordinary feature: a report, a page, a reader or a command
+9990-the-run-stayed-inside-its-temporary-directory.sh	instrument	the suite's own machinery: where it runs, its fixtures and its runner
