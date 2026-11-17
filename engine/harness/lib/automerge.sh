@@ -37,8 +37,8 @@ FELIX_AUTOMERGE_REQUIRED="${FELIX_AUTOMERGE_REQUIRED:-5}"
 # run on at all. A total of zero is the absence of evidence, not evidence.
 felix_automerge_state() {
   local total="$1" failures="$2"
-  case "${total:-x}"    in *[!0-9]*) printf 'unknown'; return 0 ;; esac
-  case "${failures:-x}" in *[!0-9]*) printf 'unknown'; return 0 ;; esac
+  case "${total:-x}"    in *[!0123456789]*) printf 'unknown'; return 0 ;; esac
+  case "${failures:-x}" in *[!0123456789]*) printf 'unknown'; return 0 ;; esac
   if [ "$total" -eq 0 ] 2>/dev/null; then printf 'unknown'; return 0; fi
   if [ "$failures" -eq 0 ] 2>/dev/null; then printf 'clean'; else printf 'dirty'; fi
 }

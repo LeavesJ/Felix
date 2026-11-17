@@ -18,8 +18,29 @@
 # detached worktree — which is where qualification runs it, and why `felix
 # obligations` is not enough on its own.
 set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+# Found before moving: $0 may be relative to where this was called from. A
+# library it cannot find is 127, as deploy-check says it: exit 1 is a violation.
+HERE="$(cd "$(dirname "$0")/.." && pwd)" || exit 127
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
-HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PROJ="${1:-}"; MODE="${2:-}"
 [ -n "$PROJ" ] || { printf 'usage: obligations-check <project-dir> [release]\n' >&2; exit 1; }
 [ -d "$PROJ" ] || { printf 'obligations-check: no project at %s\n' "$PROJ"; exit 1; }
@@ -72,15 +93,15 @@ printf '%s\n' "$out" | while IFS= read -r line; do
   fi
 done
 
-blocking="$(printf '%s\n' "$out" | felix_obligations_blocking "$MODE" | grep -c .)"
-excepted="$(printf '%s\n' "$out" | awk -F'\t' 'index($8, "excepted|") == 1' | grep -c .)"
+blocking="$(printf '%s\n' "$out" | felix_obligations_blocking "$MODE" | LC_ALL=C grep -c .)"
+excepted="$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' 'index($8, "excepted|") == 1' | LC_ALL=C grep -c .)"
 printf '\n%s obligation(s): %s active, %s dormant, %s unknown; %s blocking, %s excepted' \
-  "$(printf '%s\n' "$out" | grep -c .)" \
-  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "ACTIVE"'  | grep -c .)" \
-  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "DORMANT"' | grep -c .)" \
-  "$(printf '%s\n' "$out" | awk -F'\t' '$4 == "UNKNOWN"' | grep -c .)" \
+  "$(printf '%s\n' "$out" | LC_ALL=C grep -c .)" \
+  "$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' '$4 == "ACTIVE"'  | LC_ALL=C grep -c .)" \
+  "$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' '$4 == "DORMANT"' | LC_ALL=C grep -c .)" \
+  "$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' '$4 == "UNKNOWN"' | LC_ALL=C grep -c .)" \
   "$blocking" "$excepted"
-ung="$(felix_obligations_ungrounded "$PROJ" | grep -c .)"
+ung="$(felix_obligations_ungrounded "$PROJ" | LC_ALL=C grep -c .)"
 [ "$ung" -gt 0 ] && printf '; %s ground on no probe' "$ung"
 printf '\n'
 [ "$blocking" -eq 0 ] || rc=1

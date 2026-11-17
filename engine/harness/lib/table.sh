@@ -94,8 +94,9 @@ FELIX_TABLE_SKIP='^[[:space:]]*(#|$)'
 
 # A whole line of well-formed UTF-8, as bytes in the C locale: ASCII except NUL
 # (refused on its own), then the two- to four-byte forms of RFC 3629 §4. No
-# interval expressions, which not every awk here has.
-FELIX_TABLE_UTF8="$(printf '^([\001-\177]|[\302-\337][\200-\277]|\340[\240-\277][\200-\277]|[\341-\354\356\357][\200-\277][\200-\277]|\355[\200-\237][\200-\277]|\360[\220-\277][\200-\277][\200-\277]|[\361-\363][\200-\277][\200-\277][\200-\277]|\364[\200-\217][\200-\277][\200-\277])*$')"
+# interval expressions, which not every awk here has. Written with $'...', so no fork can fail at load:
+# one did leave it empty, and an empty pattern refused no encoding (felix_table_check refuses to examine then).
+FELIX_TABLE_UTF8=$'^([\001-\177]|[\302-\337][\200-\277]|\340[\240-\277][\200-\277]|[\341-\354\356\357][\200-\277][\200-\277]|\355[\200-\237][\200-\277]|\360[\220-\277][\200-\277][\200-\277]|[\361-\363][\200-\277][\200-\277][\200-\277]|\364[\200-\217][\200-\277][\200-\277])*$'
 
 # The rows of a table, byte for byte, one per line. A final row with no newline
 # comes out with one, as grep and awk print it.
@@ -105,20 +106,54 @@ felix_table_rows() {
 }
 
 # The schema row for a table, looked up by basename: the key a table's readers
-# and FELIX_ESCAPE_TABLES already use. Empty when there is none.
+# and FELIX_ESCAPE_TABLES already use. Empty when there is none. One awk with no
+# pipe (felix_table_rows' skip and the lookup together), so its status is the
+# lookup's own: non-zero only when the awk did not run to its end.
 felix_table_schema() {
   local schemas="$1" table="$2"
   [ -f "$schemas" ] || return 0
-  felix_table_rows "$schemas" | T="$table" LC_ALL=C awk -F'\t' '$1 == ENVIRON["T"] { print; exit }'
+  T="$table" LC_ALL=C awk -F'\t' -v skip="$FELIX_TABLE_SKIP" '$0 ~ skip { next } $1 == ENVIRON["T"] { print; exit }' < "$schemas"
 }
 
-# Required and total columns of a schema row, as "<required> <total>". Counted
-# by awk, never by a shell loop over the list: a column written `name?` is a
-# glob, and an unquoted expansion would match it against whatever files sit in
-# the directory the caller happens to be in.
-_felix_table_arity() {
-  printf '%s\n' "$1" | cut -f3 | LC_ALL=C awk '{ for (i = 1; i <= NF; i++) { t++; if ($i !~ /\?$/) r++ } } END { printf "%d %d\n", r, t }'
+# Cell N of a schema row as cut -fN gives it, into _FELIX_TC: the whole row when
+# it holds no tab, empty past its last cell. In this shell, so it cannot fail.
+_felix_table_cell() {   # ROW N
+  local r="$1" i=1
+  case "$r" in *"	"*) ;; *) _FELIX_TC="$r"; return 0 ;; esac
+  while [ "$i" -lt "$2" ]; do case "$r" in *"	"*) r="${r#*	}" ;; *) r=""; break ;; esac; i=$((i + 1)); done
+  _FELIX_TC="${r%%	*}"
 }
+
+# Required and total columns of a columns cell, into _FELIX_TA_R and _FELIX_TA_T:
+# its words as awk splits them (blanks), one with a final ? optional. Counted in
+# this shell with no unquoted expansion: a column written `name?` is a glob, and
+# an expansion would match it against the files in the caller's directory.
+_felix_table_arity() {   # COLUMNS
+  local s="$1" c LC_ALL=C
+  _FELIX_TA_R=0; _FELIX_TA_T=0
+  while [ -n "$s" ]; do
+    case "$s" in [[:blank:]]*) s="${s#?}"; continue ;; esac
+    c="${s%%[[:blank:]]*}"; s="${s#"$c"}"; _FELIX_TA_T=$((_FELIX_TA_T + 1))
+    case "$c" in *\?) ;; *) _FELIX_TA_R=$((_FELIX_TA_R + 1)) ;; esac
+  done
+}
+
+# felix_capture (lib/detect.sh), from beside this file when the caller has not
+# loaded it (bin/schema-check sources this file alone); 0 when it is defined.
+_felix_table_cap() {
+  declare -F felix_capture >/dev/null && return 0
+  local f="${BASH_SOURCE[0]:-}" d
+  d="${f%/*}"; [ "$d" != "$f" ] || d=.
+  [ -f "$d/detect.sh" ] && . "$d/detect.sh" 2>/dev/null
+  declare -F felix_capture >/dev/null
+}
+# The check's reads of FILE, each run by felix_capture: its size, the size less
+# its NULs (the pipe's two statuses read here, whatever the caller's pipefail),
+# and the byte at an offset, each with no pipe to the shell.
+_felix_table_wc() { LC_ALL=C wc -c < "$1"; }
+_felix_table_nonul() { LC_ALL=C tr -d '\000' < "$1" | wc -c; set -- "${PIPESTATUS[@]}"; [ "$1:$2" = 0:0 ]; }
+_felix_table_byte() { LC_ALL=C od -An -tx1 -j "$2" -N 1 < "$1"; }
+_felix_table_dec() { _FELIX_TN="${1#"${1%%[![:blank:]]*}"}"; case "$_FELIX_TN" in ''|*[!0123456789]*) return 1 ;; esac; }   # wc pads with blanks
 
 # Everything wrong with one file as an instance of one table. One line per
 # refusal: <file>:<line> TAB <reason> TAB <detail>, with `-` for the line of a
@@ -126,10 +161,20 @@ _felix_table_arity() {
 #
 #   exit 0  accepted
 #   exit 1  refused
-#   exit 2  cannot examine: no such file, or no schema row for the table.
-#           Never read as accepted; a table nobody declared is not a clean one.
+#   exit 2  cannot examine: no such file, or no schema row for the table, or a
+#           read of the check's own that did not finish (the one line
+#           <file>:- TAB cannot-examine TAB a read of the check's own did not
+#           finish, and no refusal line before it). Never read as accepted; a
+#           table nobody declared, or one not read whole, is not a clean one.
+#
+# Every read is made, and checked, before anything is printed (2026-10-31): each
+# ran in a command substitution whose status nobody read, and one that failed or
+# could not fork read as an empty answer, which accepted a malformed table or
+# refused a valid one. The schema lookup, the main pass and the file-level reads
+# run under felix_capture; the row's cells, the arity, hi and the refusal lines
+# are made in this shell, with no fork to fail.
 felix_table_check() {
-  local schemas="$1" file="$2" table="${3:-}"
+  local schemas="$1" file="$2" table="${3:-}" unk nl=$'\n'
   [ -n "$table" ] || table="${file##*/}"
   if [ -L "$file" ]; then
     printf '%s:-\tsymlink\ta link, so the escape check compares its text and a reader reads its target\n' "$file"; return 1
@@ -137,21 +182,74 @@ felix_table_check() {
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
     printf '%s:-\tcannot-examine\tno readable file\n' "$file"; return 2
   fi
-  local row; row="$(felix_table_schema "$schemas" "$table")"
+  printf -v unk '%s:-\tcannot-examine\ta read of the check'\''s own did not finish' "$file"
+  local row
+  _felix_table_cap && [ -n "${FELIX_TABLE_UTF8:-}" ] && felix_capture row felix_table_schema "$schemas" "$table" \
+    || { printf '%s\n' "$unk"; return 2; }
   if [ -z "$row" ]; then
     printf '%s:-\tno-schema\t%s has no row in %s\n' "$file" "$table" "${schemas##*/}"; return 2
   fi
-  local req tot empty
-  read -r req tot <<EOF
-$(_felix_table_arity "$row")
-EOF
-  empty="$(printf '%s\n' "$row" | cut -f4)"
+  local req tot empty cols hi
+  _felix_table_cell "$row" 3; cols="$_FELIX_TC"
+  _felix_table_cell "$row" 4; empty="$_FELIX_TC"
+  _felix_table_arity "$cols"; req="$_FELIX_TA_R"; tot="$_FELIX_TA_T"
+  hi=$'[\200-\377]'
 
   # One pass classifies every line and applies every per-line refusal. The last
-  # line it prints is the row count, which the shell splits off.
-  local out
-  out="$(LC_ALL=C awk -F'\t' -v f="$file" -v req="$req" -v tot="$tot" \
-      -v cols="$(printf '%s\n' "$row" | cut -f3)" -v hi="$(printf '[\200-\377]')" -v u8="$FELIX_TABLE_UTF8" '
+  # line it prints is the row count, which the shell splits off; a pass whose
+  # last line is not TAB and digits did not run to its end.
+  local out rows
+  felix_capture out _felix_table_pass "$file" "$req" "$tot" "$cols" "$hi" || { printf '%s\n' "$unk"; return 2; }
+  rows="${out##*"$nl"}"
+  case "$rows" in "	"[0123456789]*) ;; *) printf '%s\n' "$unk"; return 2 ;; esac
+  out="${out%"$rows"}"; out="${out%"$nl"}"; rows="${rows#	}"
+  case "$rows" in *[!0123456789]*) printf '%s\n' "$unk"; return 2 ;; esac
+
+  # File-level shapes one awk pass cannot see: it reads a final line with no
+  # newline as a line like any other, and stops or truncates at a NUL
+  # depending on its build. Its size, the last byte and the size less its NULs,
+  # each a number or one hex byte, or the check cannot tell.
+  local more="" line size byte nonul
+  felix_capture size _felix_table_wc "$file" && _felix_table_dec "$size" || { printf '%s\n' "$unk"; return 2; }
+  size="$_FELIX_TN"
+  # The last byte, read as a number: a command substitution drops a newline and
+  # a NUL alike, so a file ending in a NUL looked like one ending in a newline.
+  byte=""
+  if [ -s "$file" ]; then
+    felix_capture byte _felix_table_byte "$file" "$((size - 1))" || { printf '%s\n' "$unk"; return 2; }
+    byte="${byte//[[:space:]]/}"
+    case "$byte" in [0123456789abcdef][0123456789abcdef]) ;; *) printf '%s\n' "$unk"; return 2 ;; esac
+    if [ "$byte" != "0a" ]; then
+      printf -v line '%s:-\tno-final-newline\tthe last line has no newline, and the done-< loops drop it while grep and awk keep it' "$file"
+      more="$more$line$nl"
+    fi
+  fi
+  # The size less its NULs is at most its size, and at least 1 when its last byte is not a NUL.
+  felix_capture nonul _felix_table_nonul "$file" && _felix_table_dec "$nonul" || { printf '%s\n' "$unk"; return 2; }
+  nonul="$_FELIX_TN"
+  [ "$nonul" -le "$size" ] && { [ "$nonul" -gt 0 ] || [ -z "$byte" ] || [ "$byte" = 00 ]; } || { printf '%s\n' "$unk"; return 2; }
+  if [ "$nonul" -ne "$size" ]; then
+    printf -v line '%s:-\tnul-byte\ta NUL byte, which makes grep treat the file as binary and print no rows' "$file"
+    more="$more$line$nl"
+  fi
+  if [ "${rows:-0}" -eq 0 ] && [ "$empty" = "refused" ]; then
+    printf -v line '%s:-\tempty\tno rows, and %s declares that emptiness is never legitimate' "$file" "$table"
+    more="$more$line$nl"
+  fi
+  out="${out:+$out
+}${more%
+}"
+  out="${out%
+}"
+
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out"
+  return 1
+}
+
+# The main pass of felix_table_check over FILE, every file on standard input (above).
+_felix_table_pass() {   # FILE REQ TOT COLS HI
+  LC_ALL=C awk -F'\t' -v f="$1" -v req="$2" -v tot="$3" -v cols="$4" -v hi="$5" -v u8="$FELIX_TABLE_UTF8" '
     $0 !~ u8 { printf "%s:%d\tencoding\ta line that is not UTF-8, which grep drops in a UTF-8 locale and macOS awk cannot read\n", f, NR }
     /\r/ { printf "%s:%d\tcarriage-return\ta CR byte, which a tab-IFS read keeps in the last cell\n", f, NR }
     $0 ~ ("^[ \t\v\f\r]*" hi) { printf "%s:%d\tnonascii-lead\ta line that starts with a non-ASCII byte, which is whitespace to some locales and not others\n", f, NR }
@@ -167,39 +265,7 @@ EOF
         printf "%s:%d\tcells\t%d cell(s); %s declares %s\n", f, NR, NF, (req == tot ? "exactly " req : req " to " tot), cols
     }
     END { printf "\t%d\n", rows + 0 }
-  ' < "$file")"
-  local rows="${out##*	}"
-  out="${out%	*}"
-  out="${out%
-}"
-
-  # File-level shapes one awk pass cannot see: it reads a final line with no
-  # newline as a line like any other, and stops or truncates at a NUL
-  # depending on its build.
-  local more=""
-  # The last byte, read as a number: a command substitution drops a newline and
-  # a NUL alike, so a file ending in a NUL looked like one ending in a newline.
-  if [ -s "$file" ] && [ "$(tail -c 1 < "$file" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
-    more="$more$(printf '%s:-\tno-final-newline\tthe last line has no newline, and the done-< loops drop it while grep and awk keep it' "$file")
-"
-  fi
-  if [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c)" -ne "$(wc -c < "$file")" ]; then
-    more="$more$(printf '%s:-\tnul-byte\ta NUL byte, which makes grep treat the file as binary and print no rows' "$file")
-"
-  fi
-  if [ "${rows:-0}" -eq 0 ] && [ "$empty" = "refused" ]; then
-    more="$more$(printf '%s:-\tempty\tno rows, and %s declares that emptiness is never legitimate' "$file" "$table")
-"
-  fi
-  out="${out:+$out
-}${more%
-}"
-  out="${out%
-}"
-
-  [ -n "$out" ] || return 0
-  printf '%s\n' "$out"
-  return 1
+  ' < "$1"
 }
 
 # What is wrong with schemas.tsv's own rows, beyond what its row in itself

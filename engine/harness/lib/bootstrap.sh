@@ -35,7 +35,7 @@
 # `gate`, which is the name this library writes inside gate.yml. A project that
 # names another file has to name that workflow's display name in the trigger.
 felix_gate_workflow() {
-  local proj="$1" w
+  local proj="$1" w LC_ALL=C
   w="$(felix_json_str "$proj/project.json" gate_workflow 2>/dev/null)"
   [ -n "$w" ] || { printf 'gate.yml'; return 0; }
   case "$w" in
@@ -58,15 +58,11 @@ _felix_bs_have_workflow() {
   git -C "$root" cat-file -e "origin/HEAD:.github/workflows/$wf" 2>/dev/null && return 0
   git -C "$root" cat-file -e "origin/main:.github/workflows/$wf" 2>/dev/null
 }
-_felix_bs_have_labels()   {
-  felix_contains "$(gh label list --repo "$1" 2>/dev/null)" "needs-founder"
-}
-_felix_bs_have_protection() {
-  gh api "repos/$1/branches/$2/protection" >/dev/null 2>&1
-}
+# What GitHub holds (the labels, the default branch, the protection) is read and
+# written by lib/bootstrap-gh.sh, and the order of it all is lib/bootstrap-run.sh.
 # grep on a file is safe; only pipelines can SIGPIPE.
 _felix_bs_have_perms()    { [ -f "$1/.claude/settings.json" ] && \
-                            grep -q '"deny"' "$1/.claude/settings.json" 2>/dev/null; }
+                            LC_ALL=C grep -q '"deny"' "$1/.claude/settings.json" 2>/dev/null; }
 
 # Which toolchain CI has to install before the gate can run.
 felix_guess_ecosystem() {
@@ -78,12 +74,43 @@ felix_guess_ecosystem() {
   echo none
 }
 
+# The setup step each stack needs, pinned the way the workflow's checkouts are:
+# a full commit sha, then the release it was read from. Moving one is the same
+# one-change review as moving the Felix pin; the workflow says why.
+#
+# Each setup action is the newest release of the lowest major whose action.yml
+# runs on Node 24, as the checkouts are. Read 2026-10-08 with gh api
+# repos/OWNER/NAME/contents/action.yml?ref=SHA: setup-node v4, setup-python v5
+# and setup-go v5 run on Node 20. setup-go v6.0.0's release notes and v6.1.0's
+# README announce Node 24, and both still say node20 in action.yml; v6.2.0 is
+# the first that runs on it. tests/run holds each pin to the runtime read for it.
+#
+# What the new majors change for the step rendered here:
+# - setup-node v5 caches by itself when package.json's packageManager field
+#   names a package manager. It reads $GITHUB_WORKSPACE/package.json, and the
+#   repository is checked out under repo/, so nothing is cached, as under v4.
+# - setup-python v6 adds pip-version and pip-install, both left unset. Caching
+#   stays opt-in.
+# - setup-go v6 exports GOTOOLCHAIN=local to every later step, so `go` never
+#   fetches the newer toolchain a go.mod asks for and fails instead. With
+#   go-version: stable, only a go.mod that names a release newer than stable
+#   is refused. Its cache keys on go.mod rather than go.sum, looked for at the
+#   workspace root, where neither is, so it warns and caches nothing, as v5 did.
+#
+# dtolnay/rust-toolchain is a composite action and runs no Node. It tags no
+# releases, and @stable was a branch whose action.yml defaults the toolchain
+# to stable. That branch's head is not on master, and the action's README says
+# a pinned commit must be, since the others are garbage-collected. So the pin
+# is master's head, which its one tag, v1, also names, and the step says
+# `toolchain: stable`, which is required there. v1 moves with master: it named
+# 02cb101e when #354 pinned it and 7e38f4b4 from 2026-10-01, which retries a
+# toolchain install that failed on a release-server checksum.
 _felix_bs_setup_block() {
   case "$1" in
-    node)   printf '      - uses: actions/setup-node@v4\n        with:\n          node-version: "22"\n      - run: npm ci\n        working-directory: repo\n' ;;
-    python) printf '      - uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n      - run: pip install -e ".[dev]"\n        working-directory: repo\n' ;;
-    rust)   printf '      - uses: dtolnay/rust-toolchain@stable\n' ;;
-    go)     printf '      - uses: actions/setup-go@v5\n        with:\n          go-version: stable\n' ;;
+    node)   printf '      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0\n        with:\n          node-version: "22"\n      - run: npm ci\n        working-directory: repo\n' ;;
+    python) printf '      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0\n        with:\n          python-version: "3.12"\n      - run: pip install -e ".[dev]"\n        working-directory: repo\n' ;;
+    rust)   printf '      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1\n        with:\n          toolchain: stable\n' ;;
+    go)     printf '      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0\n        with:\n          go-version: stable\n' ;;
     *)      printf '      # no toolchain detected; add the setup step this project needs\n' ;;
   esac
 }
@@ -140,6 +167,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The unattended repair runs the gate again after it pushes, since nothing
+  # its token pushes starts a workflow by itself.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -155,7 +185,19 @@ jobs:
       # Sibling checkouts. A harness inside the tree being gated shows up in the
       # checks it is running. v5, the lowest major that runs on Node 24; v4
       # runs on Node 20.
-      - uses: actions/checkout@v5
+      #
+      # Every action in this file is pinned to a full commit sha, with the
+      # release it was read from after it, for the reason Felix is below: a
+      # tag is a ref its owner can move, every action here runs with the job's
+      # token, and the second checkout is handed the key that reads Felix.
+      # Moving a pin is the same one-change review as moving the Felix pin: a
+      # pull request here, graded by the action code it names and merged by a
+      # person. Read the tag's commit (gh api repos/OWNER/NAME/git/ref/tags/vN,
+      # and git/tags/SHA when that answers with a tag object), and write the
+      # release that commit is after the new sha. Each action here is on the
+      # lowest major that runs on Node 24, or is a composite action and runs
+      # no Node; the runtime is the using: line of its action.yml at that sha.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           path: repo
           # The job's token stays out of repo/.git/config, where the pull
@@ -192,7 +234,7 @@ jobs:
       # the whole file is refused, which leaves a required check that never
       # reports. A copy still reading {{FELIX_REF}} fails at this checkout
       # instead of falling back to the default branch.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${felix_repo}
           ref: '${felix_ref}'

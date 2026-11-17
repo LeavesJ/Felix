@@ -1,0 +1,36 @@
+# How each path in felix-home is landed. Read by lib/land-table.sh.
+#
+# Columns, tab-separated: path, kind, trigger, arg. The kinds are engine
+# constants and name no project:
+#
+#   version-above     the version goes above the base's and above every
+#                     version installed in the plugin cache
+#   keyed-union       the base's file plus the rows the branch added or
+#                     changed, keyed on column <arg>
+#   insertions-union  both sides, only when every conflict is two insertions
+#                     that define no shell function or name in common
+#   rerun             the base's side, then the command in <arg> is run
+#   session           never mechanical: a session lands it
+#   founder           a pull request touching it goes to the founder
+#
+# A trigger is - or a path; one ending in / names a directory. A row is owed
+# when a landing touches its trigger and not its path. session and founder
+# rows take an ERE path, no trigger and no arg. Only they may bind an escape,
+# commission, authority, exception, workflow or trust-base path, or a land
+# table itself, and a resolver on a path one of them matches is refused.
+#
+# Read only from refs/remotes/origin/main, never the working tree: a pull
+# request cannot rewrite the recipe that lands it. Every change to a row here
+# escapes to the founder, additions, reorders and a changed byte included;
+# comments are free. That holds once an engine listing land.tsv judges: the
+# pull request that adds this file is carried to the founder by hand. The rows
+# are shown to the founder verbatim at the arming sitting. Until then they do
+# nothing unattended: owed and behind only write would-refuse rows to says.log.
+
+engine/.claude-plugin/plugin.json	version-above	engine/	-
+engine/harness/tests/assertions.tsv	keyed-union	-	2
+engine/harness/tests/red.tsv	rerun	engine/	engine/harness/tests/red <B>
+engine/harness/tests/run	insertions-union	-	-
+HANDOFF.md	session	-	-
+projects/[^/]+/CLAUDE\.md	founder	-	-
+docs/.*roadmap.*	founder	-	-

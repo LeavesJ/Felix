@@ -28,7 +28,7 @@ SessionStart	wired	bind the session and record the moment in lifecycle.log, a re
 UserPromptSubmit	wired	route the work, name the tool due next, mount matching lessons
 PreToolUse	wired	refuse what this project has forbidden, on the shell and on the files a session reaches for
 PostToolUse	wired	record what was reached for, so what is never used can be found
-Stop	wired	refuse completion on an unverified tree, then ask for verification of the claims
+Stop	wired	refuse completion on a tree the gate has not passed, then ask that the claims be checked
 SubagentStop	wired	a subagent finishing is a completion moment too, and the parent inherits its report
 SessionEnd	wired	roll the session's tool calls into the ledger, with zeroes for what went untouched
 PreCompact	declined	SessionStart matches on compact, so doctrine is re-mounted afterwards; nothing needs saving before	compact

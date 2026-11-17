@@ -17,6 +17,18 @@
 # required for the loop to work, which matters because the alternative is a loop
 # that only exists once someone finishes wiring an observability vendor.
 
+# A file of the checkout, not one beside it or in its repository. `[ -f ]`
+# alone took `../felix/engine/harness/felix`, the CLI the unattended job runs
+# from the Felix checkout next to this one, and `.git/config`: both exist from
+# the root, both are yellow to the shipped table, and the brief listed them as
+# files a repair may change. An edit to either never shows in `git diff`.
+_felix_incident_inside() {
+  case "/$1/" in
+    */../*|*/.git/*) return 1 ;;
+  esac
+  return 0
+}
+
 # Pull repo-relative paths out of arbitrary error text.
 #
 # Deliberately conservative: a token is a path only if the file actually exists in
@@ -34,11 +46,18 @@ felix_incident_paths() {
   #
   # Both are delimiters nobody puts in a repo path, which is the same argument
   # the quotes, parens and angle brackets already here rest on.
+  #
+  # Two forms the line-number rule missed, both common in a failing log, and
+  # both mattered once an empty set came to stop the unattended repair at
+  # scope: a test id that names its test after the file,
+  # `tests/test_a.py::test_x`, and a line number
+  # followed by a colon, `tests/test_a.py:12: AssertionError` or Go's
+  # `a_test.go:12: expected 1`. Each resolved to no file at all.
   printf '%s' "$text" \
-    | tr ' \t"'"'"'(),[]<>`*' '\n\n\n\n\n\n\n\n\n\n\n\n\n' \
-    | sed -E 's/:[0-9]+(:[0-9]+)?$//; s/,$//; s/^\.\///; s/^[+-]+//' \
-    | grep -E '[/.][A-Za-z0-9_]' \
-    | sort -u \
+    | LC_ALL=C tr ' \t"'"'"'(),[]<>`*' '\n\n\n\n\n\n\n\n\n\n\n\n\n' \
+    | LC_ALL=C sed -E 's/::.*$//; s/:[0-9]+(:[0-9]+)?:?$//; s/,$//; s/^\.\///; s/^[+-]+//' \
+    | LC_ALL=C grep -E '[/.][A-Za-z0-9_]' \
+    | LC_ALL=C sort -u \
     | while IFS= read -r cand; do
         [ -n "$cand" ] || continue
         # A trace almost never carries repo-relative paths. It carries wherever
@@ -46,11 +65,13 @@ felix_incident_paths() {
         # in CI, /Users/... on a laptop. Strip leading components until the
         # remainder names a file that exists here.
         #
-        # Longest match wins, so src/web/app.py is preferred over a bare app.py
+        # Longest match wins, so src/server/main.py is preferred over a bare main.py
         # that happens to exist somewhere unrelated.
         local probe="${cand#/}"
         while [ -n "$probe" ]; do
-          if [ -f "$root/$probe" ]; then printf '%s\n' "$probe"; break; fi
+          if _felix_incident_inside "$probe" && [ -f "$root/$probe" ]; then
+            printf '%s\n' "$probe"; break
+          fi
           # A path at the end of a clause carries the punctuation with it, and
           # that is how most people write one in an issue. Tried only after the
           # literal form fails, so this can resolve more and never fewer: a file
@@ -63,7 +84,8 @@ felix_incident_paths() {
           # after it.
           local trimmed="$probe"
           while [ "${trimmed%[.,;:]}" != "$trimmed" ]; do trimmed="${trimmed%[.,;:]}"; done
-          if [ "$trimmed" != "$probe" ] && [ -f "$root/$trimmed" ]; then
+          if [ "$trimmed" != "$probe" ] && _felix_incident_inside "$trimmed" \
+             && [ -f "$root/$trimmed" ]; then
             printf '%s\n' "$trimmed"; break
           fi
           case "$probe" in
@@ -71,7 +93,7 @@ felix_incident_paths() {
             *)   break ;;
           esac
         done
-      done | sort -u
+      done | LC_ALL=C sort -u
 }
 
 # Commits that last touched the implicated files, newest first.
@@ -105,7 +127,7 @@ felix_incident_severity() {
     hit=0
     while IFS=$'\t' read -r tier kind pattern reason; do
       [ "${kind:-}" = "path" ] || continue
-      grep -qE "$pattern" <<<"$p" || continue
+      LC_ALL=C grep -qE "$pattern" <<<"$p" || continue
       hit=1
       case "$tier:$best" in
         red:*)        best="red" ;;

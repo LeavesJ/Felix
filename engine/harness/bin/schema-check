@@ -8,8 +8,9 @@
 #
 #   exit 0  every table here has a schema row and lib/table.sh accepts it
 #   exit 1  a *.tsv no row declares, a refused row or file, an empty table
-#           whose row says emptiness is refused, a memory store sitting in the
-#           tree, a table that cannot be examined, or a malformed row in
+#           whose row says emptiness is refused, a row whose check a final
+#           filter leaves unable to fail, a memory store sitting in the tree,
+#           a table that cannot be examined, or a malformed row in
 #           schemas.tsv itself
 #   exit 2  cannot examine: not a git worktree, no readable schemas.tsv, or no
 #           table at all. Never read as clean.
@@ -34,7 +35,34 @@
 # there and the table with it passes here, and stops at the merge boundary:
 # schemas.tsv is in FELIX_ESCAPE_TABLES, and removing or changing a row of it
 # fires `verifier`. The code that judges is this engine's lib/table.sh.
+#
+# A row of commissioning, obligations, setup or maintenance whose check could
+# only succeed, because a final filter ends it, is refused here too, by the
+# same reading its runner makes (lib/final-filter.sh). Commissioning and
+# obligations refuse such a row themselves. Setup and maintenance only decline
+# to run it, a todo or a due that nothing else fails on, and a row in a
+# project nobody has gated yet is refused by nothing. Here it stops at the
+# pull request that writes it.
 set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${1:-}"
 if [ -z "$ROOT" ]; then
@@ -51,9 +79,11 @@ SCHEMAS="engine/harness/templates/schemas.tsv"
 
 # shellcheck source=../lib/table.sh
 . "$HERE/lib/table.sh"
+# shellcheck source=../lib/final-filter.sh
+. "$HERE/lib/final-filter.sh"
 
 # name <TAB> lives, one per schema row.
-DECLARED="$(felix_table_rows "$SCHEMAS" | cut -f1,2)"
+DECLARED="$(felix_table_rows "$SCHEMAS" | LC_ALL=C cut -f1,2)"
 
 # lives <TAB> path for every file that is a table: declared by basename, or
 # named *.tsv (lives `none`). core.quotePath=false keeps non-ASCII names as
@@ -75,10 +105,33 @@ OUT=""
 add() { OUT="${OUT:+$OUT
 }$1"; }
 
+# A land table (lib/land-table.sh) is held to its own schema rule as well as
+# to its cells: which kinds exist, what each column takes, and that only a
+# session or founder row may bind a protected path. Its reader refuses such a
+# row when it lands and drops it, so a row refused here never merges green.
+# The library is this engine's, loaded the first time a land table is met;
+# one that cannot be loaded is a table that cannot be examined, never a clean
+# one. One refusal per line: <file>:<line> TAB land-<reason> TAB <detail>.
+LAND_LOADED=""
+land_check() {   # <file>
+  if [ -z "$LAND_LOADED" ]; then
+    # shellcheck source=../lib/land-table.sh
+    . "$HERE/lib/land-table.sh" >/dev/null 2>&1
+    LAND_LOADED=1
+  fi
+  if ! command -v felix_land_malformed_in >/dev/null 2>&1; then
+    printf '%s:-\tunexaminable\tlib/land-table.sh could not be loaded, so its schema rule was not applied\n' "$1"
+    return 0
+  fi
+  felix_land_malformed_in < "$1" 2>/dev/null \
+    | F="$1" LC_ALL=C awk -F'\t' 'NF >= 2 { printf "%s:%s\tland-%s\t%s\n", ENVIRON["F"], $1, $2, $3 }'
+  return 0
+}
+
 while IFS= read -r line; do
   [ -n "$line" ] && add "$SCHEMAS:$line"
 done <<EOF
-$(felix_table_schema_malformed "$SCHEMAS" | sed 's/	/	schema-/')
+$(felix_table_schema_malformed "$SCHEMAS" | LC_ALL=C sed 's/	/	schema-/')
 EOF
 
 N=0
@@ -101,9 +154,24 @@ while IFS= read -r entry; do
   fi
   res="$(felix_table_check "$SCHEMAS" "$f")"; rc=$?
   case "$rc" in
-    0) ;;
+    0) if [ "${f##*/}" = "land.tsv" ]; then
+         res="$(land_check "$f")"
+         [ -n "$res" ] && add "$res"
+       fi ;;
     1) add "$res" ;;
     *) add "$(printf '%s:-\tunexaminable\t%s' "$f" "$(printf '%s' "$res" | cut -f3 | head -1)")" ;;
+  esac
+  case "${f##*/}" in
+    commissioning.tsv|obligations.tsv|setup.tsv|maintenance.tsv)
+      if res="$(felix_final_filter_table "$f")"; then
+        while IFS=$'\t' read -r ln why; do
+          [ -n "$ln" ] && add "$(printf '%s:%s\tunfailable\t%s' "$f" "$ln" "$why")"
+        done <<EOF2
+$res
+EOF2
+      else
+        add "$(printf '%s:-\tunexaminable\tits commands could not be read for a final filter' "$f")"
+      fi ;;
   esac
 done <<EOF
 $TABLES

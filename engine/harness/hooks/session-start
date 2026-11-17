@@ -12,6 +12,24 @@
 
 set -uo pipefail
 
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -37,6 +55,8 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/overnight.sh"
 # shellcheck source=../lib/ledger.sh
 . "${SCRIPT_DIR}/../lib/ledger.sh"
+# shellcheck source=../lib/reach.sh
+. "${SCRIPT_DIR}/../lib/reach.sh"
 # shellcheck source=../lib/pulse.sh
 . "${SCRIPT_DIR}/../lib/pulse.sh"
 # shellcheck source=../lib/commission.sh
@@ -45,6 +65,14 @@ FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/commission-provider.sh"
 # shellcheck source=../lib/lifecycle.sh
 . "${SCRIPT_DIR}/../lib/lifecycle.sh"
+# memory.sh for the mistakes.log heal below; sourcing it only defines functions.
+# shellcheck source=../lib/memory.sh
+. "${SCRIPT_DIR}/../lib/memory.sh"
+# waiting.sh reads back what waits (audit b03); it only defines functions.
+# shellcheck source=../lib/waiting.sh
+. "${SCRIPT_DIR}/../lib/waiting.sh"
+# lane.sh, when there, says a short or empty lane; why each lane line here reads as it does: felix_start_lane in it.
+[ -f "${SCRIPT_DIR}/../lib/lane.sh" ] && . "${SCRIPT_DIR}/../lib/lane.sh"
 
 # JSON-escape via parameter substitution, one C-level pass each.
 #
@@ -90,29 +118,25 @@ FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
 # A resume is bound, and says nothing.
 #
 # Claude Code starts a new process on a resume and rebinds every hook, and
-# until the matcher named it Felix was not called there at all, so a resumed
-# session never learned which engine it now runs. The matcher makes the moment
-# reachable; this exit keeps what a resume shows exactly what it showed before,
-# which is nothing. What records the moment, lib/lifecycle.sh, is called before
-# that exit, further down, and before the broken-binding report for the same
+# until the matcher named it Felix was not called there at all. The matcher
+# makes the moment reachable; this exit keeps what a resume shows exactly what
+# it showed before, which is nothing. What records the moment, lib/lifecycle.sh,
+# is called before that exit, and before the broken-binding report for the same
 # reason: a resume never heard that report either.
 #
-# Claude Code only, because only there was a resume unbound. Copilot CLI fires
-# its sessionStart on a resume with no matcher in front of it, so a resume there
-# always got the banner, and unchanged means it still does; the other harness
-# _felix_emit knows is left as it was for the same reason.
+# Claude Code only. Copilot CLI fires its sessionStart on a resume with no
+# matcher in front of it, so a resume there always got the banner, and the
+# other harness _felix_emit knows is left as it was for the same reason.
 #
 # The payload is read once, whole, and the three fields the record and this
 # exit need are taken from it with the sed idiom hooks/post-tool uses, in one
-# pass: each expression starts again from the held line, and the first line
-# that carries a field is the one that answers for it. awk keeps that first
-# line of each field and drops every later one before the loop sees them, so
-# the loop turns three times at most. Unbounded, it cut one line off the front
-# of what was left on each turn, which is quadratic in bash 3.2: a payload with
-# thousands of lines carrying these keys held the hook for minutes, and past
-# the platform's deadline a startup lost its banner. The read it replaced
-# bounded itself with head -1. A terminal on stdin is a person running the
-# hook by hand, and waiting on them would hang the hook.
+# pass: the first line that carries a field answers for it. awk keeps that
+# first line of each field and drops every later one before the loop sees them,
+# so the loop turns three times at most. Unbounded, it cut one line off the
+# front of what was left on each turn, which is quadratic in bash 3.2: a payload
+# with thousands of lines carrying these keys held the hook for minutes, and
+# past the platform's deadline a startup lost its banner. A terminal on stdin is
+# a person running the hook by hand, and waiting on them would hang the hook.
 _felix_payload=""
 [ -t 0 ] || _felix_payload="$(cat 2>/dev/null)"
 _felix_source=""; _felix_session=""; _felix_transcript=""; _felix_fields=""
@@ -131,6 +155,10 @@ while [ -n "$_felix_fields" ]; do
   case "$_felix_fields" in *$'\n'*) _felix_fields="${_felix_fields#*$'\n'}" ;; *) _felix_fields="" ;; esac
 done
 
+# Stand where the session stands before anything reads $PWD: Claude Desktop starts
+# this hook in the main checkout (lib/resolve.sh).
+felix_hook_enter "$_felix_payload" "$FELIX_HOME_DIR"
+
 # Resolved here, not beside the bail it feeds further down, because the record
 # needs a project and has to be written before a resume leaves. A broken
 # binding resolves to nothing, so it records nothing and is still reported
@@ -145,6 +173,14 @@ PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
 # that could print would break the silence the exit below exists to keep.
 [ -n "$PROJ" ] && felix_lifecycle_session "$PROJ" "$PWD" \
   "$_felix_source" "$_felix_session" "$_felix_transcript" >/dev/null 2>&1
+
+# Join the split rows an engine before #267 left in mistakes.log (U44). Here
+# because every install passes through a session start whatever its gate did
+# last, and a gate that passes writes no row: a stuck install is healed by
+# this even if its gate never fails again. Above the resume exit, so a resumed
+# session heals too. A well-formed log is read and left alone, bytes and mtime.
+# Silent, and redirected besides: a byte printed here breaks the hook's JSON.
+[ -n "$PROJ" ] && felix_mem_mistakes_heal "$PROJ" >/dev/null 2>&1
 
 # The record sits above this line, so a resume is recorded before it leaves.
 [ "$_felix_source" = "resume" ] && [ -z "${COPILOT_CLI:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] \
@@ -169,12 +205,9 @@ PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
 #
 # Ordered before the bail below, and that ordering is the whole fix: a broken
 # binding presents here as an empty $PROJ, which is exactly what the next line
-# reads as "not governed, say nothing".
-#
-# An ABSENT binding still means ungoverned and still exits silently. That is
-# the half that must not regress — Felix has to stay usable in a repository it
-# does not govern — and it is what "nothing due" and "nothing is being checked"
-# must not render identically means here.
+# reads as "not governed, say nothing". An ABSENT binding still means
+# ungoverned and still exits silently: Felix has to stay usable in a repository
+# it does not govern.
 broken="$(felix_binding_broken "$PWD" "$FELIX_HOME_DIR")"
 if [ -n "$broken" ]; then
   felix_unresolved_log "$broken" "$PWD"
@@ -186,9 +219,14 @@ fi
 [ -n "$PROJ" ] || exit 0
 
 project="$(basename "$PROJ")"
-gate="$(felix_json_str "${PROJ}/project.json" gate)"
+# A project.json that cannot be read declares nothing because it says nothing,
+# which is not "none declared": the stop cannot judge either (lib/hook-faults.sh).
+gate=""; _gate_unread=""
+if [ -f "${PROJ}/project.json" ] && [ -r "${PROJ}/project.json" ]; then gate="$(felix_json_str "${PROJ}/project.json" gate)"; else _gate_unread=1; fi
 
-if [ -n "$gate" ]; then
+if [ -n "$_gate_unread" ]; then
+  gate_line="Gate: unknown (${PROJ}/project.json cannot be read, so no gate can be named and nothing is being checked)"
+elif [ -n "$gate" ]; then
   gate_line="Gate: ${ENGINE_DIR}/felix gate"
 else
   gate_line="Gate: none declared (set \"gate\" in ${PROJ}/project.json)"
@@ -205,19 +243,47 @@ fi
 # are appended, so `stack plan` and `setup` begin telling the truth. Installing
 # remains a separate, deliberate act, and high-risk rows are refused by every
 # flag regardless. The plan changes; the machine does not.
-adopted=""
+adopted=""; not_adopted=""; partly=""
 _repo_root="$(felix_repo_root "$PWD")"
 _slug="$(felix_repo_slug "$_repo_root" 2>/dev/null || true)"
-while IFS= read -r _cap; do
+# Unattended work runs only in the project's own checkout (lib/own.sh): 0 here, and 2 until it answers.
+_own=2; _FELIX_OWN_WITHHELD=""; command -v felix_checkout_is_own >/dev/null 2>&1 && { felix_checkout_is_own "$PROJ" "$_repo_root" 2>/dev/null; _own=$?; }
+# Until 2026-10-01 a declared list that could not be read was an empty one, so
+# felix_undeclared called every detected surface undeclared and this adopted each
+# of them, capabilities that may already have been declared, into manifests
+# nobody had asked it to change. Now what it printed is believed only when it
+# came back whole, which felix_capture says, since a substitution can end with
+# nothing printed and status 0 when its fork fails. Anything else adopts nothing
+# and says drift was not checked, which is not the same sentence as there being
+# none. The loop walks the string in this shell, where a here-document is a
+# temporary file on bash 3.2 and one that cannot be written ends the loop before
+# its first capability, so a drift that was read would be said to be none.
+_drift_unread=0; _undeclared=""
+felix_capture _undeclared felix_undeclared "$_repo_root" "$PROJ" 2>/dev/null || _drift_unread=1
+[ -z "$_undeclared" ] || felix_own_gate adoption "$_own" 2>/dev/null || _undeclared=""
+_nl=$'\n'; _rest="$_undeclared"
+while [ -n "$_rest" ]; do
+  _cap="${_rest%%$_nl*}"
+  if [ "$_cap" = "$_rest" ]; then _rest=""; else _rest="${_rest#*$_nl}"; fi
   [ -n "$_cap" ] || continue
-  if _counts="$(felix_adopt_capability "$PROJ" "$_cap" "${ENGINE_DIR}/templates" "$_slug" 2>/dev/null)"; then
-    adopted="$adopted $_cap(${_counts// /+})"
-  fi
-done <<EOF
-$(felix_undeclared "$_repo_root" "$PROJ" 2>/dev/null)
-EOF
+  # 2026-10-01: 2 is a list adopt could not read or write, so nothing was
+  # recorded or written. It is said below rather than dropped like 1, or a
+  # surface on a read-only list would go unmentioned every session.
+  _counts="$(felix_adopt_capability "$PROJ" "$_cap" "${ENGINE_DIR}/templates" "$_slug" 2>/dev/null)"
+  case $? in
+    0) adopted="$adopted $_cap(${_counts// /+})" ;;
+    2) not_adopted="$not_adopted $_cap" ;;
+    # Also 2026-10-01: 3 is recorded with a row it implies left unwritten.
+    # The reason went to the stderr dropped above, and the next session finds
+    # the capability declared and never writes the row, so it is said here.
+    3) adopted="$adopted $_cap(${_counts// /+})"; partly="$partly $_cap" ;;
+  esac
+done
 
-if [ -n "$adopted" ]; then
+if [ "$_drift_unread" -eq 1 ]; then
+  drift_line="
+Capability drift was not checked: the capabilities this project declares could not be read."
+elif [ -n "$adopted" ]; then
   drift_line="
 Adopted automatically, because the checkout grew them:${adopted}
 Each is capability(tooling-rows+human-steps) added to this project's manifests.
@@ -226,24 +292,21 @@ commit the project directory in Felix to make it durable."
 else
   drift_line=""
 fi
+if [ -n "$not_adopted" ]; then
+  drift_line="$drift_line
+Not adopted, because $PROJ/capabilities could not be read or written:${not_adopted}
+'felix adopt <capability>' says what is there."
+fi
+if [ -n "$partly" ]; then
+  drift_line="$drift_line
+Adopted, but not every row each implies could be written to $PROJ/stack.tsv or setup.tsv:${partly}
+Make both regular files Felix can write, delete each one's line from
+$PROJ/capabilities, and 'felix adopt <capability>' writes the rest."
+fi
 
 # Upkeep has no deadline, so it never happens, and then happens as a crisis.
-# One line, only when something is actually due.
-maint_line=""
-if [ -f "$PROJ/maintenance.tsv" ]; then
-  # Counted before the newlines are flattened. The badge below wants HOW MANY
-  # are due, and by the time this is one space-separated line `grep -c .` can
-  # only ever answer 1 — which is the same defect as the one being fixed,
-  # wearing a number instead of a zero.
-  _due_list="$(felix_maint_status "$PROJ" "$_repo_root" 2>/dev/null | grep '^due' | cut -f2)"
-  _due_n="$(printf '%s' "$_due_list" | grep -c . 2>/dev/null)"
-  case "$_due_n" in ''|*[!0-9]*) _due_n=0 ;; esac
-  _due="$(printf '%s' "$_due_list" | tr '\n' ' ')"
-  _due="${_due% }"
-  [ -n "$_due" ] && maint_line="
-Maintenance due: ${_due}
-Do them on one branch. See 'felix maintenance'."
-fi
+# One line, only when something is actually due, and whose it is (lib/waiting.sh).
+felix_start_maint "$PROJ" "$_repo_root"
 
 # The graph, every session, whether or not the prompt happened to say
 # "architecture".
@@ -268,21 +331,26 @@ ${_gl}"
 # which is the only reason it may be called from here — a hook may not call a
 # model. The documents are a different job and stay the maintenance routine's.
 #
-# Only when it is behind, so an ordinary session on a current graph spawns
-# nothing. Locked, backgrounded and best-effort: a refresh that fails leaves
-# the previous graph in place, and graphify replaces graph.json by atomic
-# rename, so a session querying it mid-refresh reads the old file or the new
-# one and never half of either. Checked in the source rather than assumed.
-case "${_gl}" in
-  *"behind this checkout"*) felix_graph_refresh_bg "$_repo_root" 2>/dev/null || true ;;
-esac
+# Only when it is due (felix_graph_refresh_due, the session end's test): behind,
+# and not already refreshed at this HEAD, so an ordinary session on a current
+# graph spawns nothing, and a commit that changed no code's shape, which
+# graphify answers by writing nothing, is not refreshed again at every start.
+# Due is asked before the gate, because the gate's withheld line is only for
+# work that was due. Locked, backgrounded and best-effort: a refresh that fails
+# leaves the previous graph in place, and graphify replaces graph.json by
+# atomic rename, so a session querying it mid-refresh reads the old file or the
+# new one and never half of either. Checked in the source rather than assumed.
+command -v graphify >/dev/null 2>&1 && felix_graph_refresh_due "$_repo_root" 2>/dev/null \
+  && felix_own_gate "graph refresh" "$_own" 2>/dev/null \
+  && felix_graph_refresh_bg "$_repo_root" 2>/dev/null
 
 # Done, not reported. A duplicate script is not a decision somebody should be
 # handed at the start of their day; it is tidying, and Felix holds the copy that
 # matters. Every check lives in felix_tidy_safe and the project must have opted
 # in, so silence here is the normal case rather than a failure.
-tidy_line=""
-_removed="$(felix_tidy_safe "$PROJ" "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null | tr '\n' ' ')"
+tidy_line=""; _removed=""
+if [ "$_own" -eq 0 ]; then _removed="$(felix_tidy_safe "$PROJ" "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null | tr '\n' ' ')"
+elif felix_own_tidy_due "$PROJ" "$_repo_root" 2>/dev/null; then felix_own_gate tidying "$_own" 2>/dev/null; fi
 _removed="${_removed% }"
 [ -n "$_removed" ] && tidy_line="
 Removed, as copies Felix already holds: ${_removed}
@@ -356,21 +424,10 @@ fi
 # and left unacted is an answer — a host-provided server nobody should declare
 # would otherwise be proposed at every session start forever, and a signal that
 # repeats becomes wallpaper. The full set stays in 'felix stack reconcile'.
-# A backup that has silently stopped looks exactly like one that ran: every
-# pulse refusal is honest and prints into a log nobody opens. This is the one
-# number that makes the stop observable, on the surface a person reads.
-backup_line=""
-_bage="$(felix_pulse_backup_age "$FELIX_HOME_DIR" 2>/dev/null)"
-if [ "${_bage:-}" = "never" ]; then
-  backup_line="
-The pulse has run and never once got memory off this disk. Whatever it is
-refusing, it is in 'felix pulse' — and until it resolves, every lesson this
-project has paid for exists in one place."
-elif [ -n "${_bage:-}" ] && [ "$_bage" -ge "${FELIX_BACKUP_STALE_DAYS:-3}" ] 2>/dev/null; then
-  backup_line="
-Memory last reached the remote ${_bage} days ago. Every lesson since then lives
-on this disk only. See 'felix pulse' — it says what it refused and why."
-fi
+# The pulse's banners (a backup that has silently stopped looks exactly like one
+# that ran), what its last run left out of memory, and what a cloud session
+# loses: lib/pulse-stage.sh.
+backup_line="$(felix_pulse_session_lines "$FELIX_HOME_DIR" 2>/dev/null)"
 
 reconcile_line=""
 if [ -f "$_mem/ledger.tsv" ] || [ -d "$_mem/ledger.d" ]; then
@@ -509,13 +566,24 @@ ordinary session again. felix overnight --report, then --end to close it out.
   fi
 fi
 
+# What waits with nobody told: a paused lander, pull requests it has aged, decisions
+# deferred overnight, calls PreToolUse could not judge (lib/waiting.sh). The land row's
+# notice is read first: when it reads paused, its badge below names the pause, so the
+# waits leave it out and a paused lander is said once. Both are given the home: outside it
+# no paused lander is named, and a job installed there reads not-home (wave-1-combine C6, C7).
+_fl="$(felix_land_notice "$PROJ" "$FELIX_HOME_DIR" 2>/dev/null)"   # paused, not-loaded, not-ticking or not-home, as felix status's land row reads it
+felix_start_waits "$PROJ" "$project" "${_fl%%$'\t'*}" "$FELIX_HOME_DIR"
+lane_line=""; _felix_lane_tok=""
+command -v felix_start_lane >/dev/null 2>&1 && felix_start_lane "$PROJ" "$_repo_root" >/dev/null 2>&1
+[ -z "${lane_line}${_felix_lane_tok}" ] || felix_own_gate "lane item" "$_own" 2>/dev/null || { lane_line=""; _felix_lane_tok=""; }
+
 context="Felix governs this session.
 
 Project: ${project}
 Constitution: ${PROJ}/CLAUDE.md
 ${gate_line}
 Memory: ${_mem}/
-${overnight_line}${drift_line}${maint_line}${graph_line}${tidy_line}${retire_line}${reconcile_line}${backup_line}
+${overnight_line}${waits_line}${lane_line:-}${drift_line}${maint_line}${graph_line}${tidy_line}${retire_line}${reconcile_line}${backup_line}
 
 ${read_lines}
 
@@ -531,9 +599,11 @@ start, and run that tier's gate."
 # appended block after that never runs. This one did not, for a whole version.
 _felix_found=""
 if [ -f "$PROJ/routes.tsv" ] && command -v claude >/dev/null 2>&1; then
-  if felix_discover_stale "$PROJ" "$FELIX_HOME_DIR"; then
-    felix_discover_refresh_bg "$PROJ" "$FELIX_HOME_DIR" "${SCRIPT_DIR}/../felix"
-  fi
+  # What the last background refresh did is read before another starts, and said
+  # once per outcome and detail (lib/discover-refresh.sh).
+  _dst=fresh; felix_discover_stale "$PROJ" "$FELIX_HOME_DIR" && _dst=stale
+  _dn="$(felix_discover_notice "$PROJ" "$FELIX_HOME_DIR" "$_dst")"; [ -z "$_dn" ] || context="$context"$'\n\n'"$_dn"
+  [ "$_dst" = stale ] && felix_discover_refresh_bg "$PROJ" "$FELIX_HOME_DIR" "${SCRIPT_DIR}/../felix"
   _new="$(felix_discover_unseen "$PROJ" "$FELIX_HOME_DIR" | head -4 | tr '\n' ' ')"
   if [ -n "$_new" ]; then
     _felix_found="$_new"
@@ -547,40 +617,80 @@ felix discover --inspect shows what each one actually ships."
   fi
 fi
 
+# ------------------------------------------------------------- reach ----
+# Whether the servers this project declares connect, read in the background and
+# kept for the pulse and felix status. Detached, silent and best effort: it
+# starts one claude command after this hook has gone and writes a cache that
+# nothing in this hook reads. That command is run from an empty directory of its
+# own and never from this checkout: `claude mcp list` starts the servers it
+# lists, a project-scoped one included once it is approved, and this hook runs in
+# repositories nobody has vetted. The directory is made only under a TMPDIR that
+# no one else can write into, and with none the command is not run (lib/reach-read.sh
+# says why). Nothing here waits on
+# it, adds a word to the session, or changes what any later decision reads, which
+# is how invariant 2 holds. A fresh cache starts nothing; one 24 hours old or
+# more is read again, and a read that fails leaves the old cache.
+if [ -n "$PROJ" ] && [ -f "$PROJ/stack.tsv" ] && command -v claude >/dev/null 2>&1 \
+   && command -v felix_reach_due >/dev/null 2>&1 \
+   && felix_reach_due "$PROJ" "$FELIX_HOME_DIR"; then
+  felix_reach_refresh_bg "$PROJ" "$FELIX_HOME_DIR"
+fi
+
 # ------------------------------------------------------- commissioning ----
-# Offline, every time: the record phase over any provider answer file (file
-# reads, no cli, no network), receipt validity from the two hashes, and one
-# paragraph naming what a session still owes — spoken ONCE per topology, so
-# it fires once per addressee and an answer consumes it. Nothing here runs a
-# check, an instrument or an installer; that is felix commission's, and a
-# person's to invoke.
-#
-# Unless a person has said otherwise, in writing, over this exact table. The
-# `commission` grant is the one thing that moves the line quoted above, and it
-# is absent by default: felix_commission_resume_bg returns without doing
-# anything unless projects/<p>/autonomy names it AND the stamp taken when it
-# was granted still matches commissioning.tsv. Two of that table's columns are
-# eval'd, so a grant that outlived the table it was read against would be
-# consent to something nobody read.
+# Offline, every time: the record phase over any provider answer file (file reads, no cli, no
+# network), receipt validity from the two hashes, and one paragraph naming what a session still
+# owes, spoken ONCE per topology. Nothing here runs a check, an instrument or an installer; that is
+# felix commission's. The detached resume is the one exception (lib/own.sh): under a current
+# `commission` grant stamped over this exact table (two columns are eval'd), in the project's own checkout.
 if [ -f "$PROJ/commissioning.tsv" ] && command -v felix_commission_rows >/dev/null 2>&1; then
   # Detached, and silent when ungranted — which is every project until a person
   # types the command.
   command -v felix_commission_resume_bg >/dev/null 2>&1 \
     && felix_commission_resume_bg "$PROJ" "$FELIX_HOME_DIR" "${SCRIPT_DIR}/../felix" 2>/dev/null
-  _cm_topo="$(felix_commission_topology "$PROJ" "$_repo_root" 2>/dev/null)"
+  # Captured with felix_capture, since a topology that could not be computed is
+  # not an empty one: the all-clear below and its seen marker are keyed to it.
+  # Each row's state computes its own topology to read its answer file against,
+  # so this one decides nothing about a row. Until 2026-10-01 it was an empty
+  # string here, which only the all-clear's test told from a topology. One that
+  # could not be computed leaves it empty, and the all-clear is refused on
+  # that. Why a row's answer could not be read is the row's own detail below,
+  # and not a sentence of this hook's keyed to this computation: until
+  # 2026-10-08 there was one, and under a transient failure the two
+  # computations of the topology could disagree.
+  _cm_topo=""
+  felix_capture _cm_topo felix_commission_topology "$PROJ" "$_repo_root" 2>/dev/null || _cm_topo=""
   _cm_seen="$FELIX_HOME_DIR/state/commission/$(basename "$PROJ").seen"
-  _cm_await=""; _cm_ans=0
+  _cm_await=""; _cm_ans=0; _cm_unread=""
   while IFS=$'\t' read -r _cn _cg _ci _cw _ca _cc _cs; do
     [ -n "$_cn" ] || continue
     case "$_ca" in provider:*) ;; *) continue ;; esac
-    _cst="$(felix_commission_provider_state "$PROJ" "$_repo_root" "$_cn" 2>/dev/null | cut -f1)"
-    if [ "$_cst" = "answered" ]; then
-      _k="$(felix_commission_record_provider "$PROJ" "$_repo_root" "$_cn" "$_ca" "$(felix_tree_id "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null)" "$(felix_commission_policy_version "$PROJ" 2>/dev/null)" 2>/dev/null)"
-      _cm_ans=$((_cm_ans + ${_k:-0}))
-    else
-      _cm_await="$_cm_await
-  $_cn ($_cst): $(felix_commission_request_path "$PROJ" "$_cn")"
-    fi
+    # The whole state line, since its detail is what says why a row is unknown;
+    # until 2026-10-08 only the state was kept.
+    _csl="$(felix_commission_provider_state "$PROJ" "$_repo_root" "$_cn" 2>/dev/null)"
+    _cst="${_csl%%$'\t'*}"
+    _csd=""
+    case "$_csl" in *$'\t'*) _csd="${_csl#*$'\t'}" ;; esac
+    # Only a state that says an answer is missing, for another topology, or
+    # unfinished is owed. Until 2026-10-01 every state but answered was, so a row
+    # whose state was unknown, or whose state call failed and printed nothing,
+    # sent a session to redo an answer that may be whole. Those rows are their
+    # own line below: neither owed nor recorded.
+    case "$_cst" in
+      answered)
+        _k="$(felix_commission_record_provider "$PROJ" "$_repo_root" "$_cn" "$_ca" "$(felix_tree_id "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null)" "$(felix_commission_policy_version "$PROJ" 2>/dev/null)" 2>/dev/null)"
+        _cm_ans=$((_cm_ans + ${_k:-0})) ;;
+      awaiting|stale|partial)
+        _cm_await="$_cm_await
+  $_cn ($_cst): $(felix_commission_request_path "$PROJ" "$_cn")" ;;
+      *)
+        if [ "$_cst" = unknown ] && [ -n "$_csd" ]; then
+          _cm_unread="$_cm_unread
+  $_cn (unknown: $_csd)"
+        else
+          _cm_unread="$_cm_unread
+  $_cn (${_cst:-no state})"
+        fi ;;
+    esac
   done <<EOF
 $(felix_commission_rows "$PROJ" 2>/dev/null)
 EOF
@@ -597,19 +707,30 @@ EOF
   # that stops it and is entirely in a session's hands; the informational
   # line, which nobody has to act on, is still said once. Measured on this
   # machine, not reasoned: state/commission/felix.seen already held the
-  # current topology while all six requests sat unanswered.
+  # current topology while all six requests sat unanswered. A row whose answer
+  # could not be read holds it back too, as it did when it was counted among
+  # the owed: an all-clear spent over a row nobody could read would be said
+  # once and never again, on the strength of an answer that may not be whole.
   if [ -n "$_cm_await" ]; then
     context="$context
 
 Commissioning: receipt ${_cm_valid:-unknown}. A session still owes these — run the
 skill each request names, write the answer file it names, then felix commission:${_cm_await}"
-  elif [ -n "$_cm_topo" ] && [ -n "$_cm_valid" ] && ! grep -qxF "$_cm_topo" "$_cm_seen" 2>/dev/null; then
+  elif [ -n "$_cm_topo" ] && [ -n "$_cm_valid" ] && [ -z "$_cm_unread" ] && ! grep -qxF "$_cm_topo" "$_cm_seen" 2>/dev/null; then
     context="$context
 
 Commissioning: receipt ${_cm_valid}."
     # Spent even on a summary session, which cannot be told apart here; see the
     # reconcile line above.
     mkdir -p "$(dirname "$_cm_seen")" 2>/dev/null && printf '%s\n' "$_cm_topo" >> "$_cm_seen" 2>/dev/null
+  fi
+  # Said at every session start while it holds, not once per topology: like the
+  # owed paragraph it is not an all-clear, and a row nobody could read is not
+  # one a first session's hearing of it discharges.
+  if [ -n "$_cm_unread" ]; then
+    context="$context
+
+Commissioning: whether these answers are whole could not be read, so they are neither owed nor recorded; felix commission --status reads them again:${_cm_unread}"
   fi
   [ "$_cm_ans" -gt 0 ] && context="$context
 
@@ -630,10 +751,19 @@ fi
 # been sitting ~95 lines above under a different name since the badge was
 # written.
 _felix_due="${_due_n:-0}"
-case "$_felix_due" in ''|*[!0-9]*) _felix_due=0 ;; esac
+case "$_felix_due" in ''|*[!0123456789]*) _felix_due=0 ;; esac
 _felix_line="Felix: $(basename "$PROJ")"
-[ "${_felix_due:-0}" -gt 0 ] && _felix_line="$_felix_line · ${_felix_due} due"
+# No gate, or (b07) a project.json that cannot be read: then whether a gate is declared is not known, and the line says that instead.
+if [ -n "$_gate_unread" ]; then _felix_line="$_felix_line · gate unknown"
+elif [ -z "$gate" ]; then _felix_line="$_felix_line · no gate, stops unchecked"; fi   # the Stop hook checks no stop without one
+[ "${_felix_due:-0}" -gt 0 ] && _felix_line="$_felix_line · ${_felix_due} due${_yours:+ (yours: $_yours)}"
+if [ -n "$_fl" ]; then _felix_line="$_felix_line · landing ${_fl%%$'\t'*}"; context="$context"$'\n'"Landing on green is ${_fl%%$'\t'*}: ${_fl#*$'\t'}"
+  [ "${_fl%%$'\t'*}" != paused ] || context="$context"$'\n'"felix land --resume ends the pause."; fi
 [ -n "$_felix_found" ] && _felix_line="$_felix_line · new tooling found"
+_felix_line="${_felix_line}${_felix_wait_toks:-}${_felix_lane_tok:-}"
+
+# The one line, last paragraph, when unattended work was due and withheld, then (b05, R6) the lander's alert that waits for the founder (lib/own.sh).
+_ow="$(felix_own_withheld_line "$PROJ" "$_repo_root" "$FELIX_HOME_DIR" 2>/dev/null; felix_land_alert_line "$_mem" 2>/dev/null)"; [ -z "$_ow" ] || context="$context"$'\n'"$_ow"
 
 _felix_emit "$_felix_line" "$context"
 

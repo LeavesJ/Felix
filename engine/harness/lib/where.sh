@@ -214,7 +214,7 @@ EOF
 # The command with the given raw byte spans blanked to spaces.
 _felix_where_blank() {
   local s="$1" spans="$2" out="" pos=0 a b pad sorted
-  sorted="$(printf '%s\n' $spans | sort -t, -k1,1n -u)"
+  sorted="$(printf '%s\n' $spans | LC_ALL=C sort -t, -k1,1n -u)"
   while IFS=, read -r a b; do
     [ -n "$a" ] && [ -n "$b" ] || continue
     [ "$a" -ge "$pos" ] || continue
@@ -245,8 +245,14 @@ felix_where_lifts() {
   fi
   _felix_where_ident "$gdir" || { _FELIX_WHERE_WHY="the governed checkout could not be found"; return 1; }
   start="$(cd -P "$start" 2>/dev/null && pwd -P)" || start="$_FW_GTOP"
+  # The CDPATH the session's commands run under is the caller's. Every entry
+  # point records it in _FELIX_CALLER_CDPATH and then removes CDPATH from its
+  # own environment (engine/harness/felix, 2026-10-08), so reading CDPATH here
+  # would always say unset. A caller that sources this library directly, and
+  # records nothing, is read by its own CDPATH as before.
+  local cdp="${_FELIX_CALLER_CDPATH-${CDPATH-}}"
   out="$(printf '%s' "$subj" | LC_ALL=C awk -v CWD0="$start" -v HOMEV="$HOME" -v TMPV="${TMPDIR:-}" \
-        -v CDP="${CDPATH:+1}" -v GITENV="${GIT_DIR:+1}${GIT_WORK_TREE:+1}" \
+        -v CDP="${cdp:+1}" -v GITENV="${GIT_DIR:+1}${GIT_WORK_TREE:+1}" \
         "$_FELIX_WHERE_READ" 2>/dev/null)" || return 1
   case "$out" in E|*$'\n'E) ;; *) return 1 ;; esac
   while IFS= read -r line; do

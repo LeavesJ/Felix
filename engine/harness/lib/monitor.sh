@@ -52,13 +52,29 @@ _felix_mon_prompt() {
 # only that these logs hold whatever a session said — routes.log here is
 # "Non-ISO extended-ASCII text" — and awk counts lines without any binary-file
 # heuristic in the way, so it does not depend on which grep is on PATH.
+#
+# An optional second argument names a reader that prints the file's rows, for
+# a log whose lines are not all rows. mistakes.log is the one: an engine before
+# #267 wrote one failure on an unborn HEAD as two lines, and "gate failures"
+# counted each of them twice (U42). felix_mem_mistake_rows joins them. With
+# no reader, the file is counted exactly as before.
 _felix_mon_count() {
+  local n
   [ -f "$1" ] || { printf 0; return 0; }
+  if [ -n "${2:-}" ]; then
+    n="$("$2" "$1" | LC_ALL=C awk '$0 != "" { n++ } END { print n + 0 }' 2>/dev/null)" || n=""
+    printf '%s' "${n:-0}"
+    return 0
+  fi
   LC_ALL=C awk '$0 != "" { n++ } END { print n + 0 }' "$1" 2>/dev/null || printf 0
 }
 
+# The same optional reader, for the same reason: the window is taken from the
+# rows it prints rather than from the file's lines, so a split row is one
+# entry with its commit, not two entries with a column missing from each.
+# routes.log, verification.log and says.log pass none and are read as before.
 _felix_mon_rows() {
-  local file="$1" limit="$2" fmt="$3" first=1 line
+  local file="$1" limit="$2" fmt="$3" reader="${4:-}" first=1 line
   printf '['
   [ -f "$file" ] || { printf ']'; return 0; }
   while IFS= read -r line; do
@@ -67,9 +83,13 @@ _felix_mon_rows() {
     first=0
     "$fmt" "$line"
   done <<EOF
-$(tail -n "$limit" "$file" | sed '1!G;h;$!d')
+$(_felix_mon_tail "$file" "$limit" "$reader" | sed '1!G;h;$!d')
 EOF
   printf ']'
+}
+
+_felix_mon_tail() {
+  if [ -n "${3:-}" ]; then "$3" "$1" | tail -n "$2"; else tail -n "$2" "$1"; fi
 }
 
 _felix_mon_route_row() {
@@ -126,41 +146,70 @@ _felix_mon_mistake_row() {
     "$(_felix_json_esc "$(printf '%s' "$1" | cut -f4)")"
 }
 
-_felix_mon_json_list() {
-  local first=1 x
-  printf '['
-  while IFS= read -r x; do
-    [ -n "$x" ] || continue
-    [ "$first" -eq 1 ] || printf ','
-    first=0
-    printf '"%s"' "$(_felix_json_esc "$x")"
-  done
-  printf ']'
-}
-
 _felix_mon_project() {
   local proj="$1" home="$2" name gate rec
   name="$(basename "$proj")"
-  gate="$(felix_json_str "$proj/project.json" gate)"
+  # A project.json that cannot be read is {"unknown":WHY}, not the empty string
+  # of a project that declares no gate (the same rule as capabilities below).
+  printf '{"name":"%s",' "$(_felix_json_esc "$name")"
+  if [ -f "$proj/project.json" ] && [ -r "$proj/project.json" ]; then
+    gate="$(felix_json_str "$proj/project.json" gate)"
+    printf '"gate":"%s"' "$(_felix_json_esc "$gate")"
+  else
+    printf '"gate":{"unknown":"%s"}' "$(_felix_json_esc "$proj/project.json cannot be read, so no gate is known")"
+  fi
 
-  printf '{"name":"%s","gate":"%s"' "$(_felix_json_esc "$name")" "$(_felix_json_esc "$gate")"
-
+  # 2026-10-01: an array is a list that was read, and a list that was not is
+  # {"unknown":WHY}, which the page says as not known. Until then this read the
+  # file itself with `-f` and grep, so a link whose target was gone, a
+  # directory, a pipe or a file grep could not read was [], a project that
+  # declares nothing, and comment lines were capabilities. Nobody saw it,
+  # because the page had never read this member: only its fallback project
+  # named it, until 2026-08-10. Dropping it, as the plugins array was dropped,
+  # would have left the page unable to say anything wrong, and would also have
+  # left the capability accounting this file's header promises behind glass.
+  # So the memory panel counts it. It is not [] or null for an unread list,
+  # because the page's `p.x||[]` idiom would turn either back into zero.
+  # felix_declared_into is the read: it guards the substitution that comes back
+  # empty with status 0 under EAGAIN, and it is unread when not defined, since
+  # this file does not source detect.sh. It hands the list back in a variable,
+  # which is walked here by parameter expansion, so nothing but each name's
+  # escape forks.
   printf ',"capabilities":'
-  if [ -f "$proj/capabilities" ]; then
-    grep -v '^$' "$proj/capabilities" | _felix_mon_json_list
-  else printf '[]'; fi
+  local caps cap nl=$'\n' cfirst=1
+  if felix_declared_into caps "$proj" 2>/dev/null; then
+    printf '['
+    while [ -n "$caps" ]; do
+      cap="${caps%%"$nl"*}"
+      case "$caps" in *"$nl"*) caps="${caps#*"$nl"}" ;; *) caps="" ;; esac
+      [ -n "$cap" ] || continue
+      [ "$cfirst" -eq 1 ] || printf ','
+      cfirst=0
+      printf '"%s"' "$(_felix_json_esc "$cap")"
+    done
+    printf ']'
+  else
+    printf '{"unknown":"the capabilities this project declares could not be read"}'
+  fi
 
   printf ',"routes":['
   local first=1 n k pr pl
-  while IFS=$'\t' read -r n k pr pl; do
-    case "$n" in ''|'#'*) continue ;; esac
-    [ -n "${pr:-}" ] || continue
-    [ "$first" -eq 1 ] || printf ','
-    first=0
-    printf '{"name":"%s","keywords":"%s","profile":"%s","play":"%s"}' \
-      "$(_felix_json_esc "$n")" "$(_felix_json_esc "$k")" \
-      "$(_felix_json_esc "$pr")" "$(_felix_json_esc "${pl:--}")"
-  done < "${proj}/routes.tsv" 2>/dev/null
+  # Both tables are read only as regular files, and both keep a last row that
+  # has no newline (2026-10-01). Opened unconditionally, a pipe at either path
+  # held the page's whole render open for a writer that never came; and
+  # `read` returns 1 on an unended last row with its fields filled, so the
+  # row a person wrote last was missing from the page.
+  if [ -f "${proj}/routes.tsv" ]; then
+    while IFS=$'\t' read -r n k pr pl || [ -n "${n:-}" ]; do
+      case "$n" in ''|'#'*) continue ;; esac
+      [ -n "${pr:-}" ] || continue
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      printf '{"name":"%s","keywords":"%s","profile":"%s","play":"%s"}' \
+        "$(_felix_json_esc "$n")" "$(_felix_json_esc "$k")" \
+        "$(_felix_json_esc "$pr")" "$(_felix_json_esc "${pl:--}")"
+    done < "${proj}/routes.tsv" 2>/dev/null
+  fi
   printf ']'
 
   printf ',"stack":['
@@ -170,14 +219,16 @@ _felix_mon_project() {
   # rather than dropping it, so the payload would carry "llm\tOBSERVED" as a
   # capability — valid JSON saying something untrue.
   local kind sname src risk cap ground
-  while IFS=$'\t' read -r kind sname src risk cap ground; do
-    case "$kind" in ''|'#'*) continue ;; esac
-    [ "$first" -eq 1 ] || printf ','
-    first=0
-    printf '{"kind":"%s","name":"%s","risk":"%s","capability":"%s"}' \
-      "$(_felix_json_esc "$kind")" "$(_felix_json_esc "$sname")" \
-      "$(_felix_json_esc "${risk:-}")" "$(_felix_json_esc "${cap:-always}")"
-  done < "${proj}/stack.tsv" 2>/dev/null
+  if [ -f "${proj}/stack.tsv" ]; then
+    while IFS=$'\t' read -r kind sname src risk cap ground || [ -n "${kind:-}" ]; do
+      case "$kind" in ''|'#'*) continue ;; esac
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      printf '{"kind":"%s","name":"%s","risk":"%s","capability":"%s"}' \
+        "$(_felix_json_esc "$kind")" "$(_felix_json_esc "$sname")" \
+        "$(_felix_json_esc "${risk:-}")" "$(_felix_json_esc "${cap:-always}")"
+    done < "${proj}/stack.tsv" 2>/dev/null
+  fi
   printf ']'
 
   local _md; _md="$(felix_mem_dir "$proj")"
@@ -188,8 +239,8 @@ _felix_mon_project() {
   _felix_mon_rows "$_md/verification.log" 40 _felix_mon_verify_row
   printf ',"verifyLogTotal":%s' "$(_felix_mon_count "$_md/verification.log")"
   printf ',"mistakes":'
-  _felix_mon_rows "$_md/mistakes.log" 20 _felix_mon_mistake_row
-  printf ',"mistakesTotal":%s' "$(_felix_mon_count "$_md/mistakes.log")"
+  _felix_mon_rows "$_md/mistakes.log" 20 _felix_mon_mistake_row felix_mem_mistake_rows
+  printf ',"mistakesTotal":%s' "$(_felix_mon_count "$_md/mistakes.log" felix_mem_mistake_rows)"
   printf ',"says":'
   _felix_mon_rows "$_md/says.log" 60 _felix_mon_say_row
   printf ',"saysTotal":%s' "$(_felix_mon_count "$_md/says.log")"
@@ -235,6 +286,12 @@ EOF
 # A ledger written before that column cannot answer this question, and counting
 # nothing would render as perfect compliance — the most flattering possible
 # reading of an absence, which is the one to refuse.
+#
+# A session with any row whose CALLS is `-` prints no line, whatever its other
+# rows say, for the same reason. An incomplete PostToolUse record folds every
+# row nothing reached as `-` and keeps the counts of the rows it did see, so
+# dropping the `-` rows one at a time leaves only the followed ones, and the
+# session would read as followed in full. The figure covers complete sessions.
 felix_monitor_compliance() {
   local proj="$1"
   # Split, because `local a=$1 b=$a` expands every word before it assigns any of
@@ -242,7 +299,8 @@ felix_monitor_compliance() {
   local mem="$(felix_mem_dir "$proj")"
   command -v _felix_ledger_rows >/dev/null 2>&1 || return 0
   _felix_ledger_rows "$mem" | awk -F'\t' '
-    NF >= 6 && $6 != "" && $6 + 0 > 0 {
+    $5 == "-" { unk[$1 SUBSEP $2] = 1 }
+    NF >= 6 && $6 != "" && $5 != "-" && $6 + 0 > 0 {
       key = $1 SUBSEP $2
       if (!(key in seen)) { seen[key] = 1; order[++n] = key; sess[key] = $1; day[key] = $2 }
       named[key]++
@@ -251,6 +309,7 @@ felix_monitor_compliance() {
     END {
       for (i = 1; i <= n; i++) {
         k = order[i]
+        if (k in unk) continue
         printf "%s\t%s\t%s\t%s\t%s\n", sess[k], day[k], named[k],
                followed[k] + 0, named[k] - (followed[k] + 0)
       }
@@ -266,7 +325,10 @@ felix_monitor_json() {
   printf ',"projects":['
   for p in "$home"/projects/*/; do
     [ -d "$p" ] || continue
-    [ -f "${p}project.json" ] || continue
+    # A project whose project.json is gone or is not a file is still a project,
+    # and drops off the page only if nothing else says it is one; its gate is
+    # then said unknown (_felix_mon_project), not left out.
+    [ -e "${p}project.json" ] || [ -L "${p}project.json" ] || [ -f "${p}CLAUDE.md" ] || continue
     [ "$first" -eq 1 ] || printf ','
     first=0
     _felix_mon_project "${p%/}" "$home"
@@ -291,7 +353,10 @@ felix_monitor_render() {
   local tpl="$1" home="$2" out="$3" tmp
   [ -f "$tpl" ] || return 1
   mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
-  tmp="$(mktemp)" || return 1
+  # A template under $TMPDIR: a bare mktemp on macOS ignores TMPDIR, and the
+  # suite points TMPDIR at a fixture to count what is left there.
+  local tmpd="${TMPDIR:-/tmp}"
+  tmp="$(mktemp "${tmpd%/}/felix-monitor.XXXXXX")" || return 1
   felix_monitor_json "$home" > "$tmp" 2>/dev/null
   awk -v df="$tmp" '
     {

@@ -52,7 +52,7 @@ felix_lessons_for() {
     | tr -cs 'a-z0-9_-' '\n' \
     | grep -E '^.{4,}$' \
     | grep -vE '^(this|that|with|from|have|been|will|when|what|there|their|would|could|should|about|into|then|than|they|them|your|make|does|just|also|only|some|more|most|need|want|please|help|file|code|test|tests|change|changes|update|fix|fixes)$' \
-    | sort -u)"
+    | LC_ALL=C sort -u)"
   [ -n "$words" ] || return 0
 
   _felix_lessons_entries "$file" | while IFS= read -r entry; do
@@ -66,15 +66,44 @@ felix_lessons_for() {
 $words
 EOF
     [ "$score" -gt 0 ] && printf '%s\t%s\n' "$score" "$entry"
-  done | sort -rn | head -"$max" | cut -f2- | _felix_lessons_headline
+  done | LC_ALL=C sort -rn | head -"$max" | cut -f2- | _felix_lessons_headline
 }
 
 # A well-written lesson states itself in its first sentence and spends the rest
 # on evidence. Mounting the evidence every turn is how a helpful injection
 # becomes an ignored one, so only the claim is mounted; the file is one grep
 # away when the evidence is wanted.
+#
+# The claim of a lesson written by `felix lesson` is not in a bold span: that
+# writer puts `- **YYYY-MM-DD** text`, so the first bold span is the date alone,
+# and keeping only it mounted 171 of 220 recorded lessons as a bare date. When
+# the first span is exactly a date, the date is kept with the first sentence
+# after it: up to the first . ! or ? that is followed by a space or the end (so
+# 3.2 and lib/lessons.sh stay whole), taking a closing ** with the mark. Runs
+# of blanks are one space, so a sentence that crosses a line break is one line.
+# Any other first span (the L-numbered entries) is mounted alone, as before.
 _felix_lessons_headline() {
-  sed -E 's/^(- \*\*[^*]*\*\*).*/\1/' | cut -c1-240
+  LC_ALL=C awk '
+    function first_sentence(s,   i, j, n, c) {
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c != "." && c != "!" && c != "?") continue
+        j = i
+        if (substr(s, j + 1, 2) == "**") j += 2
+        if (j == n || substr(s, j + 1, 1) == " ") return substr(s, 1, j)
+      }
+      return s
+    }
+    match($0, /^- \*\*[0123456789][0123456789][0123456789][0123456789]-[0123456789][0123456789]-[0123456789][0123456789]\*\*/) {
+      d = substr($0, 1, RLENGTH); r = substr($0, RLENGTH + 1)
+      gsub(/[ \t]+/, " ", r); sub(/^ /, "", r)
+      r = first_sentence(r)
+      print (r == "" ? d : d " " r); next
+    }
+    match($0, /^- \*\*[^*]*\*\*/) { print substr($0, 1, RLENGTH); next }
+    { print }
+  ' | cut -c1-240
 }
 
 # What the session is about, without asking: the prompt, what is already changed,

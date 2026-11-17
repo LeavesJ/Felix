@@ -1,0 +1,120 @@
+#!/bin/bash
+# The lock the door runs after it keeps a statement: this login's screen, locked, and read back as locked.
+#
+#   lock-macos            lock this login's console session; exit 0 once it reads locked, 1 when it does not
+#   lock-macos --status   print locked (exit 0), not locked (exit 1) or unknown (exit 3); change nothing
+#
+#   exit 2  usage, or a system that is not macOS
+#
+# Trust-plane step 4, stage 1, the setup slice (0.49.351; L1 to L6 of its spec), for the `lock` row of
+# authority.conf: the door reads exit 0 as locked (slice 1, D10). It runs as the authority's login, through the
+# launcher authority-engine writes (HOME/.felix/bin/lock).
+#
+# EXIT 0 RESTS ON THE READING AND ON NOTHING ELSE. The call that locks is a private one of macOS
+# (SACLockScreenImmediate in login.framework); a call that returns has not locked anything, and a later macOS
+# may drop it or change what it does. So the lock is called, and then the console is read again: exit 0 only
+# when this login's sessions read locked within 5 s.
+#
+# THE READING (L3). The console sessions are IOConsoleUsers of `ioreg -n Root -d1 -a`, read with plutil. A
+# session is this login's when its kCGSSessionUserIDKey is this process's uid. Locked: at least one session,
+# and each has CGSSessionScreenIsLocked true or kCGSSessionOnConsoleKey false (a session switched out asks for
+# its password before it is used again). Not locked: one is on the console without CGSSessionScreenIsLocked
+# true. Unknown: no session of this login is listed, the list cannot be read, or a session says neither.
+#
+# NOT READ: another login's sessions, a screen saver's own delay (sysadminctl reads it; this does not change
+# it), and what macOS keeps apart between two logins. It makes and changes no login, key or setting. Tests
+# never run it with no argument: that locks the screen of whoever is at the Mac. Bash 3.2.
+set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# L2. Every program by its absolute path; PATH and the locale for what those run.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; LC_ALL=C; export PATH LC_ALL
+unset BASH_ENV ENV _FELIX_CALLER_CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix. This
+# program runs no git; every executable of the engine carries the pin (part 1500).
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+# L1. Read before the arguments: off macOS, every call is the same refusal. A uname that cannot run is no macOS.
+[ "$( { /usr/bin/uname -s || /bin/uname -s; } 2>/dev/null)" = Darwin ] || { echo "lock-macos: not macOS" >&2; exit 2; }
+case "$#:${1:-}" in
+  0:) mode=lock ;;
+  1:--status) mode=status ;;
+  *) echo "usage: lock-macos [--status]" >&2; exit 2 ;;
+esac
+
+# L3. Prints locked, not locked or unknown, from one reading of the console sessions.
+read_console() {
+  local x n i me u on lk mine=0 open=0 odd=0
+  me="$(/usr/bin/id -u 2>/dev/null)"
+  case "$me" in ""|*[!0123456789]*) echo unknown; return ;; esac
+  x="$(/usr/sbin/ioreg -n Root -d1 -a 2>/dev/null)" || { echo unknown; return; }
+  n="$(printf '%s' "$x" | /usr/bin/plutil -extract IOConsoleUsers raw -o - - 2>/dev/null)" || { echo unknown; return; }
+  case "$n" in ""|*[!0123456789]*) echo unknown; return ;; esac
+  for (( i = 0; i < n; i++ )); do
+    u="$(printf '%s' "$x" | /usr/bin/plutil -extract "IOConsoleUsers.$i.kCGSSessionUserIDKey" raw -o - - 2>/dev/null)" || continue
+    [ "$u" = "$me" ] || continue
+    mine=$((mine + 1))
+    on="$(printf '%s' "$x" | /usr/bin/plutil -extract "IOConsoleUsers.$i.kCGSSessionOnConsoleKey" raw -o - - 2>/dev/null)" || on=""
+    lk="$(printf '%s' "$x" | /usr/bin/plutil -extract "IOConsoleUsers.$i.CGSSessionScreenIsLocked" raw -o - - 2>/dev/null)" || lk=""
+    if [ "$lk" = true ] || [ "$on" = false ]; then :
+    elif [ "$on" = true ]; then open=$((open + 1))
+    else odd=$((odd + 1)); fi
+  done
+  if [ "$open" -gt 0 ]; then echo "not locked"
+  elif [ "$mine" -eq 0 ] || [ "$odd" -gt 0 ]; then echo unknown
+  else echo locked; fi
+}
+
+# L4.
+if [ "$mode" = status ]; then
+  s="$(read_console)"
+  echo "$s"
+  case "$s" in locked) exit 0 ;; "not locked") exit 1 ;; *) exit 3 ;; esac
+fi
+
+# L5. Locked already is done. With no session of this login listed there is nothing of this login's to lock,
+# and the call would lock whoever is on the console, so it is not made.
+s="$(read_console)"
+[ "$s" != locked ] || exit 0
+[ "$s" != unknown ] || { echo "lock-macos: no console session of this login is listed" >&2; exit 1; }
+# The call is looked up by name before it is made: a macOS without it answers "missing", and nothing is called.
+r="$(/usr/bin/osascript -l JavaScript -e '
+ObjC.import("Foundation");
+var b = $.NSBundle.bundleWithPath("/System/Library/PrivateFrameworks/login.framework");
+var loaded = (b && !b.isNil()) ? b.load : false;
+ObjC.bindFunction("dlsym", ["long", ["long", "char *"]]);
+var r = "missing";
+if (loaded && $.dlsym(-2, "SACLockScreenImmediate") != 0) {
+  ObjC.bindFunction("SACLockScreenImmediate", ["int", []]);
+  $.SACLockScreenImmediate();
+  r = "called";
+}
+r' < /dev/null 2>/dev/null)"
+[ "$r" = called ] || { echo "lock-macos: the system's lock call was not found" >&2; exit 1; }
+# Read every 0.2 s until 5 s have passed since the call, by the shell's own clock: the count of reads alone would
+# wait as long as the reads take. That clock counts whole seconds, so it is read until it has moved on by more
+# than 5: the wait is then at least 5 s and less than 6 (review F5; "less than 5" ended after 4 s when the call
+# returned late in a second).
+t0=$SECONDS
+while [ $((SECONDS - t0)) -le 5 ]; do
+  [ "$(read_console)" != locked ] || exit 0
+  /bin/sleep 0.2
+done
+[ "$(read_console)" != locked ] || exit 0
+echo "lock-macos: this login did not read locked within 5 s" >&2
+exit 1

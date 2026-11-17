@@ -32,6 +32,8 @@
 #                     relations ground topology, and probes are where Felix
 #                     asks the thing that knows rather than reading a table
 #                     that claims. A probe count moving IS the topology moving.
+#                     Which instrument answered is not, and is left out:
+#                     felix_epoch_topology says why.
 #
 #   policy_version    felix_commission_policy_version, which already hashes the
 #                     project's table set with a header per file. Amendment 1.1
@@ -87,9 +89,35 @@ felix_epoch_subject() {
 
 # The grounded facts, hashed. Sorted, because the epoch is a fact about what
 # was found and not about the order a table happened to list it in.
+#
+# And the first six fields of each row, never the seventh. felix_probes_run
+# ends every row with the instrument that answered it — the probe's first word
+# resolved on PATH, with the byte size of the file it resolved to — and that
+# token was hashed here beside the facts until the refuters of 2026-09-19 found
+# what it did to the one property this number exists to have. A launchd job, a
+# CI runner, or any shell whose PATH finds a different git asked the same
+# probes of the same tree, got the same members back, and computed a different
+# epoch. Every answer a scheduled or CI run recorded would then read stale on
+# the laptop, and the laptop's on the runner, for a world that had not moved.
+#
+# Which observer answered is provenance, and v3.2 already says where
+# provenance goes. §3 defines the epoch over grounded topology, which is what
+# the probes found. Its Invalidation list puts a provider upgrade on receipts —
+# "affected receipts invalidated by selector" — and not on the epoch. So the
+# token stays in felix_probes_run's output for the readers that need to know
+# which instrument answered, the facts log and its drift report, and it leaves
+# this hash. The cost is stated rather than hidden: an upgrade that changes
+# what a probe enumerates still moves the epoch, because the count moves; one
+# that changes nothing a probe prints no longer does, and the drift report is
+# where that one shows.
+#
+# By position, and the position is felix_probes_run's contract: the source is
+# its last field. A field somebody later appends after it is left out here by
+# default, which is the safe direction for this hash — a new column has to be
+# argued into the epoch, where the token had to be argued out of it.
 felix_epoch_topology() {
   local proj="$1" root="$2" rows
-  rows="$(felix_probes_run "$proj" "$root" 2>/dev/null | LC_ALL=C sort)"
+  rows="$(felix_probes_run "$proj" "$root" 2>/dev/null | LC_ALL=C cut -f1-6 | LC_ALL=C sort)"
   [ -n "$rows" ] || return 1
   printf '%s\n' "$rows" | _felix_epoch_hash
 }
@@ -162,6 +190,6 @@ felix_epoch() {
   comps="$(felix_epoch_components "$proj" "$root")"
   # awk reads every value before it answers; grep -q would quit at a `-`, and
   # pipefail would read the writer it cut off as no unknown.
-  printf '%s\n' "$comps" | cut -f2 | awk '$0 == "-" { u = 1 } END { exit !u }' && return 1
+  printf '%s\n' "$comps" | LC_ALL=C cut -f2 | LC_ALL=C awk '$0 == "-" { u = 1 } END { exit !u }' && return 1
   printf '%s\n' "$comps" | _felix_epoch_hash
 }

@@ -1,7 +1,7 @@
 # Felix
 
 The engineering OS, and the pilot of implementation. It turns intent into
-verified, shipped code and **decides** how that happens rather than suggesting
+checked, shipped code and **decides** how that happens rather than suggesting
 it. It holds no product code.
 
 Not a sandbox and not an advisor. A product that adopts Felix should get a
@@ -37,6 +37,12 @@ documents change what Felix is, who it is for, or the order it is built in:
 Such a document is shown to the founder and merged only after a yes. Once it
 lands, the founder gives the delivery one word: yes, partial or no.
 
+The current statement of direction is `docs/direction.md`. Where an older
+roadmap, handoff section or memory note disagrees with it, it wins, and a
+change of direction edits it in the same pull request. It is a direction
+document, so any change to it waits for the yes, even one that only folds in
+his recorded words; the pending section that records them merges on green.
+
 Nothing else waits. Engineering, fixes, tables, action items, handoffs, and
 documents that only record what the founder said all merge on green, as
 before. Asking for a yes on any of those is a needless stop, the most common
@@ -46,7 +52,7 @@ roadmap merged and was withdrawn four minutes later.
 **Felix owns how it gets built, optimally.** Which MCP, which plugin, which
 skill, which agent, in which order, in one context or several. Then the whole
 loop around that choice: read the project, plan the work, arrange the tooling,
-verify, classify, ship, repair, and remember.
+check, classify, ship, repair, and remember.
 
 If the founder is thinking about tooling, Felix has failed at its job.
 

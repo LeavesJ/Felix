@@ -132,7 +132,7 @@ at each step.
    checker in full, declares it short of some of the controls `felix qualify`
    asks for, or doesn't declare it at all. *The report is built, and a person
    writes the test ([what comes next](#direction)).*
-4. **A proof tied to the exact code.** Someone writes a test that sends the
+4. **A pass tied to the exact code.** Someone writes a test that sends the
    same payment twice at once and checks that only one goes through. The gate
    runs it and passes, and the receipt names the exact tree the pass was for.
    *Built.*
@@ -143,16 +143,17 @@ at each step.
    *Built, but only when you merge with `felix merge`. GitHub's `gh pr merge`
    skips all of it, and so does GitHub's auto-merge, which `felix automerge
    --enable` turns on for a repository. Felix's part ends at the merge.*
-6. **The proof goes stale.** Next week someone changes the transfer logic. The
+6. **The receipt goes stale.** Next week someone changes the transfer logic. The
    old receipt was about the old code, so it stops counting. An agent that
    edits that code and tries to finish is sent back once to run the gate again, and `felix merge` won't
    take the branch until it passes on the new code. *Built.*
 
 Felix is designed in two halves. Steps 2, 4, 5 and 6 are one loop: write down
-what must be true, count what nobody could check as not done, tie every proof
-to the exact code it checked, let only a current proof through Felix's merge,
-and throw the proof away when the code moves. Felix calls that loop the
-**trust plane**: the part that decides whether finished work can be believed.
+what must be true, count what nobody could check as not done, tie every
+receipt to the exact code its checks ran on, let Felix's merge take a branch
+only with a current receipt, and stop counting a receipt once the code moves.
+Felix calls that loop the **trust plane**: the part that decides whether
+finished work may count as done.
 Step 3 is the **capability plane**: working out what a project needs, and
 supplying the tools and agents that can do it. Without it, the trust plane
 holds an agent only to what someone thought to write down, and step 1's risk
@@ -178,7 +179,7 @@ Felix](#why-you-might-not-want-felix)).
 | Guard | What it does |
 |:---|:---|
 | **The merge escapes** | `felix merge` picks out the changes a revert can't undo and leaves them for a person: a credential in the added lines, a change to a CI workflow (workflows run with the repository's secrets), a change to the autonomy grant or the exception table, a migration or destructive SQL, and a change that removes rows from an enforcing table kept in the repository being merged, which means Felix's own, since other projects keep their tables in Felix's home ([escape.sh](engine/harness/lib/escape.sh)). Only on the `felix merge` path. `gh pr merge` skips it |
-| **The judge on main** (Felix's own repository) | At merge, a change to Felix itself is judged by the copy of Felix on main, never by the candidate ([resolve.sh](engine/harness/lib/resolve.sh)). That rule came from one day on which nine engine changes in a row were each deployed before being judged, so each one judged itself |
+| **The judge on main** (Felix's own repository) | At merge, the verdict on a change to Felix itself is formed by the engine main holds, not by the candidate's ([merge-judge.sh](engine/harness/lib/merge-judge.sh)). `felix merge` first checks that the installed copy of main's version is byte-identical to main. Then, unless it is that installed copy (as on the land-on-green job), it copies main's engine out of git for that one run, and the copy decides. This binds every `felix` that still hands off. A branch that edits its own engine so that its `felix merge` no longer hands off, and is run from that branch, judges itself. The rule came from one day on which nine engine changes in a row were each deployed before being judged, so each one judged itself |
 | **Checker qualification** | For each checker a project declares, `felix qualify` plants every mutation its table names, each under one of six kinds of control, and requires the checker to fail or pass as that kind demands. A checker missing any of the six kinds is reported, not refused ([qualify.sh](engine/harness/lib/qualify.sh)) |
 | **Plugin discovery** | Plugins Felix finds on its own are fetched, at the catalogue's pinned commit where it lists one, and read before anything installs. The install fetches its own copy, and Felix compares the two afterwards and reports a difference rather than undoing it. A hook, a floating version or an interpolated secret marks one high risk, and high risk never installs ([discover.sh](engine/harness/lib/discover.sh)). That check says of itself that it "catches carelessness, not an attacker" |
 | **The deny table** | Before a Bash, Edit, Write, Read, NotebookEdit or WebFetch call runs, Felix matches its command, file path or URL against the project's `deny.tsv` and refuses a match with its reason ([deny.sh](engine/harness/lib/deny.sh)). It matches spellings, not intent, and skips a rule broad enough to catch ordinary work. `felix new` writes no table, so a new project refuses nothing |
@@ -270,7 +271,9 @@ it.
 
 ## Why not just run the tests in CI?
 
-You should, and Felix can set that up for you. CI checks what gets pushed.
+You should, and Felix can set that up for you once CI can fetch your project's
+rules from a Felix repository on GitHub; [the wall](#why-you-might-not-want-felix)
+says what that takes. CI checks what gets pushed.
 Code review checks what someone reads. Neither sees the moment an agent
 decides it's finished and says so. A twenty-line Stop hook that runs `npm test`
 gets you part of the way. Felix adds three things that hook doesn't have:
@@ -286,16 +289,16 @@ gets you part of the way. Felix adds three things that hook doesn't have:
    [obligations.sh](engine/harness/lib/obligations.sh).
 2. **Staleness from outside the tree.** A project can declare probes: commands
    that each ask one question, like how many test files git tracks or whether a
-   route is deployed. If a probe's answer changes state or count, or the
-   program its first word names is now a file of a different size, the old pass
+   route is deployed. If a probe's answer changes state or count, the old pass
    stops counting, even though no file in the tree changed. So does an edit to
-   one of the project's twelve policy tables, such as `project.json`,
-   `deny.tsv` and `obligations.tsv`, or a change of target branch. Not every
-   file beside them counts: the project's `CLAUDE.md`, its exception table,
-   its qualification table and a gate script kept in Felix's home are outside
-   the set. A project that
-   declares no probes never has a pass that counts, and `felix new` seeds
-   three.
+   one of the project's twelve policy tables, such as `project.json`, `deny.tsv`
+   and `obligations.tsv`, or a change of target branch. Not every file beside
+   them counts: the project's `CLAUDE.md`, its exception table, its
+   qualification table and a gate script kept in Felix's home are outside the
+   set. A probe's program changing size, with the same answers, does not make
+   the pass stop counting; `felix probes` reports that the instrument changed. A
+   project that declares no probes never has a pass that counts, and `felix new`
+   seeds three.
 3. **A receipt for the exact tree.** Every gate run is recorded against HEAD,
    the full diff, and each untracked file's name, size and modification time.
    An edit to any of those makes the old pass stop counting. (Git-ignored files
@@ -358,10 +361,22 @@ checker that can't fail, but so far only Felix's own checkers declare it.
 
 The wall is a required CI check that reruns `felix gate` on the pushed tree, on
 a branch admins can't bypass, with Felix fetched from a repository the agent
-can't push to. `felix bootstrap --yes` writes the workflow and a branch rule
-that requires it, but leaves admins able to bypass the rule. Of the
-repositories Felix governs today, one has the whole wall, and Felix's own isn't
-it.
+can't push to. `felix bootstrap --yes` writes the workflow and a rule on the
+repository's default branch that requires it, but leaves admins able to bypass
+the rule. It sets the rule only once CI can resolve the project: `projects/<name>`
+is committed on the default branch of the Felix repository the workflow checks
+out, the workflow's `repository:` names that repository and its `ref:` a commit
+of it that holds the project, and the workflow is on the governed repository's
+default branch. From a plain clone of this repository that means forking Felix,
+pointing the clone's origin at the fork, pushing `projects/<name>` to the fork's
+default branch and setting the workflow's `repository:` and `ref:` to the fork
+and that commit, with a `FELIX_DEPLOY_KEY` secret in the governed repository
+when the fork is private. Until then bootstrap says what is missing on its
+`ci project:` line and its protection row, and leaves the branch alone. When it
+cannot tell (this clone has not fetched the default branch, or the workflow pins
+a commit the engine checkout doesn't hold) it says that instead, leaves the
+branch alone and exits 1. Of the repositories Felix governs today, one has the
+whole wall, and Felix's own isn't it.
 
 Setting a project up with plain `felix new` also installs, for every Claude
 Code session on the machine, seven plugins every project gets, the catalogue's
@@ -383,9 +398,9 @@ private. If you want a mature, general agent framework, this isn't one.
 | State | What |
 |:---|:---|
 | **In daily use** on my projects | The Stop hold, receipts and their staleness, the merge escapes, obligations with UNKNOWN blocking (on Felix's own project; the others hold only the one row `felix new` seeds), project setup (commissioning), the deny table, checker qualification on Felix's own checks, plugin discovery, and the ledger of which tools sessions used |
-| **Built, little or no real use** | Exceptions: none granted yet, and read only for Felix's own project. The unattended repair workflow (never run on real input). Obligations proposed by a model, only advisory ones: run on two real projects as of September 23, with 22 proposed and none admitted yet. Admitting one means copying it into the project's obligations table, which is left to a person but not enforced. An obligation naming the checker it needs, reported by `felix obligations` and read by no verdict: two rows, both on Felix's own project, and neither checker declared yet |
-| **Partial** | Pinning the judge to main covers `felix merge` but not `felix gate`. `felix automerge` only counts a streak of clean merges and, with `--enable`, turns on GitHub's auto-merge, whose merges skip `felix merge`. The staleness hash depends on which `git` is on PATH, so the same tree can read stale in another environment |
-| **Designed, not built** | `felix dispatch`, which runs each worker as a restricted headless session with only the tools its task needs, and records what it did |
+| **Built, little or no real use** | Exceptions: none granted yet, and read only for Felix's own project. The unattended repair workflow (never run on real input). Obligations proposed by a model, only advisory ones: run on two real projects as of September 23, with 22 proposed and none admitted yet. Admitting one means copying it into the project's obligations table, which is left to a person but not enforced. An obligation naming the checker it needs, reported by `felix obligations` and read by no verdict: two rows, both on Felix's own project, and neither checker declared yet. `felix land` (see Install): macOS only, on Felix's own repository only, where by October 23 it had landed five pull requests and deployed three times. `felix lane`, since October 31: the capability lane's share of engine landings over 14 days, in `felix status`, the pulse and session start, on Felix's own project |
+| **Partial** | Pinning the judge to main covers `felix merge` but not `felix gate`. `felix automerge` only counts a streak of clean merges and, with `--enable`, turns on GitHub's auto-merge, whose merges skip `felix merge`. A receipt for a tree with uncommitted edits to tracked files hashes `git diff`, where git abbreviates object names, so it can read stale when the repository's object count crosses a bound such as 16,384, though no file changed. A clean tree's receipt does not |
+| **Designed, not built** | `felix dispatch`, which runs each worker as a restricted headless session with only the tools its task needs, and records what it did. Evidence-carrying changes: each change would carry what it claims, each claim checked within a stated list of faults over a printed number of cases, with evidence that each check can fail and what stayed unchecked listed, for `felix merge` to read before landing. No figure for what it would catch or how long it would take is claimed before it has been tried on past work and on two new features |
 | **Absent** | Sandboxing, time-limited tool grants and revocation, and support for any host but Claude Code |
 
 <a id="direction"></a>
@@ -404,21 +419,19 @@ but nothing that decides whether the obligation is met reads that yet. Next,
 the obligation will stay unmet until a checker that has passed Felix's
 qualification, including showing it can fail, is attached.
 
-The rest of the capability plane is being built alongside, and none of it
-will be called built until it has been shown working. Three things come
-first:
+The rest of the capability plane is being built alongside, and none of it will
+be called built until it has been shown working. Next, in this order:
 
 1. **A test of what a model finds.** Omissions of the kind the [missing rate
-   limit](#the-failure-it-exists-for) was will be planted in test projects,
-   and a model asked what each project owes will be measured against a plain
-   Claude Code session. If it finds nothing the plain session misses, Felix
-   will narrow to the obligations people name.
-2. **A retire list keyed to what Felix installed.** Today the ledger records a
-   zero for every declared tool no session used, but proposes retiring one
-   only if a route pointed sessions at it, so a tool no route names is never
-   proposed.
-3. **A dry run of dispatch.** It will print how a task would be launched, with
+   limit](#the-failure-it-exists-for) was will be planted in test projects, and
+   a model asked what each project owes will be measured against a plain Claude
+   Code session. If it finds nothing the plain session misses, Felix
+   investigates why instead of shrinking.
+2. **A dry run of dispatch.** It will print how a task would be launched, with
    only the tools that task needs, and start nothing.
+3. **A retire list keyed to what Felix installed.** Today the ledger records a
+   zero for every declared tool no session used, but proposes retiring one only
+   if a route named it, so a tool no route names is never proposed.
 
 `felix dispatch` itself comes after those. It would launch each worker as a
 headless session with only the tools its task needs, keep its record as the
@@ -442,10 +455,14 @@ Installing changes your setup, so read this part first:
 - In a governed project it adds text to sessions: a note at start naming the
   project's constitution and handoff to read, recorded lessons that match a
   prompt, and a note to each subagent. It logs the first 160 bytes of each prompt, and up to 200
-  beside anything Felix says, to the project's memory directory. It suggests a
+  beside anything Felix says, to the project's memory directory; a refused
+  command is recorded as it was typed, with any credential shape written as
+  `[redacted]`. It suggests a
   tool the first time a session's prompt matches one of its routes. It clones
-  candidate plugins once a week to read them, and adds catalogue rows for
-  tools it detects.
+  candidate plugins to read them, about weekly and again after an update that
+  changes how discovery scores; where `TMPDIR` names no private directory
+  nothing is cloned, and the pulse and the session start say why. It adds
+  catalogue rows for tools it detects.
 - The clone you install from becomes Felix's home, the directory that holds
   each project's rules, and `~/.felix-home` names it. The clone is registered
   as a local plugin marketplace and is itself governed as the project `felix`.
@@ -453,13 +470,17 @@ Installing changes your setup, so read this part first:
   `engine/.claude-plugin/plugin.json` (`--no-bump` turns that off).
 - Governing a project installs plugins at user scope, listed below.
 - Nothing merges on its own unless you run `felix automerge --enable`, which
-  turns on GitHub's auto-merge for the repository. A pull request marked for
-  it then merges when its checks pass, without `felix merge`.
+  turns on GitHub's auto-merge, or `felix land --install` (macOS only), which
+  runs `felix merge` on a green pull request of the home's own repository every
+  five minutes with nobody present, and deploys it if `engine/` changed.
 - Felix has no server and sends no telemetry. It reaches the network through
   git and the `claude` and `gh` CLIs: to fetch and install plugins, to work
   with pull requests, issues and CI runs, and, for `felix bootstrap`, to set a
   branch rule. `felix pulse` commits your memory directory and pushes it to
-  that repository's remote, if you've made it a git repository with one. The
+  that repository's remote, if you've made it a git repository with one; it
+  leaves out a nested git repository and any file that gained a credential
+  shape, and says in the pulse log, `felix status` and the next session start
+  that they are not backed up. The
   plugins commissioning installs are separate programs with their own network
   use: security-guidance, for one, sends code to Anthropic's API from its own
   Stop hook.
@@ -470,14 +491,15 @@ govern a scratch repository. `FELIX_HOME` and `FELIX_MEMORY` move Felix's own
 files but not the plugins.
 
 Requires bash 3.2 or later, git and the `claude` CLI. `gh` is needed for
-`brief`, `pr`, `merge`, `automerge`, `repair`, `bootstrap`, `unattended`,
-`classify --apply` and `incident --create`. Commissioning and discovery use the
-network, and `felix pulse --install` is macOS only.
+`brief`, `pr`, `merge`, `automerge`, `land`, `repair`, `bootstrap`,
+`unattended`, `classify --apply` and `incident --create`. Commissioning and
+discovery use the network, and `felix pulse --install` is macOS only.
 
 ```bash
 git clone https://github.com/LeavesJ/Felix.git felix
 felix/engine/harness/felix install
-ln -s "$PWD/felix/engine/harness/felix" /usr/local/bin/felix
+mkdir -p ~/.local/bin && ln -s "$PWD/felix/engine/harness/felix" ~/.local/bin/felix
+export PATH="$HOME/.local/bin:$PATH"   # skip if ~/.local/bin is on PATH; to keep it, add this line to ~/.zshrc
 ```
 
 Install from a main checkout, never a git worktree, which would point the
@@ -521,7 +543,7 @@ install bumps the patch version and redeploys.
 
 ```bash
 felix gate                  # this project's gate, recorded as a receipt
-engine/harness/tests/run    # the engine's own suite, about 3,000 assertions
+engine/harness/tests/run    # the engine's own suite
 ```
 
 The suite drives the real CLI and hooks against an invented project in a
@@ -530,7 +552,7 @@ throwaway root, and fails if any assertion in its manifest was never reached.
 `felix install --uninstall` removes the plugin and nothing else, because Felix
 never deletes your rules or memory. The rest is by hand:
 
-- `felix pulse --uninstall`, if you installed the schedule
+- `felix pulse --uninstall` and `felix land --uninstall`, if you installed either
 - `claude plugin uninstall` for each plugin commissioning added that you didn't
   already have
 - `claude plugin marketplace remove felix`, and `claude-plugins-official` if
@@ -549,12 +571,12 @@ never deletes your rules or memory. The rest is by hand:
 
 | Event | What Felix does |
 |:---|:---|
-| Session start | Names the project's constitution (its CLAUDE.md of standing rules) and handoff to read, and reports due upkeep. Records tools the checkout has grown by adding their catalogue rows, without installing anything. Refreshes discovery weekly in the background |
-| Prompt | Mounts recorded lessons that match the prompt, and names a tool on the first routed turn. Logs the first 160 bytes of each prompt, and up to 200 beside anything Felix says, to the project's memory directory |
-| Before a tool call | Refuses what the project's `deny.tsv` names, with the reason. A new project has no rows |
+| Session start | Names the project's constitution (its CLAUDE.md of standing rules) and handoff to read, and reports due upkeep. Records tools the checkout has grown by adding their catalogue rows, without installing anything. Refreshes discovery in the background, about weekly and after an update that changes how it scores; where `TMPDIR` names no private directory it fetches nothing and says why |
+| Prompt | Mounts recorded lessons that match the prompt, and names a tool on the first routed turn. Logs the first 160 bytes of each prompt, and up to 200 beside anything Felix says, to the project's memory directory, with any credential shape written as `[redacted]` |
+| Before a tool call | Refuses what the project's `deny.tsv` names, with the reason, and records the refused command with any credential shape written as `[redacted]`. A new project has no rows |
 | After a tool call | Appends one ledger line. Async, never blocks |
 | Subagent start | Tells the subagent the project, its constitution and its gate |
-| Subagent stop | Once per session, if the checkout holds changes no gate has passed, tells the parent that a subagent's report must call its own changes unverified |
+| Subagent stop | Once per session, if the checkout holds changes no gate has passed, tells the parent that a subagent's report must call its own changes partial, failing or unchecked |
 | Session end | Folds the session into the ledger, with a zero for every declared tool never used |
 | Stop | If the tree has uncommitted changes or this session committed, holds the stop once unless a receipt for this exact tree is green and still current |
 
@@ -628,7 +650,7 @@ exist?
 
 On the trust side, the rules and the judge. Receipts bound to a tree, UNKNOWN
 blocking, exceptions meant to take effect only when a person merges them, the
-merge escapes, checks that must prove they can fail, and the record of every
+merge escapes, checks that must be shown able to fail, and the record of every
 hold, deny-table refusal and escape. A smarter model still shouldn't grade its
 own work.
 

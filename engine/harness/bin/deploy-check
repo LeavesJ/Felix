@@ -40,6 +40,25 @@
 # DORMANT — a row that stops blocking — so a script that could not resolve its
 # own library must answer "I could not say", which those two codes are.
 set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 # Before the cd, not after. `$0` is the path as invoked, so resolving it once
 # the working directory has already moved to the repository toplevel made HERE
 # empty for any relative invocation from a subdirectory; the source below then
@@ -56,7 +75,7 @@ command -v felix_base_ref             >/dev/null 2>&1 || exit 127
 command -v felix_accepted_deploy_diff >/dev/null 2>&1 || exit 127
 
 if [ "${1:-}" = "--applies" ]; then
-  [ -d "${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-$HOME/.claude/plugins/cache}/felix/felix}" ] || exit 1
+  [ -d "${FELIX_KERNEL_CACHE:-${FELIX_PLUGIN_CACHE:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache}/felix/felix}" ] || exit 1
   felix_base_ref "$ROOT" >/dev/null 2>&1 || exit 1
   exit 0
 fi

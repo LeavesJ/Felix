@@ -22,23 +22,32 @@
 # not an inescapable barrier. The inescapable barrier is CI at the merge
 # boundary, which Felix already sets up and which is not affected by this.
 #
-# Everything unexpected allows and records. A completion gate that can strand a
-# session gets removed, and a removed gate enforces nothing.
+# Everything unexpected allows, and says so: a completion gate that can strand a
+# session gets removed, but one that goes quiet looks like a session that
+# changed nothing. What it could not judge is said (lib/hook-faults.sh).
 
 set -uo pipefail
 
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-. "${SCRIPT_DIR}/../lib/resolve.sh"
-. "${SCRIPT_DIR}/../lib/verify.sh"
-. "${SCRIPT_DIR}/../lib/route.sh"
-. "${SCRIPT_DIR}/../lib/ready.sh"
-. "${SCRIPT_DIR}/../lib/guard.sh"
-. "${SCRIPT_DIR}/../lib/say.sh"
-. "${SCRIPT_DIR}/../lib/detect.sh"
-. "${SCRIPT_DIR}/../lib/maintenance.sh"
-. "${SCRIPT_DIR}/../lib/overnight.sh"
-. "${SCRIPT_DIR}/../lib/overnight-stop.sh"
 
 escape_for_json() {
   local s="$1"
@@ -46,6 +55,22 @@ escape_for_json() {
   s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
+
+# A library that did not load is said, never stepped over: an undefined
+# felix_tree_dirty reads as a clean tree. The first three cannot be done
+# without; the rest are named in the hold when one is missing.
+_nolib=""
+for _l in lib/resolve.sh lib/verify.sh lib/hook-faults.sh lib/route.sh lib/ready.sh lib/guard.sh \
+          lib/say.sh lib/detect.sh lib/maintenance.sh lib/overnight.sh lib/overnight-stop.sh; do
+  [ -r "${SCRIPT_DIR}/../$_l" ] && . "${SCRIPT_DIR}/../$_l" || _nolib="$_nolib $_l"
+done
+case "$_nolib" in
+  *lib/resolve.sh*|*lib/verify.sh*|*lib/hook-faults.sh*)
+    _m="Felix could not judge this stop:${_nolib} did not load; nothing was held."
+    command -v felix_unresolved_log >/dev/null 2>&1 && felix_unresolved_log "$_m" "$PWD"
+    printf '{\n  "systemMessage": "%s"\n}\n' "$(escape_for_json "$_m")"
+    exit 0 ;;
+esac
 
 # The payload is read before any decision now, because the refusal below is a
 # block like every other one here. The platform documents that a Stop hook must
@@ -57,40 +82,46 @@ escape_for_json() {
 # and the failure mode is a hook that silently stops enforcing anything.
 raw="$(cat 2>/dev/null || true)"
 SID="$(printf '%s' "$raw" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-# The flag is read as a FIELD, not as two substrings in order. The payload
-# carries the model's last message, and a glob for `"stop_hook_active"` then
-# `true` anywhere after it was satisfied by a message containing the word —
-# a session whose final sentence was "that is true" was exempt from its own
-# gate. Anchored on the structural comma or brace before the key, which an
-# occurrence inside a JSON string cannot have: a quote inside a string is
-# spelt \" there, and the character before it is a backslash.
+# The flag is read as a FIELD, not as two substrings in order: a message ending
+# "that is true" exempted its session from its own gate. Anchored on the comma
+# or brace before the key, which an occurrence inside a JSON string cannot have
+# (a quote inside a string is spelt \" there).
 _active="$(printf '%s' "$raw" \
   | sed -n 's/.*[{,][[:space:]]*"stop_hook_active"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' \
   | head -1)"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT")"
 
+# Judge the tree the session stands in, which Claude Desktop does not start the
+# hook in (lib/resolve.sh). Before the flagged-stop branch, which resolves too.
+felix_hook_enter "$raw" "$FELIX_HOME_DIR"
+
 # A chain the platform started from Felix's own hold ends here, as the
-# platform asks, except for a session that holds a night of its own. That
-# night is the grant to keep going, and leaving at the flag meant it held a
-# session once per prompt, so a session nobody was typing into (the one kind
-# a night exists for) got a single continuation. It is bounded by its own
-# deadline, budget and quiet count (lib/overnight-stop.sh), and inside the chain
-# nothing else here may block: every other refusal below still lets a chain
-# end, as it always has, except the gate's, which is charged to the night.
+# platform asks, except for a session that holds a night of its own: the night
+# is the grant to keep going, bounded by its own deadline, budget and quiet
+# count (lib/overnight-stop.sh), and inside the chain nothing else here may
+# block except the gate's refusal, which is charged to the night.
 #
-# A chain Felix did not start does not end here. The flag says only that some
-# hook started this turn, and an asyncRewake hook's rewake is a turn started
-# with it set, so leaving at the flag let the turn that answered a background
-# review end unchecked and unrecorded. The hold's own record tells the two
-# apart, and is taken at every flagged stop, a night's included, so a night
-# leaves none behind. An id or a record that cannot tell ends the stop, as
-# before. FOREIGN marks a stop judged inside another hook's chain.
+# A chain Felix did not start does not end here: the flag says only that some
+# hook started this turn (an asyncRewake's rewake sets it), and leaving at it
+# let the turn that answered a background review end unchecked. The hold's own
+# record tells the two apart, taken at every flagged stop, a night's included.
+# An id or a record that cannot tell ends the stop. FOREIGN marks a stop judged
+# inside another hook's chain.
+#
+# A resolver that could not tell because lib/detect.sh did not load (the hold
+# below the broken binding) does not end it either: the project, and so the
+# night, is unknown, but the record still tells Felix's chain from another's,
+# and another's is judged, which holds it below. Felix's own ends, as ever.
 CHAIN=0 FOREIGN=0
 if [ "${_active:-}" = "true" ]; then
-  _chain_proj="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || exit 0
+  _chain_proj="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)"; _res=$?
+  if [ "$_res" -ne 0 ]; then
+    { [ "$_res" -eq 2 ] && ! declare -F felix_capture >/dev/null; } || exit 0
+    _chain_proj=""
+  fi
   felix_hold_take "$FELIX_HOME_DIR" "${SID:-}"; _held=$?
-  if felix_overnight_owns "$_chain_proj" "${SID:-}"; then
+  if [ -n "$_chain_proj" ] && felix_overnight_owns "$_chain_proj" "${SID:-}"; then
     CHAIN=1
   else
     [ "$_held" -eq 1 ] || exit 0
@@ -169,14 +200,36 @@ if [ -n "$broken" ]; then
   exit 0
 fi
 
-PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")" || PROJ=""
+PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR")"; _res=$?
+[ "$_res" -eq 0 ] || PROJ=""
+
+# The resolver says 2, could not tell, when a read it stands on did not finish.
+# Without felix_capture (lib/detect.sh did not load) it can make none of them:
+# that is an engine with a file missing, somebody's state like the broken
+# binding above, and a stop that let it pass would check nothing in silence, so
+# it holds the same way. A 2 from a read that failed in a whole engine is still
+# read as ungoverned here; that policy is its own decision.
+if [ "$_res" -eq 2 ] && ! declare -F felix_capture >/dev/null; then
+  [ "$CHAIN" = "1" ] && exit 0
+  _felix_stop_may_hold || exit 0
+  _m="Felix: the project that governs $PWD could not be resolved: a read it stands on did not finish, because lib/detect.sh did not load. Nothing in this checkout is being checked until the engine has that file again."
+  felix_unresolved_log "$_m" "$PWD"
+  printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$_m")"
+  exit 0
+fi
 [ -n "$PROJ" ] || exit 0
 
-# A project that declares no gate has nothing to enforce. Inventing an
-# obligation for it would make Felix unusable on a repo part-way through
-# onboarding, which is exactly when it is most wanted.
-GATE="$(felix_json_str "$PROJ/project.json" gate 2>/dev/null)"
-[ -n "$GATE" ] || exit 0
+# A prompt hook the platform cut off earlier in this session is said once, at
+# the first stop of its own that can say it (lib/hook-faults.sh).
+[ "${_active:-}" = "true" ] || felix_stop_unfinished "$PROJ" "$FELIX_HOME_DIR" "${SID:-}"
+
+# A project that declares no gate has nothing to enforce; inventing one would
+# make Felix unusable on a repo part-way through onboarding. A project.json
+# that cannot be read is not that: it declares nothing because it says
+# nothing, and the stop says so below, once there is work to judge.
+PJ="$PROJ/project.json"; GATE=""; PJ_BAD=""
+if [ -f "$PJ" ] && [ -r "$PJ" ]; then GATE="$(felix_json_str "$PJ" gate 2>/dev/null)"; else PJ_BAD=1; fi
+[ -n "$GATE" ] || [ -n "$PJ_BAD" ] || exit 0
 
 ROOT="$(felix_repo_root "$PWD")"
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || exit 0
@@ -195,16 +248,23 @@ git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # keep going, and this exit used to let it close for the night.
 if ! felix_tree_dirty "$ROOT" "$FELIX_HOME_DIR"; then
   if ! felix_session_committed "$FELIX_HOME_DIR" "${SID:-}" "$ROOT"; then
-    felix_overnight_owns "$PROJ" "${SID:-}" && _felix_stop_night ""
+    [ -n "$PJ_BAD" ] || { felix_overnight_owns "$PROJ" "${SID:-}" && _felix_stop_night ""; }
     exit 0
   fi
 fi
+[ -z "$PJ_BAD" ] || felix_stop_unjudged "$PROJ" "$PJ" "${SID:-}" "$CHAIN"
 
-TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR")" || TID=""
-if [ -z "$TID" ]; then
-  felix_verify_log "$PROJ" "allowed" "" "tree identity unavailable"
-  exit 0
-fi
+# An empty id is a tree git could not read in full, and it is held below like
+# any tree no receipt matches (2026-10-08). It used to be allowed here as "tree
+# identity unavailable": felix_tree_id hashed what `git diff HEAD` printed
+# before a tracked named pipe stopped it, so an edit plus a pipe at an earlier
+# path read as the clean commit's id and went unverified. It returns nothing
+# now, and this must not turn nothing back into a pass.
+TID="$(felix_tree_id "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)" || TID=""
+TREE_WHY=""; GIT_WHY=""
+# A git that could not run is the reason itself (2026-11-14), not an unreadable path in the tree.
+[ -n "$TID" ] || ! command -v felix_git_runs >/dev/null 2>&1 || felix_git_runs GIT_WHY || :
+[ -n "$TID" ] || [ -n "$GIT_WHY" ] || TREE_WHY="$(felix_tree_why "$ROOT" "$FELIX_HOME_DIR" 2>/dev/null)"
 
 # The override is the founder's, not the model's. It is read from the
 # environment the session was launched with, and an export inside a Bash tool
@@ -225,7 +285,7 @@ _felix_stop_skipped() {
   [ -n "$sid" ] || return 0
   state="$FELIX_HOME_DIR/state/route/$sid"
   [ -f "$state" ] || return 0
-  routename="$(cut -d: -f1 < "$state" 2>/dev/null)"
+  routename="$(LC_ALL=C cut -d: -f1 < "$state" 2>/dev/null)"
   [ -n "$routename" ] || return 0
   # A route read off the working tree is Felix's guess, not anybody's
   # instruction, so a play it named going unused is evidence of nothing. This
@@ -279,10 +339,35 @@ EOF
     printf '\nThe way out, which takes effect in the NEXT session and not this one:\n\n  felix quarantine %s\n' "$who"
 }
 
+# This conversation's session ids: the one this stop was handed, and any the
+# transcript opens under. The desktop app has been seen carrying a
+# conversation on under a new id, its first lines still bearing the old one,
+# and the catches made before that are still this conversation's. The first id
+# on each line is the record's own; message text comes later in the line.
+_felix_stop_sessions() {
+  local tp; tp="$(_felix_stop_tp)"
+  {
+    printf '%s\n' "${SID:-}"
+    if [ -n "$tp" ] && [ -f "$tp" ]; then
+      head -c 65536 "$tp" 2>/dev/null | awk '
+        match($0, /"sessionId"[ ]*:[ ]*"[A-Za-z0-9._-]+"/) {
+          v = substr($0, RSTART, RLENGTH); sub(/^"sessionId"[ ]*:[ ]*"/, "", v); sub(/"$/, "", v); print v
+        }'
+    fi
+  } | awk 'NF && !seen[$0]++ { printf "%s%s", sep, $0; sep = " " }'
+}
+
+# This session's unexplained catch, if it has one. The guard is told the
+# checkout and the sessions, and without them it weighs every session's rows,
+# which is how a session that had written its lesson was asked about a peer's.
+# One definition, because two stops ask and a call site left with the old
+# arguments would pass every test that drives the other.
+_felix_stop_unrecorded() { felix_guard_unrecorded "$PROJ" "$ROOT" "$(_felix_stop_sessions)"; }
+
 receipt="$(felix_verify_receipt "$ROOT" "$FELIX_HOME_DIR")"
-r_tid="$(printf '%s' "$receipt" | cut -f1)"
-r_res="$(printf '%s' "$receipt" | cut -f2)"
-r_when="$(printf '%s' "$receipt" | cut -f3)"
+r_tid="$(printf '%s' "$receipt" | LC_ALL=C cut -f1)"
+r_res="$(printf '%s' "$receipt" | LC_ALL=C cut -f2)"
+r_when="$(printf '%s' "$receipt" | LC_ALL=C cut -f3)"
 
 # Current by verify.sh's reading, which the merge boundary shares: the exact
 # tree, green, and the decision epoch the gate ran under still the epoch now.
@@ -334,7 +419,7 @@ ${_on_blocks}"
       fi
     fi
     if ! grep -qx unrecorded "$_on_said" 2>/dev/null; then
-      _on_unrec="$(felix_guard_unrecorded "$PROJ")"
+      _on_unrec="$(_felix_stop_unrecorded)"
       if [ -n "$_on_unrec" ]; then
         _on_extra="${_on_extra}
 
@@ -342,7 +427,10 @@ ${_on_unrec}"
         mkdir -p "$(dirname "$_on_said")" 2>/dev/null && printf 'unrecorded\n' >> "$_on_said" 2>/dev/null
       fi
     fi
-    if [ -n "${SID:-}" ] \
+    # stack.tsv only as a regular file, here and below: a pipe at the path held
+    # this grep open, and the Stop hook with it, for a writer that never came
+    # (2026-10-01).
+    if [ -n "${SID:-}" ] && [ -f "$PROJ/stack.tsv" ] \
        && grep -qE "	superpowers(@[^	]*)?	" "$PROJ/stack.tsv" 2>/dev/null \
        && [ ! -f "$FELIX_HOME_DIR/state/verified/$SID" ]; then
       mkdir -p "$FELIX_HOME_DIR/state/verified" 2>/dev/null \
@@ -372,7 +460,7 @@ piece before you take the next one: check the claims, not the tests."
 
   # One message per stop, most urgent first. Something actively blocking the
   # session outranks a step that was skipped, which outranks a debt.
-  unrecorded="$(felix_guard_unrecorded "$PROJ")"
+  unrecorded="$(_felix_stop_unrecorded)"
 
   skipped="$(_felix_stop_skipped)"
   if [ -z "$skipped" ] && [ -n "$unrecorded" ]; then
@@ -382,25 +470,15 @@ piece before you take the next one: check the claims, not the tests."
     exit 0
   fi
   if [ -n "$skipped" ]; then
-    # Three defects lived in this block and each got its own fix (#98).
-    #
-    # The sentence misnamed the play: both interpolations were ${skipped}, so a
-    # partly-followed three-step play was reported as though the route had only
-    # ever asked for the one step that was missed — and the message asks the
-    # reader to judge whether the skip was right, which is the judgement it had
-    # just removed the context for. The first slot now names the play.
-    #
-    # There was no way to answer it: it asked for a sentence and nothing could
-    # receive one, so it fired identically at every close and got read as
-    # furniture. `felix route --ack` is the answer channel; a recorded decline
-    # consumes here, once, and lands the reason in decisions.log.
-    #
-    # And it repeated every stop. Once per session now, same state pattern as
-    # the verification nudge below — the second raise of an unanswered question
-    # adds pressure, not information.
+    # Three defects were fixed in this block (#98). The sentence named only the
+    # missed step, not the play, which removed the context the reader needs to
+    # judge the skip; the first slot names the play now. Nothing could receive
+    # an answer, so `felix route --ack` is the channel, and a recorded decline
+    # consumes here, once, into decisions.log. And it repeated every stop: once
+    # per session now, as the verification nudge below.
     playline=""
     if [ -f "$FELIX_HOME_DIR/state/route/${SID:-}" ]; then
-      routename="$(cut -d: -f1 < "$FELIX_HOME_DIR/state/route/${SID:-}" 2>/dev/null)"
+      routename="$(LC_ALL=C cut -d: -f1 < "$FELIX_HOME_DIR/state/route/${SID:-}" 2>/dev/null)"
       playline="$(_felix_route_rows "$PROJ" | awk -F'\t' -v r="$routename" '$1==r{print $4}')"
     fi
     if felix_route_ack_consume "$ROOT" "$FELIX_HOME_DIR"; then
@@ -439,7 +517,7 @@ this session either way."
   # Declared, not routed. Requiring a route to name it would mean it never
   # fires for a project whose table happens not to mention it — including
   # Felix's own, which is exactly the session this was missing from.
-  if [ -n "${SID:-}" ] \
+  if [ -n "${SID:-}" ] && [ -f "$PROJ/stack.tsv" ] \
      && grep -qE "	superpowers(@[^	]*)?	" "$PROJ/stack.tsv" 2>/dev/null; then
     vstate="$FELIX_HOME_DIR/state/verified/$SID"
     if [ ! -f "$vstate" ]; then
@@ -471,9 +549,19 @@ down describes what the code does now."
   exit 0
 fi
 
-if [ -z "$receipt" ]; then
+if [ -z "$TID" ] && [ -n "$GIT_WHY" ]; then
+  # A git that could not run has read nothing, so no path in the tree is to blame, and no gate run can record a receipt until it does.
+  why="Felix cannot identify this tree, so no receipt can stand for it: $GIT_WHY. Until git runs here, no gate run can record a receipt for this tree. Make git run here, and then run the gate."
+  detail="tree unknown"
+elif [ -z "$TID" ]; then
+  # First, because a receipt of any colour is about some other tree. Git's own
+  # line names the path; the remedy is the path, not a gate run, since a gate
+  # over this tree has no id to record a receipt under.
+  why="Felix cannot identify this tree, so no receipt can stand for it: git could not read it${TREE_WHY:+ (${TREE_WHY})}. The usual cause is a tracked path that is no longer a readable regular file: a named pipe, a socket, a device, or a file git may not open. git can neither hash nor commit such a path, so not even a green gate run can be recorded for this tree. Make that path a readable file again, or move it out of the tree, and then run the gate."
+  detail="tree unknown"
+elif [ -z "$receipt" ]; then
   why="The gate has never run in this checkout."
-  detail="never verified"
+  detail="never checked"
 elif [ "$r_tid" = "$TID" ] && [ "$r_res" = "green" ]; then
   # Green on this exact tree and still not current: a fact the verdict rests
   # on moved outside the tree. Said with the reason, because "run the gate" on
@@ -504,6 +592,22 @@ if [ "$CHAIN" = "1" ]; then
   [ "$_on_rc" -eq 0 ] || exit 0
 fi
 
+# Held once per tree, reason and checkout in a session (felix_hold_tree_seen in
+# lib/verify.sh). A later stop on the same lets the session go and records the
+# unrun gate as a debt. Not inside a night's chain, nor for a session that holds
+# a night, which keep their own bounds; not where the tree id cannot tell work
+# apart (an unborn HEAD hashes no staged content, and a coarse id no untracked
+# edit). FELIX_ALLOW_RED and the foreign-chain rule are unchanged.
+_once=0
+if [ "$CHAIN" = "0" ] && ! felix_overnight_owns "$PROJ" "${SID:-}"; then
+  case "$TID" in coarse:*) ;; *) git -C "$ROOT" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && _once=1 ;; esac
+fi
+if [ "$_once" = 1 ] && felix_hold_tree_seen "$FELIX_HOME_DIR" "${SID:-}" "$TID" "$detail" "$ROOT"; then
+  felix_verify_log "$PROJ" "debt" "$TID" "$detail; held once on this tree already (session ${SID:0:8})"
+  felix_stop_debt "$PROJ" "$detail" "${SID:-}"
+  exit 0
+fi
+
 if ! _felix_stop_may_hold; then
   felix_verify_log "$PROJ" "allowed" "$TID" "$detail; inside another hook's chain, and the hold could not be recorded"
   exit 0
@@ -520,8 +624,13 @@ If you have already decided to stop with a red gate, that is the founder's call
 to make, not yours: they can set FELIX_ALLOW_RED=1 in the environment they
 launch a session from. If the red is one TASK_BLOCKING obligation, the narrower
 way past it is a row in the project's exceptions.tsv, keyed to that obligation
-and dated, merged by a person; a session cannot grant itself one."
+and dated, merged by a person; a session cannot grant itself one.$(felix_stop_cloud_note "$(cd "$SCRIPT_DIR/.." && pwd)")${_nolib:+
+
+$_nolib did not load, so part of what this stop checks did not run.}"
 
 felix_say "$PROJ" "held" "$reason" "" "${SID:-}"
 printf '{\n  "decision": "block",\n  "reason": "%s"\n}\n' "$(escape_for_json "$reason")"
+# Marked once the hold is delivered: a hook stopped before this costs one more
+# hold later, never a hold that was recorded and not made.
+[ "$_once" = 1 ] && felix_hold_tree_mark "$FELIX_HOME_DIR" "${SID:-}" "$TID" "$detail" "$ROOT"
 exit 0

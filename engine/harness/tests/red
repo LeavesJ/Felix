@@ -2,64 +2,164 @@
 # The red run: this tree's assertions against the engine the base ref holds.
 #
 #   tests/red [base]        base defaults to origin/main, then main
+#   tests/red --after <mark> <pid> [base]
+#                           the form tests/run --record-assertions starts it in: see "Waiting"
 #
 # "Shown failing before believed" (invariant 5) was, until this, a sentence in
 # a pull request body: the author ran the suite against the previous engine,
 # read a count, and typed it. When six handoff sections were audited by readers
 # forbidden the suite (HANDOFF §0bh), every claim about method — authored
-# blind, shown red — turned out to leave no artifact on the machine, and the
-# red count was one of them. This makes the count a file in the tree, taken
-# against a named commit, so "N assertions fail against the previous engine" is
-# a diff on red.tsv that anybody reproduces with the same command.
+# blind, shown red — left no artifact on the machine, the red count among them.
+# This makes the count a file in the tree, taken against a named commit: a diff
+# on red.tsv that anybody reproduces with the same command.
 #
 # What it does: checks the base commit out whole — libraries, bin scripts,
 # gate, tables, hooks — as a detached worktree under a temporary directory,
-# puts THIS tree's tests/run into it, and runs that. So the assertions are the
-# tree's and the engine is the base's, which is exactly the run a reviewer
-# would do by hand. The base's own tests/run never executes. The manifest
-# comparison is off for that run (FELIX_TEST_NO_MANIFEST=1): "assertion did
-# not run" against the base's manifest would count as red, and it is not.
+# puts THIS tree's tests/run into it, and runs that: the assertions are the
+# tree's and the engine is the base's, which is the run a reviewer would do by
+# hand. The base's own tests/run never executes. The suite's manifest comparison
+# is off for that run (FELIX_TEST_NO_MANIFEST=1): in the base's tree it would
+# read the base's manifest, and "assertion did not run" against that would
+# count as red and is not. The comparison that matters, against this tree's
+# manifest, is made here after the run (below).
 #
-# A worktree and not an archive, measured: the first version unpacked
-# `git archive` and read 2 of 2357 red against a base whose engine was
-# byte-identical to the tree's. Both were assertions that ask git about the
-# checkout the suite stands in — the independence scanner's `git ls-files`,
-# deploy-check's base ref — and an archive has no repository to answer, so
-# they failed for the wrong reason and would have inflated every count since.
-# The worktree is removed on the way out, whatever happened, and stale
-# metadata is pruned; a red run killed mid-way leaves an entry `git worktree
-# prune` clears.
+# A worktree and not an archive, measured: the first version unpacked `git
+# archive` and read 2 of 2357 red against a base whose engine was byte-
+# identical to the tree's. Both asked git about the checkout the suite stands in
+# (the independence scanner's `git ls-files`, deploy-check's base ref), an
+# archive has no repository to answer, and they failed for the wrong reason.
+# The worktree is removed on the way out, and stale metadata pruned; a red run
+# killed mid-way leaves an entry `git worktree prune` clears.
 #
 # What it writes: red.tsv beside this script, whole, every time —
 #   base   <ref>  <sha>  <engine version at the base>
 #   run    <failed>  <passed>  <skipped>
 #   <assertion name>  <times it failed>        one row per failed name
-# and when no red run was possible, base and run rows of `-`, so the file says
-# nothing was shown rather than keeping the previous claim.
+# where an assertion this tree's manifest lists and the base run never reached
+# counts as failed, by how many times it fell short. When no complete red run
+# was made (none was possible, the suite stopped before `reached` or reached no
+# assertion, or tests/red itself was stopped, since it retracts before the run)
+# the base and run rows are `-`, so the file says nothing was shown and does not
+# keep the previous claim; its stdout said which, unless it was the one stopped.
 #
-# Lines are counted, not the summary. PASS and FAIL are incremented in the
-# suite's main shell only, and some assertions run inside subshells, so the
-# summary line can read fewer than the FAIL lines above it. The lines are the
-# record; the summary is a convenience.
+# Lines are counted, not the summary: PASS and FAIL are incremented in the
+# suite's main shell only and some assertions run in subshells, so the summary
+# can read fewer than the FAIL lines above it. The lines are the record.
+#
+# The end of the suite is not every assertion in it. The `reached` line below
+# says the suite's main shell got to its last line, and bash lets a statement
+# vanish on the way without stopping. Measured in bash 3.2.57, which runs the
+# suite on a Mac: an arithmetic error inside $(( )), an operand of -, 08, 1.5
+# or two lines, prints to stderr, discards the rest of the top-level command it
+# sits in and carries on. At top level that is the whole line's list, so `a; b`
+# loses both and `cond && ok || bad` both verdicts; inside an if, a for or a
+# { } block it is every statement left in the block. Only the suite's own final
+# exit is unaffected. "and only the awaiting count records it" computes what it
+# expects from a field the engine under test wrote, so against a base that
+# writes - there it vanishes. Found in #371's review, 2026-09-25: a fixture
+# built on it read 0 of 2 assertions failing, `run 0 2 0`, the vanished one
+# counted nowhere: fewer red than true, the one shape this file must never
+# take. So this tree's manifest, assertions.tsv beside this script, is read
+# before the suite runs (after it, with --after: see Waiting), refused there if
+# it is not a manifest, and kept; after the run each name it lists is counted
+# in the log's ok, FAIL and skip lines, per name as the suite's own comparison
+# counts, and a name reached fewer times than listed is red by the shortfall.
+#
+# Waiting. tests/run --record-assertions starts this with --after at the
+# beginning of its own suite, not after it: the base's suite needs the new
+# manifest only for its comparison, so the two take one suite's wall time
+# between them where they took two (tests/run says what that cost). Run by hand
+# the manifest is there already and is read first, as above; with --after it is
+# NOT read before the suite. The suite runs, the check that it finished is made
+# first and a suite that did not is refused without waiting, and only then does
+# this wait, checking once a second, until the file <mark> exists or process
+# <pid>, the record run, is gone (_gone, below). A mark that reads exactly
+# `written` means the manifest was written, and it is read and refused or kept
+# exactly as above; any other first line, or a record run gone with no mark, is
+# a refusal, and red.tsv keeps the two rows it was given first. A monitor asks
+# _gone while the suite runs too (below).
+#
+# Recorded, not refused. The manifest says the assertion was reached against
+# this tree's own engine. If it was not reached against the base's, the base's
+# engine kept this tree's suite from asking it: a statement that erred on what
+# the engine wrote, or a block the engine's behaviour gates. Either way the base
+# does not meet the tree's contract there, which is what red means. Refusing
+# would make every change whose new assertion sits in such a block unrecordable,
+# and write - exactly where red is the true answer.
+#
+# The cost, said plainly. A skip prints a line, so a skipped assertion is
+# reached, not red, whatever gates it. A skip the base's engine causes (a block
+# skipped because the base lacks a script the tree adds) is a known gap this
+# does not close: its assertions read as reached. A cause outside the engine
+# reads as red: a fork the per-user process cap refuses inside a subshell ends
+# that subshell alone, the main shell goes on to reached, and the assertions
+# left in it are recorded red, more red than true. So does a skip whose reason
+# holds a newline: its line does not end in the parenthesis a skip line ends
+# in, and its name reads as never reached. None in tests/run does. A manifest
+# out of date with tests/run errs both ways: a name it lists that tests/run no
+# longer has (an assertion renamed without re-recording) reads as red, more red
+# than true; an assertion tests/run gained after it was written is not compared
+# at all, so if it vanishes against the base it is counted nowhere, fewer red
+# than true. The record path writes the manifest from this same tree and
+# announces it to this, so a stale one arises only in a run by hand. The log is
+# read, not the suite's ran file, which goes with its temporary directory.
 #
 # What it does not do: judge. A red count of zero is a true statement about a
 # change that added no assertion the old engine fails — a documentation change,
 # a refactor with an unchanged contract — and is recorded as zero, not refused.
-# Whether zero is acceptable for a given change is the reviewer's question, and
-# the file gives them the number to ask it about.
+# Whether that is acceptable is the reviewer's question; the file gives them the
+# number to ask it about.
 #
-#   exit 0  the red run ran; red.tsv holds its result, zero included
-#   exit 2  it could not: no base ref, no run beside this script, or the tree
-#           could not be read. red.tsv says so.
+#   exit 0  the suite reached its end and every assertion the manifest lists
+#           was reached or recorded as red; red.tsv holds the result, even zero
+#   exit 2  it could not: no base ref, no run or no readable manifest beside
+#           this script, a manifest that is not one (a malformed row, a
+#           repeated name, no rows), a tree that could not be read, a suite
+#           that stopped before its end, which is no red run whatever it
+#           printed first, or a log that could not be kept or a comparison
+#           that could not be made; with --after, also a missing or malformed
+#           argument, a record run that ended before it wrote the manifest and
+#           one whose mark does not read `written`. red.tsv says so.
+#
+# Under -j (contract D4): FELIX_TEST_RED_JOBS, read once and unset, runs the suite with -j N, and
+# this tree's tests/groups.tsv goes in with run, parts and lib. The runner's own failure lines (D3)
+# name no assertion and are not counted; one that says a unit's prelude failed refuses the log.
 #
 # One trap, from HANDOFF §5: a test for a hang leaks the hang unless its
-# watchdog kills the children, and a red run is precisely where such tests
-# fail. After the run, anything still holding the temporary path in its
-# command line is a stray of this run and is ended.
+# watchdog kills the children, and a red run is where such tests fail (_reap).
 set -uo pipefail
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 2
 OUT="$HERE/red.tsv"
+RJ="${FELIX_TEST_RED_JOBS-}"; unset FELIX_TEST_RED_JOBS FELIX_TEST_JOBS   # D4, R10: read once, never passed on, the other never read; kept only if it is an N
+case "$RJ" in [123456789]|[12345][0123456789]|6[01234]) ;; *) RJ="" ;; esac
+
+# --after <mark> <pid>, taken apart here and judged after the retraction below,
+# so a bad one is said in red.tsv as every other refusal is. It is the first
+# word or it is not --after, and what is left after it is the base, as ever.
+AFTER=0; MARK=""; WPID=""; PPID0="$PPID"
+if [ "${1:-}" = "--after" ]; then
+  AFTER=1; MARK="${2:-}"; WPID="${3:-}"
+  shift; [ "$#" -eq 0 ] || shift; [ "$#" -eq 0 ] || shift
+fi
 
 _header() {
   printf '# The red run: this tree'"'"'s assertions against the engine the base ref holds,\n'
@@ -67,15 +167,19 @@ _header() {
   printf '#   base  <ref>  <sha>  <engine version there>\n'
   printf '#   run   <failed>  <passed>  <skipped>        lines counted, not the summary\n'
   printf '#   <assertion name>  <times it failed>        failed names only\n'
-  printf '# A base of - means no red run was possible. Reproduce with: tests/red <ref>\n'
+  printf '#   an assertion the manifest lists that the base run never reached counts as failed, by its shortfall\n'
+  printf '# A base of - means no complete red run was made: none was possible, the\n'
+  printf '# suite stopped before reached or reached no assertion, or tests/red itself\n'
+  printf '# was stopped; its stdout said which unless it was the one stopped.\n'
+  printf '# Reproduce with: tests/red <ref>\n'
 }
 
 # Every write to red.tsv lands whole or not at all: a sibling file, then one
 # rename. A truncate-then-write that died half way would leave base and run
-# rows with the failed names missing below them, which reads as zero
-# regressions when there were some — the one shape this file must never take.
-# A write that fails is said, not swallowed; what is on disk then is whatever
-# the retraction below already put there.
+# rows with the failed names missing below them, which reads as zero regressions
+# when there were some — the one shape this file must never take. A write that
+# fails is said, not swallowed; what is on disk is whatever the retraction below
+# already put there.
 _put() {   # stdin -> red.tsv, atomically
   cat > "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"
 }
@@ -89,16 +193,146 @@ _none() {
   exit 2
 }
 
-# Retract FIRST, before anything that can take minutes or be killed. A run
-# ended by a signal nothing here can trap — kill -9, an out-of-memory kill, a
-# runner's hard timeout — reaches neither write below, and until this line
-# existed such a run left the previous change's claim on disk, current-looking
-# and false. From here on, a red.tsv that is not this run's result says so.
+# A tree ended (R2, R14), as _rcp_stop in receipt.sh, which this does not load: the set is "pid;start|..."
+# members (a start is what ps gave the pid when it joined; "": any), each signalled only while the latest
+# non-empty listing shows its pid with that start; an empty listing is taken again (five tries, 0.2 s apart).
+# TERM, the root given up to 10 s, STOP while a listing adds a member (30 times), KILL, a listing, KILL, CONT.
+_grow() {   # -> SET gains everything below a member present, ADD how many, PRES the pids present
+  local o="" t=0 r tab=$'\t'
+  while [ "$t" -lt 5 ]; do
+    o="$(ps -A -o pid= -o ppid= -o lstart= 2>/dev/null | awk -v seed="$SET" '{ s = $0; sub(/^ *[0-9]+ +[0-9]+ */, "", s); sub(/ +$/, "", s); R[$1] = s; K[$2] = K[$2] " " $1 }
+      END { n = split(seed, M, "|"); for (i = 1; i <= n; i++) if (M[i] != "") { split(M[i], a, ";"); m++; sp[m] = a[1]; ss[m] = a[2]; have[M[i]] = 1 }
+        for (i = 1; i <= m; i++) if (NR && (sp[i] in R) && (ss[i] == "" || ss[i] == R[sp[i]])) { pres[sp[i]] = 1; if (!(sp[i] in vis)) { vis[sp[i]] = 1; Q[++qn] = sp[i] } }
+        for (h = 1; h <= qn; h++) { nc = split(K[Q[h]], C, " "); for (j = 1; j <= nc; j++) { c = C[j]; pres[c] = 1
+          if (!((c ";" R[c]) in have)) { have[c ";" R[c]] = 1; m++; sp[m] = c; ss[m] = R[c]; add++ }
+          if (!(c in vis)) { vis[c] = 1; Q[++qn] = c } } }
+        for (i = 1; i <= m; i++) out = out (i > 1 ? "|" : "") sp[i] ";" ss[i]
+        for (c in pres) pl = pl " " c
+        printf "%d\t%d\t%s\t%s\n", NR, add + 0, out, pl }')"
+    t=$((t + 1)); case "$o" in ""|"0$tab"*) [ "$t" -ge 5 ] || sleep 0.2 ;; *) break ;; esac
+  done
+  ADD=0
+  case "$o" in [123456789]*"$tab"*) r="${o#*"$tab"}"; ADD="${r%%"$tab"*}"; r="${r#*"$tab"}"; SET="${r%%"$tab"*}"; PRES="${r#*"$tab"}" ;; esac
+}
+_k() { local p; for p in $PRES $PST; do kill -"$1" "$p" 2>/dev/null; done; }   # R21: a member sent STOP is signalled by its pid from then on
+_stop_tree() {   # <pid>, with the start time ps gave it in SUITE_ST
+  local n=0 s="$SUITE_ST"; PST=""
+  s="${s#"${s%%[! ]*}"}"; SET="$1;${s%"${s##*[! ]}"}"; PRES="$1"; _grow; _k TERM
+  while [ "$n" -lt 100 ] && kill -0 "$1" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done
+  n=0
+  while [ "$n" -lt 30 ]; do _grow; _k STOP; PST="$PST $PRES"; [ "$ADD" -gt 0 ] || break; n=$((n + 1)); done
+  _k KILL; _grow; _k KILL; _k CONT
+}
+# Whatever still holds this run's temporary path in its command line is a stray
+# of this run, and is ended (HANDOFF §5, below).
+TMP=""
+_reap() { [ -z "$TMP" ] || pkill -9 -f "$(printf '%s' "$TMP" | sed 's/[][\\.*^$(){}+?|]/\\&/g')" >/dev/null 2>&1; }
+
+# Whether the record run is gone: process $WPID no longer exists or is a zombie,
+# or is not the process red was told of (WANC and WSIG, taken when red began: it
+# was never one of red's ancestors, or its start time has changed), or red, which
+# the record run starts as its own child, has a different parent now. A process
+# that merely holds the id of a dead record run (the id was reused, and red's
+# suite forks a hundred thousand processes in fifteen minutes), or that is alive
+# and never started red, is not the record run; red's parent says so for the
+# first, red having been handed to someone else the moment its starter ended,
+# whoever that was, so it is asked whatever $WPID is.
+WANC=0; WSIG=""
+_ancestor() {   # <pid>: status 0 when it is one of this process's ancestors
+  local p="$$" n=0 w="${1#"${1%%[!0]*}"}"   # w: the id without leading zeros
+  while [ "$n" -lt 64 ]; do
+    p="$(ps -o ppid= -p "$p" 2>/dev/null)"; p="${p//[[:space:]]/}"
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$p" = "$w" ] && return 0
+    [ "$p" != 0 ] && [ "$p" != 1 ] || return 1
+    n=$((n + 1))
+  done
+  return 1
+}
+_gone() {
+  local pp
+  kill -0 "$WPID" 2>/dev/null || return 0
+  case "$(ps -o stat= -p "$WPID" 2>/dev/null)" in Z*) return 0 ;; esac
+  [ "$WANC" = 1 ] || return 0
+  [ -z "$WSIG" ] || [ "$(ps -o lstart= -p "$WPID" 2>/dev/null)" = "$WSIG" ] || return 0
+  pp="$(ps -o ppid= -p "$$" 2>/dev/null)"; pp="${pp//[[:space:]]/}"
+  case "$pp" in ''|*[!0-9]*) ;; *) [ "$pp" = "$PPID0" ] || return 0 ;; esac
+  return 1
+}
+SUITE=""; SUITE_ST=""; MON=""
+_failed() { local f=""; [ -f "$MARK" ] || return 1; { IFS= read -r f < "$MARK"; } 2>/dev/null; [ "$f" = failed ]; }   # the record run said it failed (R1)
+# Ended by a signal (the record run's, or a Ctrl-C): its suite and the monitor
+# are ended, the base checkout goes with the trap below, and the retraction is
+# written again, so that a signal before the first write, or in the middle of
+# the last, leaves red.tsv saying nothing was shown. Armed ahead of the
+# retraction for that reason; --after only, since run by hand the suite is a
+# foreground command and a signal waits for it. A monitor that is stopping the
+# suite ignores TERM and is waited for, not killed (R2).
+_abort() {   # <exit status>
+  trap '' INT TERM HUP
+  [ -z "$MON" ] || { kill "$MON" 2>/dev/null; wait "$MON" 2>/dev/null; }
+  [ -z "$SUITE" ] || _stop_tree "$SUITE"
+  _reap
+  { _header; printf 'base\t-\t-\t-\nrun\t-\t-\t-\n'; } | _put 2>/dev/null
+  exit "$1"
+}
+if [ "$AFTER" -eq 1 ]; then trap '_abort 130' INT; trap '_abort 143' TERM; trap '_abort 129' HUP; fi
+
+# Retract FIRST, before anything that can take minutes or be killed. A run ended
+# by a signal nothing here can trap (kill -9, an out-of-memory kill, a runner's
+# hard timeout) reaches neither write below, and used to leave the previous
+# change's claim on disk, current-looking and false. Now a red.tsv that is not
+# this run's result says so.
 { _header; printf 'base\t-\t-\t-\nrun\t-\t-\t-\n'; } | _put \
   || { printf 'red: not run: could not write %s\n' "$OUT"; exit 2; }
 
+# --after, judged now that the retraction stands: a mark file, and a process id
+# that is a positive decimal integer. Nothing else about either is asked yet.
+if [ "$AFTER" -eq 1 ]; then
+  case "$WPID" in ''|*[!0-9]*) WPID="" ;; *[1-9]*) ;; *) WPID="" ;; esac
+  { [ -n "$MARK" ] && [ -n "$WPID" ]; } || _none "--after needs a mark file and a process id"
+  # Who the record run is, taken now while it is the one running: whether it is
+  # an ancestor of this process, and when it started. A pid that is neither
+  # (a process red was not started by) is gone to _gone from the first pass.
+  ! _ancestor "$WPID" || WANC=1
+  WSIG="$(ps -o lstart= -p "$WPID" 2>/dev/null)"
+fi
+
 ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" || _none "$HERE is not inside a git repository"
 [ -f "$HERE/run" ] || _none "no tests/run beside $HERE/red"
+
+# This tree's manifest, read once, before the suite: a bad one costs seconds,
+# not a whole run. With --after it is read once as well, but after the suite and
+# the wait for the record run (below), which is still writing it while the suite
+# runs; every refusal and message is the same. It is kept in memory, so a
+# manifest rewritten while the suite runs does not change what the run is
+# compared with. One row is a count, a tab and a name (all after the first tab);
+# a wholly empty line is skipped. The suite's own comparison skips any row with
+# no name, `1<TAB>` among them, and this refuses every such row but the empty
+# line. A name on two rows (a textual merge makes them) is refused, not summed,
+# since the record would then rest on a count nobody wrote. awk reads every line
+# and reports the first fault at the end, so the pipe into it never breaks.
+MANF="$HERE/assertions.tsv"
+_manifest() {
+  { [ -f "$MANF" ] && [ -r "$MANF" ]; } || _none "no readable assertions.tsv beside $HERE/red"
+  MAN="$(cat "$MANF" 2>/dev/null)" || _none "no readable assertions.tsv beside $HERE/red"
+  _mv="$(printf '%s\n' "$MAN" | LC_ALL=C awk '
+    v != "" || $0 == "" { next }
+    {
+      i = index($0, "\t"); c = substr($0, 1, i - 1); n = substr($0, i + 1)
+      if (i == 0 || c !~ /^[1-9][0-9]*$/ || n == "") { v = "line " NR " is not a count, a tab and a name"; next }
+      if (n in seen) { v = "line " NR " repeats a name an earlier line holds"; next }
+      seen[n] = 1; rows++
+    }
+    END { print (v != "" ? v : (rows ? "ok" : "none")) }')"
+  case "$_mv" in
+    ok) ;;
+    none) _none "assertions.tsv beside $HERE/red lists no assertion" ;;
+    line\ *) _none "assertions.tsv $_mv" ;;
+    *) _none "no readable assertions.tsv beside $HERE/red" ;;
+  esac
+}
+[ "$AFTER" -eq 1 ] || _manifest
 
 BASE="${1:-}"
 if [ -z "$BASE" ]; then
@@ -112,8 +346,7 @@ VER="$(git -C "$ROOT" show "$SHA:engine/.claude-plugin/plugin.json" 2>/dev/null 
        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 [ -n "$VER" ] || VER="-"
 
-# Under $TMPDIR by a template, since a bare `mktemp -d` on a Mac ignores
-# TMPDIR (below, what that cost).
+# Under $TMPDIR by a template: a bare `mktemp -d` on a Mac ignores TMPDIR.
 _tmproot="${TMPDIR:-/tmp}"
 TMP="$(mktemp -d "${_tmproot%/}/tmp.XXXXXXXXXX" 2>/dev/null)" && [ -d "$TMP" ] \
   || _none "no temporary directory under $_tmproot"
@@ -124,6 +357,7 @@ _cleanup() {
   rm -rf "$TMP"
 }
 trap _cleanup EXIT
+
 # The whole commit, not engine/ alone: the suite reads the repository's own
 # gate, tables, hooks and commands through REAL_HARNESS/../.., and a tree
 # missing them would skip those assertions and call the skip a verdict.
@@ -136,43 +370,190 @@ git -C "$ROOT" worktree add --detach "$TREE" "$SHA" >/dev/null 2>&1
 mkdir -p "$TREE/engine/harness/tests" 2>/dev/null
 cp "$HERE/run" "$TREE/engine/harness/tests/run" 2>/dev/null \
   || _none "could not place tests/run into the tree at $BASE"
+# The parts are sourced by name from the run above: one only the base has is never
+# loaded, and one this tree has is placed whether or not the base predates the split.
+if [ -d "$HERE/parts" ]; then
+  mkdir -p "$TREE/engine/harness/tests/parts" 2>/dev/null \
+    && cp -R "$HERE/parts/." "$TREE/engine/harness/tests/parts/" 2>/dev/null \
+    || _none "could not place tests/parts into the tree at $BASE"
+fi
+# The driver sources tests/lib/*.sh as well (contract C2), by name. Unlike the
+# parts these replace the base's as a whole: every check that reads the suite's
+# text reads tests/lib/*.sh through _suite_files, a glob, so a lib file only the
+# base has, though the driver never sources it, would be read by those checks
+# and its violations counted against this tree. The base's directory goes first,
+# and this tree's lib is placed where it has one.
+rm -rf "$TREE/engine/harness/tests/lib" 2>/dev/null
+[ ! -e "$TREE/engine/harness/tests/lib" ] || _none "could not clear tests/lib out of the tree at $BASE"
+if [ -d "$HERE/lib" ]; then
+  mkdir -p "$TREE/engine/harness/tests/lib" 2>/dev/null \
+    && cp -R "$HERE/lib/." "$TREE/engine/harness/tests/lib/" 2>/dev/null \
+    || _none "could not place tests/lib into the tree at $BASE"
+fi
+
+# tests/groups.tsv (D5) is this tree's too: the base's goes first, and none is placed when this tree has none.
+rm -f "$TREE/engine/harness/tests/groups.tsv" 2>/dev/null; [ ! -e "$TREE/engine/harness/tests/groups.tsv" ] || _none "could not clear tests/groups.tsv out of the tree at $BASE"
+[ ! -f "$HERE/groups.tsv" ] || cp "$HERE/groups.tsv" "$TREE/engine/harness/tests/groups.tsv" 2>/dev/null || _none "could not place tests/groups.tsv into the tree at $BASE"
 
 # The suite runs with the caller's TMPDIR, as it does by hand, so its own
 # mktemp root is made where a plain run makes it. Until 2026-09-24 it ran with
 # TMPDIR under this run's directory, so that its root would go with this run
 # and a stray holding it would match the pattern below. On a Mac that never
-# happened: a bare `mktemp -d` there ignores TMPDIR, so the root landed beside
+# happened: a bare `mktemp -d` there ignores TMPDIR, the root landed beside
 # this directory, and lib/where.sh, which counts $TMPDIR as a temporary root,
-# saw the suite's scoped fixtures outside every one. 44 of #308's assertions
+# saw the suite's scoped fixtures outside every one: 44 of #308's assertions
 # failed in every red run on a Mac, against an engine identical to the tree's.
-# Making the suite honour the moved TMPDIR put the fixtures back under it and
-# broke another assertion: nesting lengthens every path the suite makes by
-# seventeen characters, and "and says which directory it was sent to" reads a
-# path the engine cuts at eighty.
+# Making the suite honour the moved TMPDIR broke another assertion: nesting
+# lengthens every path by seventeen characters, and "and says which directory
+# it was sent to" reads a path the engine cuts at eighty.
 #
-# So the pattern below, with the path's regex metacharacters escaped, ends
-# what still names this run's directory: the tree the base is checked out in,
-# which the suite reaches as REAL_HARNESS. A stray naming only the suite's own
-# root escapes it, as on a Mac it always did.
+# So the pattern below, its regex metacharacters escaped, ends what still names
+# this run's directory: the tree the base is checked out in, which the suite
+# reaches as REAL_HARNESS. A stray naming only the suite's own root escapes it,
+# as on a Mac it always did.
+#
+# The run counts only if the suite got to its end, and the exit status cannot
+# say so, since a finished red run exits 1 whenever anything is red. What says
+# so is the line the suite prints after its last assertion, exactly "reached";
+# the run placed into the base is this tree's, so the line does not depend on
+# the base. It counts only when no assertion line follows the last such line:
+# the log takes the suite's stderr with its stdout, so a child or a failure
+# detail can print the bare word earlier, and that is not the suite's end.
+# Until #371 only a run that reached no assertion was refused, and a suite that
+# died part way was written down as a clean one: on 2026-09-25 a suite stopped
+# at assertion 270 read 0 of 270 failing, and an earlier record read 0 of 1320
+# just after fork had failed at the per-user process cap, when the whole suite
+# holds some 3,700. The status is kept to name the death in the refusal; the
+# line is read from the log itself, not through a pipe that pipefail can make
+# report it missing when it is there.
+#
+# Read once. Everything below reads one copy of the log, taken after the
+# strays are ended, because a stray the pattern misses still holds the log
+# open. Until 2026-10-01 the log was read five times, and a line such a stray
+# wrote after the marker check reached the comparison and not the run row: a
+# stray that printed a vanished name's ok line just then cancelled its
+# shortfall, in 5 of 5 runs of the strayline fixture tests/run holds against
+# the tests/red before this change (measured again 2026-10-02).
+RAW="$TMP/red.raw"
 LOG="$TMP/red.log"
-( cd "$TREE" && FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ) > "$LOG" 2>&1
-pkill -9 -f "$(printf '%s' "$TMP" | sed 's/[][\\.*^$(){}+?|]/\\&/g')" >/dev/null 2>&1
+if [ "$AFTER" -eq 1 ]; then
+  # With --after the suite runs as a job and red waits for it, so that a signal
+  # reaches red while it waits and not after, and a monitor watches the record
+  # run meanwhile: if it is gone and has left no mark, the suite is ended (not
+  # the 25 minutes it would take), and so is this run, with the reason a record
+  # run that ended is refused for. A job in a script ignores SIGINT, and the
+  # suite already did in every record run (the record run starts red as a job,
+  # and what a process ignores its children ignore too). Run by hand without
+  # --after, the suite is as it was.
+  ( cd "$TREE" && FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ${RJ:+-j $RJ} ) > "$RAW" 2>&1 &
+  SUITE=$!; SUITE_ST="$(ps -o lstart= -p "$SUITE" 2>/dev/null)"
+  ( sl=""; z=0; trap 'z=1' TERM   # R43: a TERM is only recorded; the loop acts on it once it holds the sleep's pid, so none is left behind
+    while [ "$z" = 0 ] && kill -0 "$SUITE" 2>/dev/null; do
+      if { [ ! -e "$MARK" ] && _gone; } || _failed; then trap '' TERM; [ "$z" = 1 ] || { : > "$TMP/gone"; _stop_tree "$SUITE"; }; break; fi
+      sleep 1 & sl=$!; [ "$z" = 1 ] || { wait "$sl"; [ "$z" = 1 ] || sl=""; }
+    done
+    [ -z "$sl" ] || case " $(builtin jobs -rp) " in *" $sl "*) kill -KILL "$sl" 2>/dev/null ;; esac ) > /dev/null 2>&1 &
+  MON=$!
+  wait "$SUITE"; RC=$?
+  kill "$MON" 2>/dev/null; wait "$MON" 2>/dev/null
+  _reap
+  # A mark that reads `failed` ends the suite and is refused here, before its log is read (R1).
+  _first=""; [ ! -f "$MARK" ] || { IFS= read -r _first < "$MARK"; } 2>/dev/null
+  [ "$_first" != failed ] || _none "the record run did not write a manifest (failed)"
+  [ ! -e "$TMP/gone" ] || _none "the record run ended before it wrote the manifest"
+else
+  ( cd "$TREE" && FELIX_TEST_NO_MANIFEST=1 bash engine/harness/tests/run ${RJ:+-j $RJ} ) > "$RAW" 2>&1
+  RC=$?
+fi
+_reap
+cp "$RAW" "$LOG" 2>/dev/null || _none "could not keep the log of the suite against $BASE"
 
+# The runner's own failure lines (D3, R8, by their seven prefixes) are left out of the counts and the names (LOGF).
+LOGF="$LOG.f"; grep -aEv "^  FAIL  part(.s prelude failed: | did not finish: | ended without its mark: | process ended with status | failed more than it printed: | printed a line the runner owns: | left the shell changed for the parts after it: )" "$LOG" > "$LOGF"
 PASSED="$(grep -c '^  ok    ' "$LOG")"
-FAILED="$(grep -c '^  FAIL  ' "$LOG")"
+FAILED="$(grep -c '^  FAIL  ' "$LOGF")"
 SKIPPED="$(grep -c '^  skip  ' "$LOG")"
+awk '/^  (ok    |FAIL  |skip  )/ { a = NR } $0 == "reached" { r = NR }
+     END { exit (r + 0 > a + 0) ? 0 : 1 }' "$LOG" \
+  || _none "the suite against $BASE did not finish (exit $RC after $((PASSED + FAILED + SKIPPED)) assertions)"
 [ "$((PASSED + FAILED + SKIPPED))" -gt 0 ] || _none "the suite reached no assertion against $BASE"
+! grep -Eq "^  FAIL  part(.s prelude failed: | printed a line the runner owns: )" "$LOG" || _none "the suite against $BASE failed in a unit's prelude or printed a line its runner owns"
+
+# With --after the record run may still be writing the manifest, so it is waited
+# for here, after the checks above: a suite that did not finish is refused
+# without waiting. The mark is looked at first on each pass and the process
+# second, and one found gone is not believed until the mark has been looked at
+# once more, since a mark written just before it ended must count.
+if [ "$AFTER" -eq 1 ]; then
+  while [ ! -e "$MARK" ]; do
+    if _gone; then
+      [ -e "$MARK" ] && break
+      _none "the record run ended before it wrote the manifest"
+    fi
+    sleep 1
+  done
+  # A mark that is not a regular file (a directory, a FIFO, a socket, a device,
+  # or a link to one) is refused here, at once, and never opened: reading a FIFO
+  # blocks until something writes to it, whether or not the record run is gone.
+  [ -f "$MARK" ] || _none "the record run did not write a manifest ($MARK is not a regular file)"
+  _first=""; { IFS= read -r _first < "$MARK"; } 2>/dev/null
+  [ "$_first" = "written" ] || _none "the record run did not write a manifest (${_first:-empty})"
+  _manifest
+fi
+
+# Then the manifest kept above, against the log. What the run did adds red
+# and is never a refusal; what is refused here is a comparison that could not
+# be made, an awk that failed or a count no number holds. Per name, counted,
+# since some names legitimately appear more than once and losing one of a
+# pair is as silent as losing a unique one. An ok or FAIL line is the name
+# exactly. A skip line is the name, " (", a reason and ")", and either may
+# hold parentheses, so it goes to the longest listed name it begins with
+# followed by " (". Out comes one row per name with FAIL lines or a
+# shortfall: FAIL lines, shortfall, name. Names over-reached or not listed are
+# not compared, as in the suite's own check; their FAIL lines count as ever.
+# Strings go through files, never awk -v, which would eat a backslash.
+CMP="$TMP/red.cmp"
+printf '%s\n' "$MAN" | LC_ALL=C awk '
+  NR == FNR { if ($0 != "") { i = index($0, "\t"); want[substr($0, i + 1)] = substr($0, 1, i - 1) + 0 }; next }
+  { h = substr($0, 1, 8) }
+  h == "  ok    " || h == "  FAIL  " {
+    n = substr($0, 9); if (h == "  FAIL  ") fail[n]++
+    if (n in want) got[n]++
+    next
+  }
+  h == "  skip  " && substr($0, length($0)) == ")" {
+    t = substr($0, 9); p = 0; hit = 0
+    while ((k = index(substr(t, p + 1), " (")) > 0) {
+      p += k; c = substr(t, 1, p - 1)
+      if (c in want) { best = c; hit = 1 }
+    }
+    if (hit) got[best]++
+  }
+  END {
+    for (n in want) if (want[n] > got[n] + 0) short[n] = want[n] - got[n]
+    for (n in fail) printf "%.0f\t%.0f\t%s\n", fail[n], short[n] + 0, n
+    for (n in short) if (!(n in fail)) printf "0\t%.0f\t%s\n", short[n], n
+  }' - "$LOGF" > "$CMP" 2>/dev/null || _none "could not compare the run against assertions.tsv"
+read -r FAILED_ALL TOTAL UNREACHED <<< "$(RED_F="$FAILED" RED_P="$PASSED" RED_S="$SKIPPED" LC_ALL=C awk -F'\t' '
+  { u += $2 } END { f = ENVIRON["RED_F"] + u; printf "%.0f %.0f %.0f\n", f, f + ENVIRON["RED_P"] + ENVIRON["RED_S"], u }' "$CMP")"
+# Defensive, asked by no fixture: the awk above prints three numbers whatever it reads.
+for _v in "$FAILED_ALL" "$TOTAL" "$UNREACHED"; do
+  case "$_v" in ''|*[!0-9]*) _none "could not compare the run against assertions.tsv" ;; esac
+done
 
 {
   _header
   printf 'base\t%s\t%s\t%s\n' "$BASE" "$SHA" "$VER"
-  printf 'run\t%s\t%s\t%s\n' "$FAILED" "$PASSED" "$SKIPPED"
-  # The names, once each, with how many times each failed: eleven names in the
-  # suite legitimately appear more than once, and a count keeps that visible.
-  sed -n 's/^  FAIL  //p' "$LOG" | LC_ALL=C sort | uniq -c \
-    | sed 's/^[[:space:]]*\([0-9][0-9]*\) \(.*\)$/\2	\1/'
+  printf 'run\t%s\t%s\t%s\n' "$FAILED_ALL" "$PASSED" "$SKIPPED"
+  # The names, once each, in C order of the name, each with its FAIL lines and
+  # its shortfall together, so the names still add up to the run's failed.
+  LC_ALL=C sort -t "$(printf '\t')" -k3 "$CMP" | LC_ALL=C awk '{
+    i = index($0, "\t"); r = substr($0, i + 1); j = index(r, "\t")
+    printf "%s\t%.0f\n", substr(r, j + 1), substr($0, 1, i - 1) + substr(r, 1, j - 1) }'
 } | _put || _none "could not write $OUT"
 
-printf 'red: %s of %s assertions fail against %s (%.7s) at engine %s\n' \
-  "$FAILED" "$((PASSED + FAILED + SKIPPED))" "$BASE" "$SHA" "$VER"
+_never=""
+[ "$UNREACHED" = 0 ] || _never=", $UNREACHED of them never reached"
+printf 'red: %s of %s assertions fail against %s (%.7s) at engine %s%s\n' \
+  "$FAILED_ALL" "$TOTAL" "$BASE" "$SHA" "$VER" "$_never"
 exit 0

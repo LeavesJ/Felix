@@ -50,6 +50,9 @@
 # rather than evaluated: a model's guess may trigger measurement and may not
 # stop a release.
 
+command -v felix_final_filter_lead >/dev/null 2>&1 \
+  || . "$(dirname "${BASH_SOURCE[0]:-$0}")/final-filter.sh"
+
 FELIX_OBLIGATION_CLASSES='INFO ADVISORY TASK_BLOCKING RELEASE_BLOCKING AUTHORITY_BLOCKING'
 FELIX_OBLIGATION_PATHWAYS='deterministic witness corroborated probabilistic unknown'
 
@@ -63,11 +66,20 @@ FELIX_OBLIGATION_PATHWAYS='deterministic witness corroborated probabilistic unkn
 # what Felix lacks made by a typo. Empty reads as `-`, as a missing column
 # does: a trailing tab was a valid row before this column existed, and the
 # schema check already refuses the tab itself.
+#
+# An evidence contract a final filter makes unable to fail (final-filter.sh)
+# is refused with the rest: pipefail is off in the `bash -c` that runs it, so
+# `make test | tail -20` read SATISFIED whatever the tests said. `applies` is
+# not judged. An unfailable one makes its row always apply, which asks more.
+#
+# A scan that fails admits nothing, and says so in `bad` mode. The classifier
+# made this scan do more than split cells, and a table it could not finish
+# reading is not a table of rows it finished.
 _felix_obligation_scan() {
-  local table="$1/obligations.tsv" mode="$2"
+  local table="$1/obligations.tsv" mode="$2" out rc
   [ -f "$table" ] || return 0
-  awk -F'\t' -v mode="$mode" \
-      -v classes=" $FELIX_OBLIGATION_CLASSES " -v paths=" $FELIX_OBLIGATION_PATHWAYS " '
+  out="$(LC_ALL=C awk -F'\t' -v mode="$mode" \
+      -v classes=" $FELIX_OBLIGATION_CLASSES " -v paths=" $FELIX_OBLIGATION_PATHWAYS " "$FELIX_FINAL_FILTER_AWK"'
     function needs_bad(s,   n, i, id) {
       if (s == "" || s == "-") return 0
       n = split(s, id, ",")
@@ -81,6 +93,8 @@ _felix_obligation_scan() {
         why = "a row with no obligation name"
       else if (NF < 5 || $5 == "" || $5 == "-")
         why = $1 ": no evidence contract, so nothing could ever discharge it"
+      else if ((ff = ff_row("obligations.tsv", $0)) != "")
+        why = $1 ": " ff
       else if (index(classes, " " $2 " ") == 0)
         why = $1 ": class \047" $2 "\047 is not one of" classes
       else if (index(paths, " " $3 " ") == 0)
@@ -93,7 +107,12 @@ _felix_obligation_scan() {
         why = $1 ": admitted twice, and a name that names two rows names neither"
       if (mode == "rows" && why == "") print
       if (mode == "bad"  && why != "") print why
-    }' "$table"
+    }' "$table")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$mode" != bad ] || printf 'obligations.tsv could not be read: its scan exited %s\n' "$rc"
+    return 0
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
   return 0
 }
 
@@ -102,7 +121,7 @@ felix_obligation_malformed() { _felix_obligation_scan "$1" bad; }
 
 # The obligations a table admits, by name.
 felix_obligation_names() {
-  felix_obligation_rows "$1" | cut -f1
+  felix_obligation_rows "$1" | LC_ALL=C cut -f1
   return 0
 }
 
@@ -128,6 +147,8 @@ felix_obligation_state() {
     esac
   fi
 
+  # At the merge boundary the contract runs P's instruments (policy.sh, spec S2); elsewhere it is as written.
+  command -v _felix_p_cmd >/dev/null 2>&1 && evidence="$(_felix_p_cmd "$evidence")"
   out="$( cd "$root" 2>/dev/null || exit 126
           bash -c "$evidence" felix-obligation </dev/null 2>&1 )"
   rc=$?
@@ -166,7 +187,7 @@ fi
 # row apply again. With `release` as the third argument the column is `-` for
 # every row: the release path never carries a clearance, so the blocking
 # filter's release arm is the second lock and not the only one.
-_felix_obligation_field() { printf '%s\n' "$1" | cut -f"$2"; }
+_felix_obligation_field() { printf '%s\n' "$1" | LC_ALL=C cut -f"$2"; }
 felix_obligations_run() {   # proj root [mode]
   local proj="$1" root="$2" mode="${3:-}" line name cls pw applies ev grounds st exc
   felix_obligation_rows "$proj" | while IFS= read -r line; do
@@ -238,8 +259,8 @@ felix_obligations_blocking() {
 # nothing in probes.tsv rests on nothing, and the table is refused for it.
 felix_obligations_orphans() {
   local proj="$1" preds g
-  preds="$(felix_probe_rows "$proj" 2>/dev/null | cut -f1 | LC_ALL=C sort -u)"
-  felix_obligation_rows "$proj" | cut -f6 | tr ',' '\n' | grep -v '^-\?$' \
+  preds="$(felix_probe_rows "$proj" 2>/dev/null | LC_ALL=C cut -f1 | LC_ALL=C sort -u)"
+  felix_obligation_rows "$proj" | LC_ALL=C cut -f6 | LC_ALL=C tr ',' '\n' | LC_ALL=C grep -v '^-\?$' \
     | LC_ALL=C sort -u | while IFS= read -r g; do
         [ -n "$g" ] || continue
         felix_has_line "$preds" "$g" && continue
@@ -294,7 +315,9 @@ felix_obligations_ungrounded() {
 # stderr naming the table, and exit 2, whichever read it was. Read as empty it
 # resolved every capability absent, about a table nobody read. The line is said
 # here, because the reads below discard the libraries' stderr, as they always
-# have; the report is held until every read has held.
+# have; the report is held until every read has held. One holding a NUL byte
+# resolves nothing the same way, and the line says it holds one
+# (lib/qualify.sh, _felix_qualify_read, says why it is not read).
 felix_obligations_needs() {   # proj
   local proj="$1" rows mal declared report line name needs cap missing nl='
 '
@@ -330,7 +353,11 @@ felix_obligations_needs() {   # proj
            done
          done
          exit 0; })" \
-    || { printf 'felix: %s/qualification.tsv could not be read, so no need was resolved against it\n' "$proj" >&2
+    || { if [ "$?" = 3 ]; then
+           printf 'felix: %s/qualification.tsv holds a NUL byte, so no need was resolved against it\n' "$proj" >&2
+         else
+           printf 'felix: %s/qualification.tsv could not be read, so no need was resolved against it\n' "$proj" >&2
+         fi
          return 2; }
   [ -z "$report" ] || printf '%s\n' "$report"
   return 0

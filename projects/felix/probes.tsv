@@ -41,5 +41,33 @@ governed_project	-	-	ls -1 projects/*/project.json	test -d projects
 enforcing_table	-	-	git ls-files 'projects/*/risk.tsv' 'projects/*/deny.tsv' 'projects/*/evidence.tsv' 'projects/*/probes.tsv'	test -d projects
 test_assertion	tests	-	cut -f2 engine/harness/tests/assertions.tsv	test -s engine/harness/tests/assertions.tsv
 ci_workflow	ci	-	git ls-files '.github/workflows/*'	test -d .github/workflows
-deployed_engine	-	test -d "$HOME/.claude/plugins/cache/felix/felix"	ls -1d "$HOME"/.claude/plugins/cache/felix/felix/*/	test -d "$HOME/.claude/plugins/cache/felix"
-marketplace_root	-	test -r "$HOME/.claude/plugins/known_marketplaces.json"	sed -n '/"felix"[[:space:]]*:[[:space:]]*{/,/^  }/p' "$HOME/.claude/plugins/known_marketplaces.json" | sed -n 's/.*"installLocation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'	test -s "$HOME/.claude/plugins/known_marketplaces.json"
+# The last two ask about this machine's felix, so each applies only where that
+# felix exists: the cache holds a felix entry, the registry names a felix
+# marketplace. marketplace_root used to apply wherever a registry could be
+# read, so a machine that had registered any other marketplace read blind:
+# every cloud session once a plugin was installed, and the clean runner of
+# docs/handoff/0bm.md after the suite's own `claude` call wrote a registry.
+# That is a machine without felix's marketplace, which is not-applicable, and
+# `test -r` stays in front so a missing registry answers 1 and not grep's 2.
+#
+# deployed_engine enumerates one entry: the cache directory of the version
+# main declares, down to the harness/ that felix_accepted_deploy_diff calls
+# installed. That entry is the one the gate's `installed` check and the merge
+# judge read. The row used to list every version the cache held, and the
+# epoch hashes each row's member count, so pruning or installing any other
+# version moved the topology and staled every green receipt on the machine
+# while nothing the verdict rests on had changed. On 2026-10-08 a gate that
+# took hours went stale two minutes after it passed, when the cache went from
+# 40 versions to 39. Main's version is read the way the gate reads it,
+# origin/main before main. The cache is the default one under $HOME, as the
+# row has always read; the overrides the gate also honours,
+# FELIX_KERNEL_CACHE and FELIX_PLUGIN_CACHE, are not read here.
+#
+# The witness asks the registry rather than the filesystem. If the registry
+# names main's version, the entry should be there, and a probe that found
+# nothing is blind. If it names another version, main's engine is not
+# deployed yet: the row reads empty, and the `installed` check names the
+# remedy. A checkout with no main to read makes the witness exit 2, so the
+# row is unknown and blocks, as the gate fails that checkout too.
+deployed_engine	-	test -d "$HOME/.claude/plugins/cache/felix/felix"	b=origin/main; git rev-parse -q --verify "$b" >/dev/null || b=main; v="$(git show "$b:engine/.claude-plugin/plugin.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"; [ -n "$v" ] && ls -1d "$HOME/.claude/plugins/cache/felix/felix/$v/harness/"	b=origin/main; git rev-parse -q --verify "$b" >/dev/null || b=main; v="$(git show "$b:engine/.claude-plugin/plugin.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"; [ -n "$v" ] || exit 2; grep -qF "/felix/felix/$v\"" "$HOME/.claude/plugins/installed_plugins.json"
+marketplace_root	-	test -r "$HOME/.claude/plugins/known_marketplaces.json" && grep -q '"felix"[[:space:]]*:[[:space:]]*{' "$HOME/.claude/plugins/known_marketplaces.json"	sed -n '/"felix"[[:space:]]*:[[:space:]]*{/,/^  }/p' "$HOME/.claude/plugins/known_marketplaces.json" | sed -n 's/.*"installLocation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'	test -s "$HOME/.claude/plugins/known_marketplaces.json"

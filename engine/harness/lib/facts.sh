@@ -78,18 +78,18 @@ felix_probes_record() {
   [ -n "$tid" ] || tid="unknown-tree"
   # A byte offset, not a line count: it is where this call's rows begin, since
   # the log only grows, and it is what the confirmation below reads from.
-  before="$(wc -c < "$log" 2>/dev/null | tr -dc '0-9')"; [ -n "$before" ] || before=0
+  before="$(wc -c < "$log" 2>/dev/null | LC_ALL=C tr -dc '0-9')"; [ -n "$before" ] || before=0
   n=0
 
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    pred="$(printf '%s\n' "$line" | cut -f1)"
-    grounds="$(printf '%s\n' "$line" | cut -f2)"
-    state="$(printf '%s\n' "$line" | cut -f3)"
-    count="$(printf '%s\n' "$line" | cut -f4)"
-    detail="$(printf '%s\n' "$line" | cut -f5)"
-    probe="$(printf '%s\n' "$line" | cut -f6)"
-    source="$(printf '%s\n' "$line" | cut -f7)"
+    pred="$(printf '%s\n' "$line" | LC_ALL=C cut -f1)"
+    grounds="$(printf '%s\n' "$line" | LC_ALL=C cut -f2)"
+    state="$(printf '%s\n' "$line" | LC_ALL=C cut -f3)"
+    count="$(printf '%s\n' "$line" | LC_ALL=C cut -f4)"
+    detail="$(printf '%s\n' "$line" | LC_ALL=C cut -f5)"
+    probe="$(printf '%s\n' "$line" | LC_ALL=C cut -f6)"
+    source="$(printf '%s\n' "$line" | LC_ALL=C cut -f7)"
     n=$((n + 1))
     printf -v row '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
       "$stamp" "$tid" "$pred" "$(felix_probe_class "$state")" \
@@ -121,7 +121,7 @@ EOF
   # records the same fact at the same second on the same tree, so the log holds
   # that fact either way.
   { printf '%s\n' "$mine"; tail -c "+$((before + 1))" "$log" 2>/dev/null; } \
-    | awk -v n="$n" '
+    | LC_ALL=C awk -v n="$n" '
         !sep { if ($0 == "") sep = 1; else want[$0]++; next }
         want[$0] > 0 { want[$0]--; got++ }
         END { exit !(got == n) }'
@@ -215,7 +215,7 @@ $pred"
     # count nothing could read renders exactly like a count that did not move.
     # That is this whole file's failure class appearing inside its own reader.
     case "${wcount}${count}" in
-      *[!0-9]*|'')
+      *[!0123456789]*|'')
         printf '%s\t%s\t%s\tone of these counts is not a number, so nothing was compared\n' \
           "$pred" "${wcount:-?}" "${count:-?}"
         continue ;;

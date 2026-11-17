@@ -14,13 +14,20 @@
 # runner's ephemeral filesystem resets every job, which is the same as no
 # ceiling, and it resets invisibly.
 
+# felix_end_line lives in resolve.sh, which the CLI and the hooks source first.
+# Sourced here too rather than assumed: missing, the record below would fail
+# every time and say only that the log was not written.
+if ! command -v felix_end_line >/dev/null 2>&1; then
+  . "$(dirname "${BASH_SOURCE[0]:-$0}")/resolve.sh"
+fi
+
 FELIX_BUDGET_DEFAULT="${FELIX_BUDGET_DEFAULT:-10}"
 
 felix_budget_limit() {
   local proj="$1" v
   v="$(felix_json_str "$proj/project.json" unattended_daily_limit 2>/dev/null)"
   case "$v" in
-    ''|*[!0-9]*) printf '%s' "$FELIX_BUDGET_DEFAULT" ;;
+    ''|*[!0123456789]*) printf '%s' "$FELIX_BUDGET_DEFAULT" ;;
     *) printf '%s' "$v" ;;
   esac
 }
@@ -30,8 +37,11 @@ felix_budget_used() {
   local proj="$1" now cutoff n=0 epoch _
   [ -f "$proj/budget.log" ] || { printf '0'; return; }
   now="$(date +%s)"; cutoff=$((now - 86400))
-  while IFS=$'\t' read -r epoch _; do
-    case "$epoch" in ''|*[!0-9]*) continue ;; esac
+  # A last line with no newline is a run too. `read` returns 1 on it with the
+  # fields filled, and the loop dropped it, so a hand-merged log counted one
+  # run short and the ceiling bound one run late (2026-10-01).
+  while IFS=$'\t' read -r epoch _ || [ -n "${epoch:-}" ]; do
+    case "$epoch" in ''|*[!0123456789]*) continue ;; esac
     [ "$epoch" -ge "$cutoff" ] && n=$((n+1))
   done < "$proj/budget.log"
   printf '%s' "$n"
@@ -53,6 +63,11 @@ felix_budget_used() {
 felix_budget_record() {
   local proj="$1" why="${2:-unattended run}" now
   now="$(date +%s)"
+  # Before the append, never after it, for the reason above. A budget.log whose
+  # last line has no newline took this run onto that line, so two runs read as
+  # one and the ceiling undercounted (2026-10-01). Not ended, this is a failed
+  # write like any other, and cmd_budget refuses the run.
+  felix_end_line "$proj/budget.log" || return 1
   printf '%s\t%s\t%s\n' "$now" "$(date -r "$now" +%Y-%m-%dT%H:%M 2>/dev/null || date +%Y-%m-%dT%H:%M)" "$why" \
     >> "$proj/budget.log"
 }

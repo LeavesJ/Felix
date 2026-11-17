@@ -1,0 +1,300 @@
+#!/bin/bash
+# The engine copy: what the authority's login runs, taken from one commit the founder names in full.
+#
+#   authority-engine COMMIT [SOURCE]
+#
+#   exit 0  the copy is in place and the launchers are written; eleven lines say what and where
+#   exit 1  refused: one line on standard error, and nothing written that the refusal's check guards
+#   exit 2  usage
+#
+# Trust-plane step 4, stage 1, the setup slice (0.49.351; E1 to E13 of its spec). Run with /bin/bash, as the
+# authority's login, never by felix. It fetches SOURCE (the drop, /Users/Shared/felix-authority/source.bundle
+# when none is given) into HOME/.felix/engine/boot.git, writes the engine of COMMIT file by file from git's
+# objects to HOME/.felix/engine/COMMIT, and writes three launchers in HOME/.felix/bin that run that copy with
+# nothing of the caller's environment: felix, reach-witness and, on macOS, lock.
+#
+# WHY THE WHOLE ID. The source is a worker's to write. A commit made to match a short prefix is within a
+# worker's reach; the bytes of a commit named by all forty digits are not. So the id is the one thing here the
+# founder vouches for, and every check below reads the commit and the store, not the drop's word.
+#
+# HOW THE FOUNDER GETS THIS PROGRAM ONTO THAT LOGIN: from the commit itself, with the root-owned git, read on
+# standard input: `git --git-dir=B show COMMIT:engine/harness/bin/authority-engine | /bin/bash -s -- COMMIT`.
+# Its own path is then unknown, so nothing here reads $0 or BASH_SOURCE, and it sources nothing. Everything
+# after the block below is inside functions, and the last line calls them with standard input from /dev/null:
+# bash has read the whole program before any command runs, and no command can read the rest of the program
+# as its input.
+#
+# NOT READ, and the spec's section 8 lists them: what the drop's other commits hold, the libraries a program
+# loads, and whether the login it runs as is the authority's (felix authority init and condition a read that).
+# It makes and changes no login, key or setting, and writes nothing outside HOME/.felix: nothing under
+# HOME/.felix/authority. Bash 3.2.
+set -u
+
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# E1. The system's PATH, before any program runs. Every program below is still named by its absolute path, so
+# PATH decides nothing here; it is set for the programs those run. The caller's exported functions are imported
+# before the first line, and are removed on the line after `export PATH`, before any function of this program's
+# runs. NOT A WALL (review E1-builtin-fn, F7): a function of the caller's named set, export or unset runs on the
+# lines above, before that removal, and one named builtin or compgen stands in for the removal itself, which a
+# program cannot undo from inside. The caller is the authority's own Terminal; run under /usr/bin/env -i, it
+# imports none. Nothing of the caller's environment reaches git or the dynamic loader of a program run from here.
+case "$( { /usr/bin/uname -s || /bin/uname -s; } < /dev/null 2>/dev/null)" in
+  Darwin) _AE_OS=Darwin; PATH=/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin ;;
+  *)      _AE_OS=other; PATH=/usr/bin:/bin:/usr/sbin:/sbin ;;
+esac
+export PATH
+for _ae_v in $(builtin compgen -A function); do builtin unset -f "$_ae_v"; done
+for _ae_v in ${!GIT_@} ${!DYLD_@} ${!LD_@}; do unset "$_ae_v"; done
+unset BASH_ENV ENV CDPATH _ae_v _FELIX_CALLER_CDPATH
+IFS=$' \t\n'; LC_ALL=C; export LC_ALL; umask 077
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix. It comes
+# after the unset of each GIT_ variable above, which would take it away again.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+# The few programs this runs besides git, each by its absolute path; where one is in /usr/bin on one system and
+# in /bin on another, the first that is there.
+_ae_bin() { if [ -x "/bin/$1" ]; then printf '/bin/%s' "$1"; else printf '/usr/bin/%s' "$1"; fi; }
+_AE_MKDIR="$(_ae_bin mkdir)"; _AE_CHMOD="$(_ae_bin chmod)"; _AE_MV="$(_ae_bin mv)"; _AE_RM="$(_ae_bin rm)"
+_AE_ID=/usr/bin/id; _AE_FIND=/usr/bin/find; _AE_AWK=/usr/bin/awk; _AE_SORT=/usr/bin/sort; _AE_WC=/usr/bin/wc; _AE_LS="$(_ae_bin ls)"
+_AE_NEW=""
+
+_ae_no() { printf 'authority-engine: %s\n' "$1" >&2; exit "${2:-1}"; }   # LINE [STATUS]: a refusal
+# Section 0: a value from outside this program is shown as it is when it is printable ASCII with no backslash
+# or double quote; otherwise each byte outside 0x20 to 0x7e, each \ and each " as \xNN, the whole in quotes.
+_ae_show() {   # STRING
+  local s="$1" out="" c v i
+  case "$s" in *[!\ -~]*|*\\*|*\"*) ;; *) printf '%s' "$s"; return ;; esac
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      \\) out="$out\\x5c" ;;
+      \") out="$out\\x22" ;;
+      [\ -~]) out="$out$c" ;;
+      *) printf -v v '%d' "'$c" 2>/dev/null || v=63; printf -v v '\\x%02x' "$(( v & 255 ))"; out="$out$v" ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
+# E3. Each git: no configuration, attributes or replacement object of the caller's, the user's or the system's,
+# no prompt, and no hook of the store's.
+_ae_g() {   # ARG...: git, in the boot store
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 \
+    "$_AE_GIT" -c core.attributesFile=/dev/null -c core.hooksPath=/dev/null --git-dir="$_AE_B" "$@"
+}
+# A path that a group or every login can write, or that is a link or not a directory, is refused (E6). So is
+# one with an access-control entry that is not a deny (review E6-acl): it can let a login write what the mode
+# says it cannot. The entries are read where ls prints them (ls -lde, a line that starts with a space, a number
+# and a colon), as condition e reads them; where ls takes no -e, there is nothing more to read.
+_ae_acl() {   # PATH...: prints the first entry that is not a deny, of these paths and each path under them
+  "$_AE_LS" -lde / >/dev/null 2>&1 || return 0
+  "$_AE_FIND" "$@" -exec "$_AE_LS" -lde {} + 2>/dev/null | "$_AE_AWK" '/^ [0-9]+: / && $0 !~ / deny / { print; exit }'
+}
+_ae_dir_ok() {   # PATH
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    [ -d "$1" ] && [ ! -L "$1" ] || _ae_no "$(_ae_show "$1") is not a directory"
+    [ -z "$("$_AE_FIND" "$1" -prune \( -perm -020 -o -perm -002 \) -print 2>/dev/null)" ] \
+      && [ -z "$(_ae_acl "$1" -prune)" ] || _ae_no "$(_ae_show "$1") can be written by another login"
+  fi
+}
+# The next line is a command the founder types, so a word of it that holds a byte other than a letter, a digit
+# or one of _./:@%+=,- is put in single quotes for the shell, each single quote in it as '\'' (review
+# show-escaping): printed as it is, a source holding a space or a ; split, or ran a second command.
+_ae_sh() {   # WORD
+  local q="'\\''"
+  case "$1" in *[!A-Za-z0-9_./:@%+=,-]*) ;; *) printf '%s' "$1"; return ;; esac
+  printf "'%s'" "${1//\'/$q}"
+}
+
+# E2. The git only root can change. On macOS /usr/bin/git runs the git xcode-select points at, which on this
+# Mac is inside /Applications, a directory the admin group writes; the Command Line Tools' git is root's.
+_ae_git() {
+  local d
+  if [ "$_AE_OS" = Darwin ]; then _AE_GIT=/Library/Developer/CommandLineTools/usr/bin/git; else _AE_GIT=/usr/bin/git; fi
+  if [ ! -e "$_AE_GIT" ] && [ ! -L "$_AE_GIT" ]; then
+    [ "$_AE_OS" != Darwin ] || _ae_no "there is no $_AE_GIT; the Command Line Tools provide it"
+    _ae_no "there is no $_AE_GIT"
+  fi
+  d="${_AE_GIT%/*}"
+  [ -n "$("$_AE_FIND" "$_AE_GIT" -prune -type f -user 0 ! -perm -020 ! -perm -002 -print 2>/dev/null)" ] \
+    && [ -n "$("$_AE_FIND" "$d" -prune -type d ! -perm -020 ! -perm -002 -print 2>/dev/null)" ] \
+    || _ae_no "$_AE_GIT is not a git only root can change"
+}
+
+# E8. Reads `ls-tree -r COMMIT -- engine` into _AE_E (MODE ID PATH, NUL-free, one a line) and refuses, before
+# anything of the copy is written: a link, a submodule or anything but a blob of 100644 or 100755 (the first
+# such path is named); a path with a byte outside printable ASCII, or with an empty, "." or ".." part (it
+# would be written somewhere else than its name says); and two paths, or two of their directories, equal when
+# compared without case (this Mac's file system would write them as one).
+_ae_tree() {
+  local e meta p odd="" name="" k
+  _AE_E=""; _AE_N=0
+  while IFS= read -r -d '' e; do
+    meta="${e%%$'\t'*}"; p="${e#*$'\t'}"
+    case "$meta" in
+      "100644 blob "*|"100755 blob "*) ;;
+      *) [ -n "$odd" ] || odd="$p"; continue ;;
+    esac
+    case "/$p/" in *[!\ -~]*|*//*|*/./*|*/../*) [ -n "$name" ] || name="$p"; continue ;; esac
+    _AE_E="$_AE_E${meta%% *} ${meta##* } $p"$'\n'; _AE_N=$((_AE_N + 1))
+  done < <(_ae_g ls-tree -r -z "$_AE_K" -- engine 2>/dev/null)
+  [ -z "$odd" ] || _ae_no "$(_ae_show "$odd") in $_AE_K is a link or a submodule, and the copy holds files only"
+  [ -z "$name" ] || _ae_no "$(_ae_show "$name") in $_AE_K cannot be written on this file system as it is named"
+  k="$(printf '%s' "$_AE_E" | "$_AE_AWK" '{ p = substr($0, length($1) + length($2) + 3); n = split(p, c, "/"); q = ""
+         for (i = 1; i <= n; i++) { q = (i == 1) ? c[1] : q "/" c[i]; if (q in seen) continue; seen[q] = 1
+           l = tolower(q); if (l in low) { print low[l]; exit } low[l] = q } }')"
+  [ -z "$k" ] || _ae_no "$(_ae_show "$k") in $_AE_K cannot be written on this file system as it is named"
+  [ "$_AE_N" -gt 0 ] || _ae_no "$_AE_K holds no engine (engine/harness/felix)"
+}
+
+# E10. A copy already at C is read, and nothing in it is written: each file's bytes against its blob and its
+# mode against the entry's (600 for 100644, 700 for 100755), each directory 700, C with them, no access-control
+# entry that is not a deny, and no file, directory, link
+# or anything else more or less than the commit's entries and their directories.
+_ae_same() {   # -> 0 when C is the commit's copy
+  local want got l ids x r d a
+  [ -d "$_AE_C" ] && [ ! -L "$_AE_C" ] || return 1
+  # C itself is a directory of the copy, so 700 too, and no path in it carries an entry that allows (review E10).
+  [ -n "$("$_AE_FIND" "$_AE_C" -prune -perm 700 -print 2>/dev/null)" ] && [ -z "$(_ae_acl "$_AE_C")" ] || return 1
+  [ -z "$("$_AE_FIND" "$_AE_C" ! -type f ! -type d -print 2>/dev/null)" ] || return 1
+  want="$(printf '%s' "$_AE_E" | "$_AE_AWK" '{ m = ($1 == "100755") ? "700" : "600"; p = substr($0, length($1) + length($2) + 3)
+           print "f " m " " $2 " " p; n = split(p, c, "/"); q = ""; for (i = 1; i < n; i++) { q = (i == 1) ? c[1] : q "/" c[i]; d[q] = 1 } }
+           END { for (q in d) print "d 700 - " q }' | "$_AE_SORT")"
+  # What C holds, read in place and paired by awk from the environment, which keeps a path's bytes as they are.
+  l="$(cd "$_AE_C" && "$_AE_FIND" . -type f -print 2>/dev/null)" && [ -n "$l" ] || return 1
+  ids="$(cd "$_AE_C" && printf '%s\n' "$l" | _ae_g hash-object --no-filters --stdin-paths 2>/dev/null)" || return 1
+  x="$(cd "$_AE_C" && "$_AE_FIND" . -type f -perm 700 -print 2>/dev/null)"
+  r="$(cd "$_AE_C" && "$_AE_FIND" . -type f -perm 600 -print 2>/dev/null)"
+  d="$(cd "$_AE_C" && "$_AE_FIND" . -mindepth 1 -type d -perm 700 -print 2>/dev/null)"
+  a="$(cd "$_AE_C" && "$_AE_FIND" . -mindepth 1 -type d -print 2>/dev/null)"
+  got="$(L="$l" I="$ids" X="$x" R="$r" D="$d" A="$a" "$_AE_AWK" 'BEGIN {
+           n = split(ENVIRON["X"], t, "\n"); for (i = 1; i <= n; i++) m[t[i]] = "700"
+           n = split(ENVIRON["R"], t, "\n"); for (i = 1; i <= n; i++) m[t[i]] = "600"
+           n = split(ENVIRON["D"], t, "\n"); for (i = 1; i <= n; i++) dm[t[i]] = 1
+           n = split(ENVIRON["A"], t, "\n"); for (i = 1; i <= n; i++) if (t[i] != "") print "d " ((t[i] in dm) ? "700" : "other") " - " substr(t[i], 3)
+           n = split(ENVIRON["L"], f, "\n"); split(ENVIRON["I"], h, "\n")
+           for (i = 1; i <= n; i++) print "f " ((f[i] in m) ? m[f[i]] : "other") " " h[i] " " substr(f[i], 3) }' | "$_AE_SORT")"
+  [ "$want" = "$got" ]
+}
+
+# E9. The copy, written under .new.PID and renamed to C. Each blob from its id (cat-file blob), never through
+# archive or checkout, so no attributes file of the tree changes a byte; 100644 is written 600 and 100755 700,
+# each directory 700. A failure removes .new.PID (the trap at exit, too).
+_ae_copy() {
+  local m id p d
+  _AE_NEW="$_AE_H/.felix/engine/.new.$$"
+  "$_AE_RM" -rf "$_AE_NEW" 2>/dev/null
+  "$_AE_MKDIR" "$_AE_NEW" && "$_AE_CHMOD" 700 "$_AE_NEW" || _ae_no "the copy could not be written at $(_ae_show "$_AE_NEW")"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    m="${p%% *}"; p="${p#* }"; id="${p%% *}"; p="${p#* }"
+    d="${p%/*}"
+    [ "$d" = "$p" ] || [ -d "$_AE_NEW/$d" ] || "$_AE_MKDIR" -p "$_AE_NEW/$d" || _ae_no "the copy could not be written at $(_ae_show "$_AE_NEW")"
+    _ae_g cat-file blob "$id" > "$_AE_NEW/$p" 2>/dev/null || _ae_no "the copy could not be written at $(_ae_show "$_AE_NEW")"
+    if [ "$m" = 100755 ]; then "$_AE_CHMOD" 700 "$_AE_NEW/$p"; else "$_AE_CHMOD" 600 "$_AE_NEW/$p"; fi \
+      || _ae_no "the copy could not be written at $(_ae_show "$_AE_NEW")"
+  done <<EOF
+$_AE_E
+EOF
+  "$_AE_FIND" "$_AE_NEW" -type d -exec "$_AE_CHMOD" 700 {} + 2>/dev/null
+  "$_AE_MV" "$_AE_NEW" "$_AE_C" 2>/dev/null || _ae_no "the copy could not be put in place at $(_ae_show "$_AE_C")"
+  _AE_NEW=""
+}
+
+# E11. One launcher: #!/bin/sh, a comment naming the commit, and one exec through env -i, so no FELIX_, GIT_,
+# BASH_ENV or other variable of the caller's reaches the copy. Written to a temporary name and renamed.
+_ae_launcher() {   # NAME PROGRAM (under C/engine/harness)
+  local f="$_AE_H/.felix/bin/$1" t="$_AE_H/.felix/bin/.$1.new.$$" dev=""
+  [ "$_AE_OS" != Darwin ] || dev=" DEVELOPER_DIR='/Library/Developer/CommandLineTools'"
+  printf '#!/bin/sh\n# the engine of commit %s, copied by authority-engine\nexec /usr/bin/env -i HOME='"'"'%s'"'"' USER='"'"'%s'"'"' LOGNAME='"'"'%s'"'"' TERM="${TERM:-dumb}" PATH='"'"'%s'"'"'%s /bin/bash '"'"'%s'"'"' "$@"\n' \
+    "$_AE_K" "$_AE_H" "$_AE_ME" "$_AE_ME" "$PATH" "$dev" "$_AE_C/engine/harness/$2" > "$t" 2>/dev/null \
+    && "$_AE_CHMOD" 700 "$t" && "$_AE_MV" -f "$t" "$f" 2>/dev/null \
+    || { "$_AE_RM" -f "$t" 2>/dev/null; _ae_no "the launcher $(_ae_show "$f") could not be written"; }
+}
+
+_ae_main() {
+  local subject date version state lock=- next
+  # E6, first: not as root, at once.
+  [ "$("$_AE_ID" -u 2>/dev/null)" != 0 ] || _ae_no "not as root"
+  # E13. Usage, before anything is read.
+  case "$#" in 1|2) ;; *) printf 'usage: authority-engine COMMIT [SOURCE]\n' >&2; exit 2 ;; esac
+  case "$1:${2:-}" in -*|*:-*) printf 'usage: authority-engine COMMIT [SOURCE]\n' >&2; exit 2 ;; esac
+  # E4. The whole id.
+  _AE_K="$1"
+  case "$_AE_K" in *[!0123456789abcdef]*|"") _ae_no "name the whole commit id, forty lowercase hex digits" ;; esac
+  [ "${#_AE_K}" -eq 40 ] || _ae_no "name the whole commit id, forty lowercase hex digits"
+  # E5. The source, as slice 1's source row takes it: never an option of git, nor a transport that runs a
+  # program of the value's choosing. A byte outside printable ASCII is refused with it: the next line prints it.
+  _AE_S="${2:-/Users/Shared/felix-authority/source.bundle}"
+  case "$_AE_S" in *[!\ -~]*) _ae_no "the source is not an absolute path or a file, https or ssh URL" ;; esac
+  case "$_AE_S" in /*|file://?*|https://?*|ssh://?*) ;; *) _ae_no "the source is not an absolute path or a file, https or ssh URL" ;; esac
+  # E6. HOME: absolute, a directory, no single quote (the launchers quote it so) and printable ASCII.
+  _AE_H="${HOME-}"
+  case "$_AE_H" in /*) ;; *) _ae_no "HOME is not an absolute path to a directory" ;; esac
+  case "$_AE_H" in *[!\ -~]*|*"'"*) _ae_no "HOME is not an absolute path to a directory" ;; esac
+  [ -d "$_AE_H" ] || _ae_no "HOME is not an absolute path to a directory"
+  while :; do case "$_AE_H" in */) _AE_H="${_AE_H%/}" ;; *) break ;; esac; done
+  _AE_ME="$("$_AE_ID" -un 2>/dev/null)"
+  case "$_AE_ME" in ""|[!A-Za-z_]*|*[!A-Za-z0-9_.-]*) _ae_no "this login's name cannot be written in a launcher" ;; esac
+  _ae_git
+  # E6. The four directories: each that exists is read before any is made, and each is made 700.
+  _AE_B="$_AE_H/.felix/engine/boot.git"; _AE_C="$_AE_H/.felix/engine/$_AE_K"
+  _ae_dir_ok "$_AE_H/.felix"; _ae_dir_ok "$_AE_H/.felix/engine"; _ae_dir_ok "$_AE_B"; _ae_dir_ok "$_AE_H/.felix/bin"
+  for _ae_d in "$_AE_H/.felix" "$_AE_H/.felix/engine" "$_AE_H/.felix/bin"; do
+    [ -d "$_ae_d" ] || { "$_AE_MKDIR" "$_ae_d" && "$_AE_CHMOD" 700 "$_ae_d"; } || _ae_no "$(_ae_show "$_ae_d") could not be made"
+  done
+  if [ ! -d "$_AE_B" ]; then
+    _ae_g init -q --bare --template= "$_AE_B" >/dev/null 2>&1 && "$_AE_CHMOD" 700 "$_AE_B" || _ae_no "$(_ae_show "$_AE_B") could not be made"
+  fi
+  # E7. The fetch: every object checked as it arrives, three transports and no other, no submodule.
+  _ae_g -c transfer.fsckObjects=true -c fetch.fsckObjects=true -c protocol.allow=never -c protocol.file.allow=always \
+    -c protocol.https.allow=always -c protocol.ssh.allow=always -c fetch.recurseSubmodules=false \
+    fetch -q --no-tags --prune -- "$_AE_S" '+refs/*:refs/boot/*' >/dev/null 2>&1 \
+    || _ae_no "the source could not be fetched, or an object in it failed git's checks"
+  # E8.
+  [ "$(_ae_g cat-file -t "$_AE_K" 2>/dev/null)" = commit ] || _ae_no "$_AE_K is not a commit the source holds"
+  case "$(_ae_g ls-tree "$_AE_K" -- engine/harness/felix 2>/dev/null)" in
+    "100755 blob "*$'\t'engine/harness/felix) ;;
+    *) _ae_no "$_AE_K holds no engine (engine/harness/felix)" ;;
+  esac
+  _ae_tree
+  # E10, or E9.
+  if [ -e "$_AE_C" ] || [ -L "$_AE_C" ]; then
+    _ae_same || _ae_no "$(_ae_show "$_AE_C") is there and differs from the commit; it is left as it is"
+    state="in place"
+  else
+    _ae_copy; state=made
+  fi
+  # E11.
+  _ae_launcher felix felix; _ae_launcher reach-witness bin/reach-witness
+  if [ "$_AE_OS" = Darwin ]; then _ae_launcher lock bin/lock-macos; lock="$_AE_H/.felix/bin/lock"; fi
+  # E12. The subject is the message's first line as the commit holds it, cut to 200 bytes, then shown.
+  subject="$(_ae_g cat-file commit "$_AE_K" 2>/dev/null | "$_AE_AWK" 'b { print; exit } $0 == "" { b = 1 }')"
+  subject="${subject:0:200}"
+  date="$(_ae_g show -s --no-show-signature --format=%cI "$_AE_K" 2>/dev/null)"
+  version="$("$_AE_AWK" -F'"' '$2 == "version" { print $4; exit }' "$_AE_C/engine/.claude-plugin/plugin.json" 2>/dev/null)"
+  # Section 0 for the paths, which hold HOME; the next line's words quoted for the shell, which types it.
+  next="$(_ae_sh "$_AE_H/.felix/bin/felix") authority init --user $_AE_ME --workers WORKERS --source $(_ae_sh "$_AE_S") --source-main refs/remotes/origin/main"
+  [ "$lock" = - ] || next="$next --lock $(_ae_sh "$lock")"
+  [ "$lock" = - ] || lock="$(_ae_show "$lock")"
+  printf 'engine: %s\nstate: %s\nsubject: %s\ndate: %s\nversion: %s\nfiles: %s\ncopy: %s\nfelix: %s\nlock: %s\nreach-witness: %s\nnext: %s\n' \
+    "$_AE_K" "$state" "$(_ae_show "$subject")" "${date:--}" "$( [ -n "$version" ] && _ae_show "$version" || printf -)" "$_AE_N" \
+    "$(_ae_show "$_AE_C")" "$(_ae_show "$_AE_H/.felix/bin/felix")" "$lock" "$(_ae_show "$_AE_H/.felix/bin/reach-witness")" "$next"
+}
+
+trap '[ -z "$_AE_NEW" ] || "$_AE_RM" -rf "$_AE_NEW" 2>/dev/null' EXIT
+_ae_main "$@" < /dev/null; exit $?

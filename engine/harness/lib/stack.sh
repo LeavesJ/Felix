@@ -32,7 +32,7 @@ fi
 _felix_stack_rows() {
   local proj="$1"
   [ -f "$proj/stack.tsv" ] || return 0
-  grep -vE '^\s*(#|$)' "$proj/stack.tsv"
+  LC_ALL=C grep -vE '^\s*(#|$)' "$proj/stack.tsv"
 }
 
 # Actual state, read once because `claude mcp list` runs health checks and is slow.
@@ -46,19 +46,41 @@ _felix_load_state() {
   # any configured marketplace", and the first live commissioning run held
   # two projects on a plugin that was live in every session. ready.sh already
   # read the same keys; the stack inventory now reads them too.
-  _FELIX_INLINE="$(sed -n 's/.*"\([A-Za-z0-9._-]*\)@inline".*/\1/p' "$HOME/.claude.json" 2>/dev/null | LC_ALL=C sort -u)"
+  _FELIX_INLINE="$(sed -n 's/.*"\([A-Za-z0-9._-]*\)@inline".*/\1/p' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null | LC_ALL=C sort -u)"
+}
+
+# What one line of `claude mcp list` says about its server: failed, needs-auth,
+# connected, or other for a status nobody here has seen. The single reading of
+# the status phrase, shared by the mount test below and by lib/reach.sh, so the
+# two cannot come to read a line differently. The order is the verdict's:
+# a line that mentions two phrases is the worse one.
+_felix_mcp_line_set() {
+  case "$1" in
+    *"Failed to connect"*)     _FELIX_MCP_STATE=failed ;;
+    *"Needs authentication"*)  _FELIX_MCP_STATE=needs-auth ;;
+    *"Connected"*)             _FELIX_MCP_STATE=connected ;;
+    *)                         _FELIX_MCP_STATE=other ;;
+  esac
+}
+# The same, printed. A caller that reads many lines calls _felix_mcp_line_set and
+# reads _FELIX_MCP_STATE instead, which forks nothing.
+_felix_mcp_line_state() {
+  _felix_mcp_line_set "$1"
+  printf '%s' "$_FELIX_MCP_STATE"
 }
 
 # A server is mounted only when its line says connected. Configured-but-failing
 # is the state the GitHub server sits in until someone exports a token, and
-# calling that mounted hides the only fact that matters.
+# calling that mounted hides the only fact that matters. A matching line that
+# says something unrecognised still counts as mounted, as it always did: this
+# decides what felix stack plan calls present, and reach.sh, which only reports,
+# maps the same unrecognised line to unknown instead.
 _felix_mcp_connected() {
   local line
   while IFS= read -r line; do
     case "$line" in
       "$1:"*|*":$1:"*)
-        felix_contains "$line" "Failed to connect" && return 1
-        felix_contains "$line" "Needs authentication" && return 1
+        case "$(_felix_mcp_line_state "$line")" in failed|needs-auth) return 1 ;; esac
         return 0 ;;
     esac
   done <<EOF
@@ -76,21 +98,45 @@ _felix_have() {
     # matters.
     mcp)         _felix_mcp_connected "$2" ;;
     marketplace) felix_contains "$_FELIX_MKTS" "$2" ;;
-    skill)       [ -d "$HOME/.claude/skills/$2" ] ;;
+    skill)       [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$2" ] ;;
     *) return 1 ;;
   esac
 }
 
+# 0 active, 1 not declared, 2 when the declared list could not be read.
+#
+# Until 2026-10-01 a list that could not be read was an empty one: a fork that
+# fails with EAGAIN inside the substitution prints nothing, so a declared
+# capability read not active and a commissioning row grounded on it read
+# not-applicable, a valid state the run's guard cannot see. A list that came
+# back with a failure is not trusted even when it names the capability. The
+# status alone is not enough either: on bash 3.2 a substitution that cannot
+# make its pipe (no file descriptor left) expands to nothing with status 0
+# (measured), so the list carries a `.` written only after felix_declared
+# returned 0, and a list without it was never read. Every caller branches on
+# the status: setup, maintenance and the stack plan say unknown for 2, where
+# they asked with `!` and printed dormant. The membership is a case and not
+# felix_has_line, whose here-document is a temporary file on bash 3.2, and one
+# that cannot be written reads as "not declared" too.
 _felix_cap_active() {
-  local cap="$1" proj="$2"
+  local cap="$1" proj="$2" declared nl=$'\n'
   [ "$cap" = "always" ] && return 0
-  felix_has_line "$(felix_declared "$proj")" "$cap"
+  declared="$(felix_declared "$proj" && printf .)" || return 2
+  case "$declared" in *.) declared="${declared%.}"; declared="${declared%$nl}" ;; *) return 2 ;; esac
+  case "$nl$declared$nl" in *"$nl$cap$nl"*) return 0 ;; esac
+  return 1
 }
 
 
 # Classify every manifest row. Emits: action <TAB> kind <TAB> name <TAB> detail
+#
+# action is present | dormant | unknown | blocked | manual | install. A row
+# whose item is present is present without asking its capability. Otherwise a
+# capability whose declared list could not be read is `unknown`, never dormant
+# (until 2026-10-01 a `!` printed dormant for it) and never install, blocked or
+# manual: nothing is installed on a list nobody read.
 felix_stack_plan() {
-  local proj="$1"
+  local proj="$1" rc
   _felix_load_state
   # The sixth column is who grounded the row. Absent, it is a person's —
   # DECLARED — which is what every row was before the column existed. A row
@@ -101,9 +147,13 @@ felix_stack_plan() {
     [ -n "${kind:-}" ] || continue
     ground="${ground:-DECLARED}"
     if _felix_have "$kind" "$name"; then
-      printf 'present\t%s\t%s\t-\n' "$kind" "$name"
-    elif ! _felix_cap_active "${cap:-always}" "$proj"; then
+      printf 'present\t%s\t%s\t-\n' "$kind" "$name"; continue
+    fi
+    _felix_cap_active "${cap:-always}" "$proj"; rc=$?
+    if [ "$rc" -eq 1 ]; then
       printf 'dormant\t%s\t%s\tneeds capability: %s\n' "$kind" "$name" "$cap"
+    elif [ "$rc" -ne 0 ]; then
+      printf 'unknown\t%s\t%s\tthe capabilities this project declares could not be read, so whether %s is active here is not known\n' "$kind" "$name" "$cap"
     elif [ "$(felix_admit "${risk:-}" "$ground")" != "install" ]; then
       printf 'blocked\t%s\t%s\t%s\n' "$kind" "$name" "$(felix_admit_why "${risk:-}" "$ground")"
     elif [ "$kind" = "skill" ]; then

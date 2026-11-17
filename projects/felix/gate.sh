@@ -184,21 +184,29 @@ if [ -d "$GCACHE" ]; then
   # tests block below records for the suite log, one check up.
   GDRIFT=""
   GWHY=""
-  # The branch being merged into, as felix_kernel_dir resolves it: origin/main
-  # first, so a local main that lags the remote is not what gets certified.
+  # The branch being merged into, as felix_base_ref resolves it: the remote's
+  # copy first, so a local main that lags the remote is not what gets
+  # certified. By FULL name, each looked up as exactly that ref and checked to
+  # be a commit: the short name origin/main is read by git after refs/origin/main,
+  # refs/tags/origin/main and refs/heads/origin/main, which any session can
+  # create, and this base names the resolve.sh that is then run as the judge.
   GBASE=""
-  for GREF in origin/main main; do
-    git rev-parse --verify "$GREF" >/dev/null 2>&1 && { GBASE="$GREF"; break; }
+  for GREF in refs/remotes/origin/main refs/heads/main; do
+    GSHA="$(git show-ref --verify -s -- "$GREF" 2>/dev/null </dev/null)" || continue
+    git rev-parse --verify --quiet "$GSHA^{commit}" >/dev/null 2>&1 </dev/null && { GBASE="$GREF"; break; }
   done
   GVER=""
   [ -n "$GBASE" ] && GVER="$(git show "$GBASE:engine/.claude-plugin/plugin.json" 2>/dev/null \
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   PLUG=""
   GLIB=""
+  # Under $TMPDIR by a template, as the suite log below is: a bare mktemp on
+  # macOS ignores TMPDIR.
+  GTMPD="${TMPDIR:-/tmp}"; GTMPD="${GTMPD%/}"
   if [ -z "$GBASE" ]; then
     GWHY="cannot tell which engine main accepted: no main here"
     INSTALL_DRIFT=1
-  elif ! GLIB="$(mktemp -d 2>/dev/null)" || [ -z "$GLIB" ]; then
+  elif ! GLIB="$(mktemp -d "$GTMPD/felix-gate-judge.XXXXXX" 2>/dev/null)" || [ -z "$GLIB" ]; then
     GWHY="could not make a directory to read main's resolve.sh into"
     INSTALL_DRIFT=1
   elif ! git show "$GBASE:engine/harness/lib/resolve.sh" > "$GLIB/resolve.sh" 2>/dev/null; then
@@ -236,7 +244,7 @@ if [ -d "$GCACHE" ]; then
       printf '                     the live engine is %s, not the one main declares\n' "${GLIVE##*/}"
     fi
   else
-    MROOT=""
+    MROOT=""; GOLD=0; [ "${GRC:-}" = 1 ] && [ -n "$GVER" ] && [ -d "$GCACHE/$GVER/harness" ] && GOLD=1   # b02, C083: felix install does not replace an entry that exists, so its remedy is to move it
     if [ -r "$HOME/.claude/plugins/known_marketplaces.json" ]; then
       MROOT="$(sed -n '/"felix"[[:space:]]*:[[:space:]]*{/,/^  }/p' \
                  "$HOME/.claude/plugins/known_marketplaces.json" 2>/dev/null \
@@ -254,14 +262,14 @@ if [ -d "$GCACHE" ]; then
       FAILED="$FAILED installed"
       [ -n "$GWHY" ] && printf '    %s\n' "$GWHY"
       [ -n "$GDRIFT" ] && printf '%s\n' "$GDRIFT" | head -5 | sed 's/^/    /'
-      printf '    run felix install on main in %s\n' "$MROOT"
+      if [ "$GOLD" = 1 ]; then printf '    felix install does not replace an entry that exists: move %s aside, then run felix install --no-bump in %s\n' "$GCACHE/$GVER" "$MROOT"; else printf '    run felix install on main in %s\n' "$MROOT"; fi
     else
       fail installed
       [ -n "$GWHY" ] && printf '    %s\n' "$GWHY"
       [ -n "$GDRIFT" ] && printf '%s\n' "$GDRIFT" | head -5 | sed 's/^/    /'
       [ -n "$GHERE" ] && [ "$GHERE" != "$GVER" ] \
         && printf '    this checkout declares %s and main declares %s: the bump reaches main by merging it\n' "$GHERE" "${GVER:-nothing}"
-      printf '    reinstall with: felix install (on main)\n'
+      if [ "$GOLD" = 1 ]; then printf '    felix install does not replace an entry that exists: move %s aside, then run felix install --no-bump here\n' "$GCACHE/$GVER"; else printf '    reinstall with: felix install (on main)\n'; fi
       # Deployable drift, and the remedy is here. Everything after this would be
       # spent verifying a tree whose accepted engine is not the one deployed,
       # and the suite alone is minutes. Not a loosening: the gate still fails,
@@ -287,6 +295,23 @@ fi
 # tell. Deleted on a pass, where nothing points at it; kept on a failure, where
 # the path is printed.
 GTLOG_DIR="${TMPDIR:-/tmp}"; GTLOG_DIR="${GTLOG_DIR%/}"; GTLOG=""
+# The suite runs as many parts at once as the machine has performance cores (contract D1, as R51 and R52 replace it):
+# sysctl's hw.perflevel0.logicalcpu when it answers digits only and at least 1; else, as before, hw.ncpu, then
+# getconf, then 1; held to 1..64; never on GitHub's runner, which drops an inherited one (R10).
+GTJOBS=""
+if [ "${GITHUB_ACTIONS:-}" != true ]; then
+  GTJOBS="$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null)"
+  case "$GTJOBS" in ''|*[!0123456789]*) GTJOBS="" ;; esac
+  GTJOBS="${GTJOBS#"${GTJOBS%%[!0]*}"}"
+  if [ -z "$GTJOBS" ]; then
+    GTJOBS="$(sysctl -n hw.ncpu 2>/dev/null)"
+    case "$GTJOBS" in ''|*[!0123456789]*) GTJOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" ;; esac
+    case "$GTJOBS" in ''|*[!0123456789]*) GTJOBS=1 ;; esac
+    GTJOBS="${GTJOBS#"${GTJOBS%%[!0]*}"}"
+  fi
+  case "$GTJOBS" in '') GTJOBS=1 ;; ?|??) ;; *) GTJOBS=64 ;; esac
+  [ "$GTJOBS" -le 64 ] || GTJOBS=64
+fi
 if [ "${SKIP_REST:-0}" -eq 1 ]; then
   printf '  %-18s skipped (the deployed engine is not this tree)\n' tests
 elif [ "${1:-}" = "--quick" ]; then
@@ -294,12 +319,41 @@ elif [ "${1:-}" = "--quick" ]; then
 elif ! GTLOG="$(mktemp "$GTLOG_DIR/felix-gate-tests.XXXXXX" 2>/dev/null)" || [ -z "$GTLOG" ]; then
   fail tests
   printf '    could not make a log file for the suite under %s\n' "$GTLOG_DIR"
-elif ./engine/harness/tests/run >"$GTLOG" 2>&1; then
-  pass tests
-  printf '                     %s\n' "$(tail -1 "$GTLOG")"
+elif env -u FELIX_TEST_JOBS ${GTJOBS:+FELIX_TEST_JOBS=$GTJOBS} ./engine/harness/tests/run --reuse >"$GTLOG" 2>&1; then
+  # --reuse answers from the receipt a passed run left for this exact tree
+  # (tests/receipt.sh), and runs the suite itself when there is none, so a pass
+  # here is a pass either way; what differs is that it says which. A reused run
+  # begins "reused " and is reported as `reused`, with the line that says when it
+  # ended and what it counted, and the receipt this gate writes carries
+  # `tests:reused` for it, so felix merge, the monitor and qualify can tell the
+  # two apart. A run that began "not reused: <reason>" ran the suite, and is `ok`.
+  # The log is searched for that line and not read from its first line: the log
+  # holds stderr as well, and one line from anything ahead of the answer (a
+  # misconfigured knob, a git warning, BASH_ENV) would have made a reused suite
+  # read as `ok`, and the merge would then ask nothing of GitHub for it. It is
+  # searched for anywhere on a line and not only at the start of one, because
+  # such a fragment need not end in a newline: `warning: x` written with none
+  # sits in front of the sentence on the same line (review finding C9-R4). The
+  # summary a reused run ends on, which says `(reused)`, counts as the same
+  # sign. A log that shows reuse anywhere is `reused`, never `ok`; the other way
+  # about is only ever a stricter merge.
+  GTREUSED="$(grep -m1 -E 'reused the suite run that ended .* on this tree \(.*\), not run again' "$GTLOG")"
+  GTLAST="$(tail -1 "$GTLOG")"
+  [ -n "$GTREUSED" ] || case "$GTLAST" in *' (reused)') GTREUSED="$GTLAST" ;; esac
+  if [ -n "$GTREUSED" ]; then
+    printf '  %-18s reused\n' tests
+    printf '                     %s\n' "$GTREUSED"
+    [ "$GTLAST" = "$GTREUSED" ] || printf '                     %s\n' "$GTLAST"
+  else
+    pass tests
+    printf '                     %s\n' "$GTLAST"
+  fi
   rm -f "$GTLOG"
 else
+  GTRC=$?
   fail tests
+  # A refusal (exit 2) has no FAIL line: its one line is the log's last.
+  [ "$GTRC" -ne 2 ] || printf '    %s\n' "$(tail -1 "$GTLOG")"
   # The evidence, not only the verdict (#86 again, one check over). bad() puts
   # its detail on the line AFTER `FAIL`, and this printed the FAIL line alone —
   # so a failure that only reproduces on the runner arrived as a name with
@@ -539,6 +593,63 @@ if [ -x engine/harness/bin/memory-scan ]; then
   fi
 else
   printf '  %-18s skipped (no memory-scan here)\n' memory
+fi
+
+# ------------------------------------------------------------- cloud ---------
+# A Claude Code cloud session loads no plugin and reads nothing from ~/.claude,
+# so the Felix plugin's hooks reach it only as this repository's own
+# .claude/settings.json, which binds the same engine hooks behind a
+# CLAUDE_CODE_REMOTE guard, and the toolbox reaches it only as what
+# .claude/cloud/provision copies in. Each of these goes wrong in silence:
+#   - the plugin binds a hook, or binds it under an event, that the settings do
+#     not, and the cloud never runs it;
+#   - a settings command without the guard runs locally beside the plugin's
+#     hook, and Felix fires twice in every local session;
+#   - a stack.tsv plugin or skill with no entry in .claude/cloud/toolbox.json never
+#     reaches the cloud, and nobody decided that it should not.
+# Pairs are read per event off the four-space layout both files share, so a
+# reformatted file reads as unreadable and fails, rather than as agreement.
+_cloud_pairs() {
+  awk 'match($0, /^    "[A-Za-z]+": \[/) { ev = substr($0, 6, RLENGTH - 9) }
+       ev && match($0, /harness\/hooks\/[a-z-]+/) { print ev "\t" substr($0, RSTART + 14, RLENGTH - 14) }' "$1" \
+    | LC_ALL=C sort -u
+}
+if [ -f .claude/settings.json ]; then
+  CLOUD_BAD=""
+  P_PAIRS="$(_cloud_pairs engine/hooks/hooks.json)"
+  S_PAIRS="$(_cloud_pairs .claude/settings.json)"
+  if [ -z "$P_PAIRS" ] || [ -z "$S_PAIRS" ]; then
+    CLOUD_BAD="unreadable: no event-to-hook pairs read from one of the two files"
+  else
+    # Each lookup reads a here-string, not a pipe. Under pipefail a grep -q
+    # that exits at its match while printf is still writing kills printf with
+    # SIGPIPE, and the pipeline reads the match as a miss: on 2026-10-29, at
+    # load near 190, this check named a toolbox entry that was there. The
+    # suite's pipe lint refuses the shape in every project script.
+    MISSING="$(printf '%s\n' "$P_PAIRS" | while IFS= read -r p; do
+      grep -qxF "$p" <<<"$S_PAIRS" || printf '%s ' "$(printf '%s' "$p" | tr '\t' '/')"
+    done)"
+    [ -z "$MISSING" ] || CLOUD_BAD="$CLOUD_BAD not bound for the cloud: $MISSING;"
+  fi
+  N_CMD="$(grep -c '"command":' .claude/settings.json)"
+  N_GUARD="$(grep -cF '"command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; ' .claude/settings.json)"
+  [ "$N_CMD" = "$N_GUARD" ] || CLOUD_BAD="$CLOUD_BAD $((N_CMD - N_GUARD)) command(s) without the CLAUDE_CODE_REMOTE guard;"
+  # Names read with sed, not jq: the gate runs on bash and git alone
+  # (constitution invariant 2), and a reformatted file reads as no names, so
+  # every stack row fails rather than passing. A here-string, as the pairs
+  # above are looked up, and for the same reason.
+  TOOLBOX="$(sed -n 's/^      "name": "\([^"]*\)",$/\1/p' .claude/cloud/toolbox.json 2>/dev/null)"
+  for n in $(grep -vE '^[[:space:]]*(#|$)' projects/felix/stack.tsv \
+             | awk -F'\t' '$1 == "plugin" || $1 == "skill" { sub(/@.*/, "", $2); print $2 }'); do
+    grep -qxF "$n" <<<"$TOOLBOX" || CLOUD_BAD="$CLOUD_BAD $n has no entry in .claude/cloud/toolbox.json;"
+  done
+  if [ -z "$CLOUD_BAD" ]; then
+    pass cloud
+  else
+    fail cloud; printf '    %s\n' "$CLOUD_BAD"
+  fi
+else
+  printf '  %-18s skipped (no .claude/settings.json in this tree)\n' cloud
 fi
 
 echo

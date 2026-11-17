@@ -164,7 +164,8 @@ _FELIX_AUDIT_READ='
   # decode() as \003, joins it to the next outside a comment and outside
   # single quotes. Given the first 64K of a longer command (cut), a -c script
   # still open at its end is script, and UQSHC is the quote it is waiting for.
-  # split(s, C, "") is a character per element in BWK awk, gawk and mawk alike.
+  # split(s, C, "") is a byte per element in the BWK awk macOS ships, and a
+  # character in gawk and mawk under a UTF-8 locale.
   function unquote(c, cut,    n, C, i, ch, O, no, q, st, s, w, p, pc, A, n2, j, z, x) {
     n = split(c, C, ""); no = 0; q = ""; st = 1; UQSHC = ""
     for (i = 1; i <= n; i++) {

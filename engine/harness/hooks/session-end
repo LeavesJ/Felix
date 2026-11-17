@@ -13,15 +13,38 @@
 
 set -uo pipefail
 
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
 . "${SCRIPT_DIR}/../lib/ledger.sh"  2>/dev/null || exit 0
 . "${SCRIPT_DIR}/../lib/verify.sh"  2>/dev/null || exit 0
+# The graph refresh's two, sourced so that failing to load them costs the
+# refresh and never the rollup below, which is this hook's reason to exist.
+. "${SCRIPT_DIR}/../lib/graph.sh"   2>/dev/null || true
+. "${SCRIPT_DIR}/../lib/own.sh"     2>/dev/null || true
 
 raw="$(cat 2>/dev/null || true)"
 
 FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+felix_hook_enter "$raw" "$FELIX_HOME_DIR"
 
 session="$(printf '%s' "$raw" \
   | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
@@ -34,11 +57,28 @@ session="$(printf '%s' "$raw" \
 _machine=0
 felix_session_machine "$FELIX_HOME_DIR" "$session" && _machine=1
 felix_session_machine_clear "$FELIX_HOME_DIR" "$session"
+# What the Stop hook held this session on goes with it (lib/verify.sh).
+felix_hold_tree_clear "$FELIX_HOME_DIR" "$session"
 [ "$_machine" = 1 ] && exit 0
 
 PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
 [ -n "$PROJ" ] || exit 0
-[ -n "$session" ] || exit 0
 
-felix_ledger_rollup "$PROJ" "$FELIX_HOME_DIR" "$session" "$(date -u +%Y-%m-%d)"
+[ -n "$session" ] && felix_ledger_rollup "$PROJ" "$FELIX_HOME_DIR" "$session" "$(date -u +%Y-%m-%d)"
+
+# The graph, refreshed at the end of every session rather than only at the
+# start of one that finds it behind. What a session merged and pulled into the
+# holding checkout is then in the graph the next session is answered from,
+# instead of in the one after a session happened to start late enough to
+# notice. Code only, backgrounded and locked, never waited for
+# (felix_graph_refresh_bg); only in the project's own checkout, the same gate
+# as the start's (lib/own.sh), tested before anything reads the checkout's
+# graph.json; and due only when the holding checkout has moved past the graph
+# and no refresh has already run at its HEAD.
+_groot="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_groot" ] && command -v graphify >/dev/null 2>&1 \
+   && command -v felix_graph_refresh_due >/dev/null 2>&1 && command -v felix_checkout_is_own >/dev/null 2>&1 \
+   && felix_checkout_is_own "$PROJ" "$_groot" 2>/dev/null; then
+  felix_graph_refresh_due "$_groot" 2>/dev/null && felix_graph_refresh_bg "$_groot" 2>/dev/null
+fi
 exit 0

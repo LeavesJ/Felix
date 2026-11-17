@@ -11,25 +11,140 @@
 # deny.tsv matched the thing the tool was about to act on. A harness that denies
 # by accident gets switched off, and then it enforces nothing at all.
 #
+# Failing open used to be silent, so a broken deny reader looked exactly like a
+# session that tried nothing forbidden (audit C029). A call this hook could not
+# judge still goes through, and now leaves a row in <memory>/hook-faults.log
+# that the next session start reads back. A call it judged, a directory no
+# project governs, a project with no deny.tsv and a tool no row names leave
+# none: those are verdicts, not faults.
+#
 # Bound for more than Bash since the ledger showed where sessions actually spend
 # their calls. What stops a bad rule reaching Edit is felix_deny_overbroad, not
 # the matcher; see lib/deny.sh for why that swap was the point.
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null || exit 0
-. "${SCRIPT_DIR}/../lib/deny.sh"    2>/dev/null || exit 0
+# The caller's environment must not change what a tool prints. Why, and why
+# these lines: the comment above the same lines in engine/harness/felix.
+set +o allexport +o errexit +o keyword +o noclobber +o noglob +o physical
+export -n SHELLOPTS BASHOPTS
+_FELIX_CALLER_CDPATH="${CDPATH-}"
+unset GREP_OPTIONS CLICOLOR_FORCE GH_FORCE_TTY TAPE TAR_OPTIONS TAR_READER_OPTIONS QUOTING_STYLE \
+      GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS \
+      GIT_ICASE_PATHSPECS TMOUT POSIXLY_CORRECT CDPATH
+
+# The fault row. The time is read from EPOCHSECONDS (bash 5), which starts no
+# process. Where the shell has none, as macOS's /bin/bash 3.2 has not, the row
+# asks `date` for it: a row with no time would be counted as recent for as long
+# as the log's last write is (lib/waiting.sh), and session start would say "in
+# the last 7 days" of every fault ever written. The one row that asks nothing
+# is the EXIT trap's (REASON then gets a second argument): it runs where no
+# process may be startable, and its time is `-`, as it is when `date` fails.
+# The memory root is named from the environment, not asked of resolve.sh, which
+# may be the thing that is broken. A memory root that is not there gets no row
+# and is not made (the directory is the install's to create), and a row that
+# cannot be written says nothing: this is the last thing the hook does on its
+# way to allowing the call.
+_felix_pt_done=0; _felix_pt_proj=""; _felix_pt_tool=""
+_felix_pt_row() {   # REASON [notime]
+  set +u
+  local m="${FELIX_MEMORY:-}" t="-" why="$1" p="${_felix_pt_proj:--}" tl="${_felix_pt_tool:--}"
+  local z era doe yoe doy mp mo s d="[0123456789]"
+  [ -n "$m" ] || { [ -n "${HOME:-}" ] && m="$HOME/.felix/memory"; }
+  [ -n "$m" ] && [ -d "$m" ] || return 0
+  case "${EPOCHSECONDS:-}" in
+    ''|*[!0123456789]*)
+      if [ -z "${2:-}" ]; then
+        # The group's own stderr is the shell's: a fork that fails prints its
+        # complaint there and not from the child, so the redirect is on the group.
+        { s="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } 2>/dev/null || s=""
+        case "$s" in
+          $d$d$d$d-$d$d-$d$d"T"$d$d:$d$d:$d$d"Z") t="$s" ;;
+        esac
+      fi ;;
+    *) z=$(( EPOCHSECONDS / 86400 + 719468 )); s=$(( EPOCHSECONDS % 86400 ))
+       era=$(( z / 146097 )); doe=$(( z - era * 146097 ))
+       yoe=$(( (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 ))
+       doy=$(( doe - (365 * yoe + yoe / 4 - yoe / 100) )); mp=$(( (5 * doy + 2) / 153 ))
+       mo=$(( mp < 10 ? mp + 3 : mp - 9 ))
+       printf -v t '%04d-%02d-%02dT%02d:%02d:%02dZ' $(( yoe + era * 400 + (mo <= 2 ? 1 : 0) )) "$mo" \
+         $(( doy - (153 * mp + 2) / 5 + 1 )) $(( s / 3600 )) $(( s % 3600 / 60 )) $(( s % 60 )) ;;
+  esac
+  why="${why//$'\t'/ }"; why="${why//$'\n'/ }"; p="${p//$'\t'/ }"; p="${p//$'\n'/ }"
+  tl="${tl:0:64}"; tl="${tl//$'\t'/ }"; tl="${tl//$'\n'/ }"
+  { printf '%s\tpre-tool\t%s\t%s\t%s\n' "$t" "$p" "$tl" "$why" >> "$m/hook-faults.log"; } 2>/dev/null
+  return 0
+}
+# Any end before a verdict that no line below chose: an unbound variable in a
+# library or the matcher, a fork that failed, an abort while a library loaded.
+# Every verdict sets _felix_pt_done first. The status is the shell's own, and
+# 2 would block the call, so it is never left as 2.
+_felix_pt_trap() {
+  local s=$?
+  [ "$_felix_pt_done" = 1 ] && return 0
+  trap - EXIT
+  _felix_pt_row "the hook ended with status $s before a verdict" notime
+  if [ "$s" = 2 ]; then exit 1; fi
+  exit "$s"
+}
+trap _felix_pt_trap EXIT
+_felix_pt_ok() { _felix_pt_done=1; exit 0; }                      # a verdict: allowed
+_felix_pt_stop() { _felix_pt_row "$1"; _felix_pt_done=1; exit 0; } # not judged: allowed, and recorded
+
+# Git's colour stays off for every git this runs, whatever colour settings the
+# caller made, except what is out of reach. Why, which keys, and what is out
+# of reach: the comment above the same lines in engine/harness/felix.
+_felix_git_pin="'color.ui=never' 'color.advice=never' 'color.branch=never' 'color.diff=never' 'color.grep=never' 'color.interactive=never' 'color.push=never' 'color.remote=never' 'color.showBranch=never' 'color.status=never' 'color.transport=never' 'color.pager=false' 'blame.coloring=none'"
+case " ${GIT_CONFIG_PARAMETERS-}" in
+  *" $_felix_git_pin") ;;
+  *) export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$_felix_git_pin" ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)" || SCRIPT_DIR=""
+FELIX_ROOT=""
+[ -z "$SCRIPT_DIR" ] || FELIX_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)" || FELIX_ROOT=""
+[ -n "$FELIX_ROOT" ] || _felix_pt_stop "the hook could not find its own directory"
+# Loaded is told by the function the library defines and not by the status of
+# sourcing it, which is the status of its last command.
+. "${SCRIPT_DIR}/../lib/resolve.sh" 2>/dev/null
+declare -F felix_home >/dev/null 2>&1 || _felix_pt_stop "lib/resolve.sh did not load"
+. "${SCRIPT_DIR}/../lib/deny.sh"    2>/dev/null
+declare -F felix_deny_match >/dev/null 2>&1 || _felix_pt_stop "lib/deny.sh did not load"
+# The resolver reads through felix_capture and says could not tell without it,
+# which reads below as nothing governs: the deny rows off, with nothing said.
+. "${SCRIPT_DIR}/../lib/detect.sh"  2>/dev/null
+declare -F felix_capture >/dev/null 2>&1 || _felix_pt_stop "lib/detect.sh did not load"
 . "${SCRIPT_DIR}/../lib/say.sh"     2>/dev/null || true
 
-raw="$(cat 2>/dev/null || true)"
-[ -n "$raw" ] || exit 0
+raw="$(cat 2>/dev/null)" || _felix_pt_stop "the payload could not be read"
+[ -n "$raw" ] || _felix_pt_ok
 
-FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || exit 0
+FELIX_HOME_DIR="$(felix_home "$FELIX_ROOT" 2>/dev/null)" || FELIX_HOME_DIR=""
+[ -n "$FELIX_HOME_DIR" ] || _felix_pt_stop "the Felix home could not be found"
+# Resolved from where the hook was started, as it always was. Claude Desktop
+# starts it in the main checkout, which governs every worktree of the session's
+# repository (lib/where.sh), so a governed launch directory needs nothing more
+# and this call costs what it always did. Only when nothing governs the launch
+# directory does the session's own directory get a say (lib/resolve.sh), which
+# is how a governed worktree under an ungoverned launch directory is judged. A
+# broken marker there resolves nothing here either; Stop and SessionStart are
+# the hooks that report it. The project is asked again only if the hook moved:
+# in a repository nothing governs, which is most of them, it did not, and a
+# second lookup was a second `git remote` on every tool call.
 PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
-[ -n "$PROJ" ] || exit 0
-[ -f "$PROJ/deny.tsv" ] || exit 0
+if [ -z "$PROJ" ]; then
+  _felix_launch="$PWD"
+  felix_hook_enter "$raw" "$FELIX_HOME_DIR"
+  if [ "$PWD" != "$_felix_launch" ]; then
+    PROJ="$(felix_resolve_project "$PWD" "$FELIX_HOME_DIR" 2>/dev/null)" || PROJ=""
+  fi
+fi
+[ -n "$PROJ" ] || _felix_pt_ok
+_felix_pt_proj="${PROJ##*/}"
+# No table is no rules (felix new writes none). A table that is there and cannot
+# be read is a project whose rules were not applied.
+if [ ! -e "$PROJ/deny.tsv" ] && [ ! -L "$PROJ/deny.tsv" ]; then _felix_pt_ok; fi
+{ [ -f "$PROJ/deny.tsv" ] && [ -r "$PROJ/deny.tsv" ]; } || _felix_pt_stop "deny.tsv is not a readable file"
 
 # The tool name, read the same conservative way as the command: escaped quotes
 # are neutralised first so a payload cannot run a match past its own string.
@@ -45,7 +160,8 @@ case "$raw" in
     tool="${tool%%\"*}"               # up to the closing quote
     ;;
 esac
-[ -n "$tool" ] || exit 0
+[ -n "$tool" ] || _felix_pt_stop "the payload names no tool"
+_felix_pt_tool="$tool"
 
 # Does any row even name this tool? One grep on a small table, before anything
 # expensive happens.
@@ -60,14 +176,23 @@ esac
 #
 # Cheap and conservative: a false positive here costs the old path, and the
 # match is anchored so `Bash` cannot be satisfied by a row for `BashOutput`.
+#
+# A last row with no newline is a row. `read` returns 1 on it with the fields
+# filled, and the loop dropped it, so a hand-edited deny.tsv whose only Bash
+# row was its unended last line let every Bash call through (2026-10-01).
 _names_tool=0
-while IFS=$'\t' read -r _t _rest; do
+while IFS=$'\t' read -r _t _rest || [ -n "${_t:-}" ]; do
   [ "$_t" = "$tool" ] && { _names_tool=1; break; }
 done < "$PROJ/deny.tsv"
-[ "$_names_tool" -eq 1 ] || exit 0
+[ "$_names_tool" -eq 1 ] || _felix_pt_ok
 
-cmd="$(felix_deny_subject "$raw" "$tool")"
-[ -n "$cmd" ] || exit 0
+# Nothing to judge is a verdict when the subject is there and empty; a subject
+# that is absent, or that the reader could not read, is a call not judged.
+cmd="$(felix_deny_subject "$raw" "$tool")" && _felix_pt_rc=0 || _felix_pt_rc=$?
+if [ -z "$cmd" ]; then
+  [ "$_felix_pt_rc" -eq 0 ] && _felix_pt_ok
+  _felix_pt_stop "the payload's $(_felix_deny_field "$tool") could not be read"
+fi
 
 # Where the command starts, for a row scoped to the checkout: the session's
 # directory as the payload reports it, which can be a fixture the session
@@ -78,8 +203,20 @@ case "$raw" in
 esac
 [ -n "$start" ] && [ -d "$start" ] || start="$PWD"
 
-reason="$(felix_deny_match "$PROJ" "$tool" "$cmd" "$start")" || exit 0
-[ -n "$reason" ] || exit 0
+# The matcher runs in a subshell and its status travels in its output, so a
+# matcher that died (its own status is 1 as well) is told from one that judged
+# nothing matched: the first has no status line.
+out="$(felix_deny_match "$PROJ" "$tool" "$cmd" "$start"; printf '\n%s' "$?")" && _felix_pt_s=0 || _felix_pt_s=$?
+_felix_pt_rc="${out##*$'\n'}"
+case "$_felix_pt_rc" in ''|*[!0123456789]*) _felix_pt_stop "the hook ended with status $_felix_pt_s before a verdict" ;; esac
+reason="${out%$'\n'*}"
+case "$_felix_pt_rc" in
+  0) ;;
+  1) _felix_pt_ok ;;
+  2) _felix_pt_stop "$reason" ;;
+  *) _felix_pt_stop "the hook ended with status $_felix_pt_rc before a verdict" ;;
+esac
+[ -n "$reason" ] || _felix_pt_ok
 
 # Said out loud as well as refused. A refusal with no record is indistinguishable
 # from a tool that is broken, which is the whole complaint guard.sh exists to
@@ -92,4 +229,5 @@ $reason" "" "${sid:-}" 2>/dev/null || true
 printf 'Felix refused this command.\n\n  %s\n\n%s\n\n' "$cmd" "$reason" >&2
 printf 'This is a rule in %s/deny.tsv, which this project owns.\n' "$PROJ" >&2
 printf 'If the rule is wrong, change the row rather than working around it.\n' >&2
+_felix_pt_done=1
 exit 2

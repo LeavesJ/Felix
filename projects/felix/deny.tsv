@@ -105,6 +105,86 @@ Bash	read -t [0-9]+ [^;&|]*< <\(	a timed read from a process substitution never 
 # over command text refuses the spellings it names and no other; branch
 # protection on the remote is the rule that cannot be evaded from here at
 # all, and until it exists these are the floor, not the wall.
-Bash	git( +-[^ ]+( +[^ ]+)?)* +(update-ref|symbolic-ref|fetch|push)[^;&|]*refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it	checkout
+#
+# Only a ref written is refused. Until 2026-09-23 one row refused
+# refs/remotes/ anywhere after update-ref or symbolic-ref, and so refused
+# commands that only read one: `git update-ref refs/heads/backup
+# refs/remotes/origin/main` writes refs/heads/backup, and `git symbolic-ref
+# --short refs/remotes/origin/HEAD` prints. Both were written blind as
+# allowed that day. Each row below is matched against lib/deny.sh's reading
+# of the command, where quotes round a word are gone and each separator is a
+# token of its own:
+#
+#   - update-ref writes its first operand, and the others are values it
+#     reads. Passed on the way to it: options, -m and its reason, and
+#     redirects, a bare `>` with the word it writes to.
+#   - symbolic-ref with one operand prints it. With two it points the first
+#     at the second, and a ref pointed at a remote-tracking ref moves it on
+#     the next commit, so either operand refuses. -d or --delete deletes its
+#     one operand. The final operand has to end at a blank, so the 2 of
+#     2>/dev/null is not taken for one.
+#   - fetch and push name refs/remotes/ only in a refspec that writes one,
+#     so any mention there is refused, as before. A plain fetch names none.
+#
+# None of them sees a ref named only on update-ref --stdin's input: a
+# here-document body or a printed line is data to the reading.
+Bash	git( +-[^ ]+( +[^ ]+)?)* +update-ref( +(-m +[^ ]+|-m[^ ]+|-[^m ][^ ]*|[^ ]*[<>][<>&|]*[^ <>&|][^ ]*|[^ ]*[<>][<>&|]* +[^ ]+))* +refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it	checkout
+Bash	git( +-[^ ]+( +[^ ]+)?)* +symbolic-ref( +(-m +[^ ]+|-m[^ ]+|-[^m ][^ ]*|[^ ]*[<>][<>&|]*[^ <>&|][^ ]*|[^ ]*[<>][<>&|]* +[^ ]+|[^- <>;&|()][^ <>]*))*( +refs/remotes/[^ ]*( +(-m +[^ ]+|-m[^ ]+|-[^m ][^ ]*|[^ ]*[<>][<>&|]*[^ <>&|][^ ]*|[^ ]*[<>][<>&|]* +[^ ]+|[^- <>;&|()][^ <>]*))* +([^- <>;&|()][^ <>]*|-[A-Za-z]*d[A-Za-z]*|--d[a-z]*)( |$)| +([^- <>;&|()][^ <>]*|-[A-Za-z]*d[A-Za-z]*|--d[a-z]*)( +(-m +[^ ]+|-m[^ ]+|-[^m ][^ ]*|[^ ]*[<>][<>&|]*[^ <>&|][^ ]*|[^ ]*[<>][<>&|]* +[^ ]+|[^- <>;&|()][^ <>]*))* +refs/remotes/)	a remote-tracking ref is what the remote said, and the exception table is read from it; symbolic-ref may print one, not write, delete or point a ref at one	checkout
+Bash	git( +-[^ ]+( +[^ ]+)?)* +(fetch|push)[^;&|]*refs/remotes/	a remote-tracking ref is what the remote said, and the exception table is read from it; only a plain fetch may move it	checkout
 Bash	git( +-[^ ]+( +[^ ]+)?)* +remote +(add|set-url|rename|remove|rm)( |$)	the remote is where the person is; a session that rewrites it chooses what refs/remotes/origin/main means	checkout
 Bash	git( +-[^ ]+( +[^ ]+)?)* +push[^;&|]* \+?([^ ]*:)?(refs/heads/)?main([[:space:];&|)]|$)	main is merged through felix merge and a person, never pushed from a session; the exception table is read from it
+#
+# A pattern kill reaches every process on the machine whose name or command
+# line matches, and this machine runs several sessions' suites at once. Twice an
+# agent killed by pattern although its prompt forbade it, on 2026-09-25
+# (`pkill -f 'engine/harness/tests/run'`) and on 2026-10-18 (`pkill -f 'sleep
+# 3'`), and each time the pattern reached other sessions' runs. A prompt did not
+# hold, so this row does, by the founder's decision of 2026-10-19. The contract,
+# its two amendments and the limits below are in
+# audits/2026-10-19-pattern-kill-deny/contract.md.
+#
+# A command's position is the start, after a separator, after a case pattern's
+# `)` or after find's -exec, and then after any of then, do, else, time, if,
+# while, until and !. A wrapper may come first (VAR=val, a redirect, sudo, env,
+# nice, timeout, xargs, nohup, time, exec, command, watch and a few more), and
+# any path may lead the command word. At such a position, this row refuses:
+#   - killall;
+#   - pkill, unless a word binds it to a pid. -F binds it, and so does -P with
+#     a parent list that does not hold 1, since 1 is every orphan's parent. A
+#     -P whose pid comes from a pgrep does not;
+#   - pids from a pgrep that no pid binds, handed to kill: kill $(pgrep ...),
+#     pgrep ... | xargs kill, pgrep ... | while read p; do kill $p, and
+#     p=$(pgrep ...) or for p in $(pgrep ...) followed by kill $p. Inside a
+#     -c script, kill $(pgrep ...) and the pipe forms are refused too; the
+#     variable and loop forms are not.
+# A quoted pattern is one word. The reading prints every separator as a token
+# with blanks round it, so a `|` glued inside a word came from quotes. Two
+# things are not pattern kills here: kill -0 and kill -s 0 send no signal, and a
+# pgrep piped to wc prints a count, not pids.
+#
+# The reading appends each substitution's body after the text, so a pgrep in
+# a substitution is matched as the last body appended. That causes two limits,
+# which this row keeps rather than buy a regex that counts:
+#   - a kill whose pgrep body is not the last one is missed, as in
+#     `kill $(pgrep -f x) || echo "none at $(date)"`;
+#   - a command that kills by pid and ends with a check like "$(pgrep -fl x)"
+#     is refused. Run the check as its own command.
+# As with every row, this one does not see a command built at run time, a
+# command word with a backslash in it, or text piped into a shell. It refuses,
+# although nothing is harmed, `; pkill` inside a quoted sed, cp, rm or touch
+# operand, which the reading keeps, and remote forms such as ssh host 'pkill
+# -f x'.
+#
+# Measured on 2026-10-19 over the 4705 distinct commands naming kill in this
+# machine's transcripts:
+#   - It refuses 173. Of those, 159 are a pkill -f, a kill fed by pgrep -f, or
+#     a pgrep -f piped to xargs kill; 12 kill pgrep's pids through a variable
+#     or a loop; and 2 are pid-tree kills ending in a check, the second limit
+#     above.
+#   - Drafts that refused more taught the exceptions: 23 pkill -P and 1 pgrep -P
+#     tree kills, 3 kill -0 waits, and a tree kill counted with pgrep | wc.
+#   - CPU: about 1 ms per Bash call however short the command, most of it bash
+#     compiling the pattern; the longest row before it costs 0.1 ms. On a
+#     30,000-character reading of plain words it costs about 14 ms. The eight
+#     longest commands in the corpus read under 430 characters.
+Bash	(^ *|[;&|({] +| \) +| -(exec|execdir|ok|okdir) +)((then|do|else|time|if|elif|while|until|!) +)*(([A-Za-z_][A-Za-z0-9_]*=[^ ;&|]*|[0-9]*[<>][<>&]*[^ ;&|]*|(([^ ;&|=]*/)?(sudo|doas|env|nice|g?timeout|xargs|nohup|time|exec|watch|builtin|caffeinate|stdbuf|arch|setsid|ionice)( +-[^ ;&|]*| +-[A-Za-z]*[ugnskIPLaCdEJRc] +[^ ;&|]+| +[A-Za-z_][A-Za-z0-9_]*=[^ ;&|]*| +[0-9][^ ;&|]*)*|([^ ;&|=]*/)?command( +-p)?)) +)*([^ ;&|=]*/)?(pkill( +(([^- ;&|]|&>)[^ ]*|-[^PF ;&|][^ ]*|-[PF][A-Z][^ ]*|-P *([^ ]*,)?1(,[^ ]*)?))*(( *$| +[;&|)])| +-[PF] *-?(\$\(_\)|<\(_\)|_)( +(([^- ;&|]|&>)[^ ]*|-[^PF ;&|][^ ]*|-[PF][A-Z][^ ]*|-P *([^ ]*,)?1(,[^ ]*)?))*( .*)? ; +((sudo|env|command|nice|nohup)( +(-|[A-Za-z_][A-Za-z0-9_]*=|[0-9])[^ ;&|]*)* +)*([^ ;&|=]*/)?pgrep( +(([^- ;&|]|&>)[^ ]*|-[^PF ;&|][^ ]*|-[PF][A-Z][^ ]*|-P *([^ ]*,)?1(,[^ ]*)?))*( +\| +([^w ;&|]|w[^c])([^;&|]|[<>]&|&>)*)*( *;)* *$)|killall( |$)|((sudo|env|command|nice|nohup)( +(-|[A-Za-z_][A-Za-z0-9_]*=|[0-9])[^ ;&|]*)* +)*([^ ;&|=]*/)?pgrep( +(([^- ;&|]|&>)[^ ]*|-[^PF ;&|][^ ]*|-[PF][A-Z][^ ]*|-P *([^ ]*,)?1(,[^ ]*)?))*( +\| +([^w ;&|]|w[^c])([^;&|]|[<>]&|&>)*)*( +\| +(((sudo|xargs|nice|nohup|command|exec)( +-[^ ;&|]*| +-[IJdEnLu] +[^ ;&|]+| +[0-9][^ ;&|]*)* +)*([^ ;&|=]*/)?kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))*|while +read( +[^ ;&|]+)* +; +do +(([^d ;&|]|d[^o]|do[^n]|don[^e]|done[^ ;&|])[^;&|]* +(;|&&|\|\|) +)*((then|else|!) +)*((sudo|xargs|nice|nohup|command|exec)( +-[^ ;&|]*| +-[IJdEnLu] +[^ ;&|]+| +[0-9][^ ;&|]*)* +)*([^ ;&|=]*/)?kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))*)( *$| +[;&|)])| ; ((sudo|xargs|nice|nohup|command|exec)( +-[^ ;&|]*| +-[IJdEnLu] +[^ ;&|]+| +[0-9][^ ;&|]*)* +)*([^ ;&|=]*/)?kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))* +-?(\$\(_\)|<\(_\)|_)( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))*( *;)* *$)|(kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))* +(< +)?-?(\$\(_\)|<\(_\)|_)|while +read( +[^ ;&|]+)* +; +do +(([^d ;&|]|d[^o]|do[^n]|don[^e]|done[^ ;&|])[^;&|]* +(;|&&|\|\|) +)*((then|else|!) +)*((sudo|xargs|nice|nohup|command|exec)( +-[^ ;&|]*| +-[IJdEnLu] +[^ ;&|]+| +[0-9][^ ;&|]*)* +)*([^ ;&|=]*/)?kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))* +; +done +< +<\(_\)|([A-Za-z_][A-Za-z0-9_]*=\$\(_\)|for +[A-Za-z_][A-Za-z0-9_]* +in( +[^ ;&|]+)* +(\$\(_\)|_))( .*)? [;&|]+ +(do +)?((sudo|xargs|nice|nohup|command|exec)( +-[^ ;&|]*| +-[IJdEnLu] +[^ ;&|]+| +[0-9][^ ;&|]*)* +)*([^ ;&|=]*/)?kill( +(([^- ;&|]|&>)[^ ]*|-[^0s ;&|][^ ]*|-0[^ ]+|-s[^ ]+|-s +([^0 ]|0[^ ])[^ ]*|-))* +-?\$[^ ;&|]*)( .*)? ; +((sudo|env|command|nice|nohup)( +(-|[A-Za-z_][A-Za-z0-9_]*=|[0-9])[^ ;&|]*)* +)*([^ ;&|=]*/)?pgrep( +(([^- ;&|]|&>)[^ ]*|-[^PF ;&|][^ ]*|-[PF][A-Z][^ ]*|-P *([^ ]*,)?1(,[^ ]*)?))*( +\| +([^w ;&|]|w[^c])([^;&|]|[<>]&|&>)*)*( *;)* *$)	a pattern kill reaches other sessions' runs on this machine; kill only the pid you started ($! or a pidfile): STOP then KILL the root, then its tree by pid

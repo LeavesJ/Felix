@@ -89,7 +89,7 @@ felix_workflow_dispatchable() {
 # A {{NAME}} placeholder there stands for any non-empty value, so long as the
 # value is not itself a placeholder left unfilled.
 felix_unattended_template_diff() {
-  awk '
+  LC_ALL=C awk '
     function skip(s) { return s ~ /^[ \t]*(#|$)/ }
     function norm(s) { sub(/[ \t\r]+$/, "", s); return s }
     function unfilled(v) { return v == "" || v ~ /[{][{]/ }

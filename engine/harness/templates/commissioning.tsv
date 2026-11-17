@@ -10,8 +10,11 @@
 #             makes the row not-applicable and silent
 # instrument  the bare command the question needs on this machine, or `-`;
 #             an absent instrument makes the row `unknown` — asked of nothing
-# when        an applicability command: non-zero = not-applicable,
-#             126/127 = unknown; `-` = always
+# when        an applicability test, run like a check: 0 = applies,
+#             1 = not-applicable, anything else = unknown, including a test
+#             that ends the shell with anything but 0 (an unset variable
+#             under set -u, or its own `exit 1`) or does not parse; `-` =
+#             always
 # answer      the engine stage that answers it: `felix:discover --adopt`,
 #             `felix:stack apply --yes`, `felix:ready --fix`,
 #             `felix:toolbox --route`, `felix:obligations --seed` (writes the
@@ -19,34 +22,71 @@
 #             `provider:<plugin>:<skill>` (a skill a session's model runs; its
 #             row is `awaiting` until a file it cannot write appears), or `-`
 #             (a person)
-# check       a shell expression exiting 0 when the need is answered, run in
+# check       a shell expression exiting 0 when the need is answered, 2 when
+#             it could not be asked here (unknown, as 126 and 127 are, and as
+#             one that does not parse is), and anything else when it is not
+#             (held). A `felix:` answer runs for a held row and for one whose
+#             check exited 2, then the check is asked again. Run in
 #             the checkout with the engine's functions visible and
 #             FELIX_PROJECT, FELIX_PROJECT_NAME, FELIX_HOME_DIR,
-#             FELIX_MEMORY_DIR, FELIX_ROOT_DIR exported. A check may not begin
-#             with `!` and may not end in `head`: a negated pipeline reads met
-#             when its producer dies. A provider row carries `-`.
+#             FELIX_MEMORY_DIR, FELIX_ROOT_DIR exported. It runs without
+#             pipefail, as a probe does, so a pipeline's status is its last
+#             stage's: `x | grep -q y` is grep's answer. A check that could
+#             only succeed, because it ends in a stage that succeeds whatever
+#             it is fed (tail, tee, cat, sort, wc), is malformed
+#             (lib/final-filter.sh names the stages). End with the stage that
+#             decides. A check may not begin with `!`: a negated pipeline
+#             reads met when its producer dies. A provider row carries `-`.
 # step        the §8 pipeline step (1-10) this row answers, or `-`
 #
 # States are computed on every run and never stored: done, held (a person's
-# queue), not-applicable, unknown (blocks the receipt), malformed (counts
-# toward nothing, fails the run), awaiting (provider rows only; holds nothing).
+# queue), not-applicable, unknown (could not be asked; blocks the receipt),
+# malformed (counts toward nothing, fails the run), awaiting (provider rows
+# only; holds nothing).
 #
 # Every seeded row is a question whose answer comes from the checkout, this
 # machine, or a person. A row with no check can never be done. A table with
 # no row is refused — an empty table is a shelf with nothing on it.
 #
+# A check decides from what a lookup printed only after seeing the lookup
+# reach its end. On bash 3.2 `[ -z "$(lookup)" ]` reads done when the lookup
+# cannot fork inside the substitution (it prints nothing, status 128) or the
+# substitution cannot make its pipe (nothing, status 0).
+# `[ "$(lookup | grep -c bad)" -eq 0 ]` reads done when the lookup dies inside
+# the pipe, with pipefail or without, and `lookup | grep -q good` reads done
+# on what a lookup printed before it died when pipefail is off. So a seeded
+# row reads each lookup alone with a mark after it,
+# `x="$(lookup; [ $? -lt 128 ] && printf .)" && [ "${x%.}" != "$x" ]`, and
+# decides by counting lines of `${x%.}`, never over a pipe from the lookup.
+# A status of 128 or more is a death: a lookup whose last pipeline stage died
+# returns 128 or 129. A lower one is an answer: felix_stack_plan returns
+# grep's 1 under pipefail on a manifest of only comments. A fork that fails
+# deeper, in a substitution the lookup runs itself, can still leave a short
+# answer, a low status and the mark. That is the lookup's to report, as an
+# `unknown` line the stack, preflight and human_steps rows count:
+# felix_ready_report prints one when it cannot list plugins, and
+# felix_stack_plan and felix_setup_status print none yet.
+#
+# A lookup that says it could not answer makes its row unknown, never held
+# (2026-10-08). felix_toolbox_unwired returns 2 when the capabilities this
+# project declares could not be read, so the reach row carries the status in
+# its mark, `/2.` for that, and exits 2 on it. Without a current discovery
+# cache, whether anything is left to declare is not known, so the discover
+# row exits 2 when felix_discover_cache_current returns 1; a real run then
+# runs discover --adopt, which fills the cache, and asks again.
+#
 # need	grounds	instrument	when	answer	check	step
-envelope	-	-	-	-	felix_json_str "$FELIX_PROJECT/project.json" maturity | grep -qxE 'prototype|internal|public-beta|production'	1
+envelope	-	-	-	-	maturity="$(felix_json_str "$FELIX_PROJECT/project.json" maturity; [ $? -lt 128 ] && printf .)" && [ "${maturity%.}" != "$maturity" ] && [ "$(printf '%s' "${maturity%.}" | LC_ALL=C grep -cxE 'prototype|internal|public-beta|production')" -gt 0 ]	1
 constitution	-	-	-	-	test -s "$FELIX_PROJECT/CLAUDE.md"	3
-gate_declared	-	-	-	-	[ -n "$(felix_json_str "$FELIX_PROJECT/project.json" gate)" ]	9
-gate_shown_failing	-	-	-	-	cut -f4 "$FELIX_MEMORY_DIR/mistakes.log" 2>/dev/null | tr ' ' '\n' | grep -vxE 'commission|probes' | grep -q .	9
-probes	-	git	-	-	[ -n "$(felix_probe_rows "$FELIX_PROJECT")" ] && [ -z "$(felix_probe_malformed "$FELIX_PROJECT")" ] && [ -z "$(felix_probes_run "$FELIX_PROJECT" "$FELIX_ROOT_DIR" | felix_probes_blocking)" ]	7
-obligations	-	-	-	felix:obligations --seed	[ -n "$(felix_obligation_rows "$FELIX_PROJECT")" ] && [ -z "$(felix_obligation_malformed "$FELIX_PROJECT")" ] && [ -z "$(felix_obligations_orphans "$FELIX_PROJECT")" ]	8
-discover	-	claude	-	felix:discover --adopt	felix_discover_cache_current "$FELIX_PROJECT" "$FELIX_HOME_DIR" && [ "$(felix_discover_adopt "$FELIX_PROJECT" "$FELIX_HOME_DIR" | grep -c '^declare')" -eq 0 ]	6
-stack	-	claude	-	felix:stack apply --yes	[ "$(felix_stack_plan "$FELIX_PROJECT" | grep -c "^install$(printf '\t')")" -eq 0 ]	6
-preflight	-	claude	-	felix:ready --fix	[ "$(felix_ready_report "$FELIX_PROJECT" | grep -cE "^(absent|disabled)$(printf '\t')")" -eq 0 ]	5
-reach	-	-	-	felix:toolbox --route	[ -z "$(felix_toolbox_unwired "$FELIX_PROJECT")" ]	5
-baseline	-	gh	-	-	cmd_bootstrap 2>/dev/null | grep -q 'Baseline already in place'	5
-human_steps	-	-	-	-	test -f "$FELIX_PROJECT/setup.tsv" && [ "$(felix_setup_status "$FELIX_PROJECT" | grep -c "^todo$(printf '\t')")" -eq 0 ]	6
+gate_declared	-	-	-	-	gate="$(felix_json_str "$FELIX_PROJECT/project.json" gate; [ $? -lt 128 ] && printf .)" && [ "${gate%.}" != "$gate" ] && [ "$(printf '%s' "${gate%.}" | LC_ALL=C grep -c .)" -gt 0 ]	9
+gate_shown_failing	-	-	-	-	LC_ALL=C cut -f4 "$FELIX_MEMORY_DIR/mistakes.log" 2>/dev/null | LC_ALL=C tr ' ' '\n' | LC_ALL=C grep -vxE 'commission|probes' | LC_ALL=C grep -q .	9
+probes	-	git	-	-	listed="$(felix_probe_rows "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${listed%.}" != "$listed" ] && [ "$(printf '%s' "${listed%.}" | LC_ALL=C grep -c .)" -gt 0 ] && malformed="$(felix_probe_malformed "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${malformed%.}" != "$malformed" ] && [ "$(printf '%s' "${malformed%.}" | LC_ALL=C grep -c .)" -eq 0 ] && probed="$(felix_probes_run "$FELIX_PROJECT" "$FELIX_ROOT_DIR"; [ $? -lt 128 ] && printf .)" && [ "${probed%.}" != "$probed" ] && blocking="$(printf '%s' "${probed%.}" | { felix_probes_blocking; [ $? -lt 128 ] && printf .; })" && [ "${blocking%.}" != "$blocking" ] && [ "$(printf '%s' "${blocking%.}" | LC_ALL=C grep -c .)" -eq 0 ]	7
+obligations	-	-	-	felix:obligations --seed	admitted="$(felix_obligation_rows "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${admitted%.}" != "$admitted" ] && [ "$(printf '%s' "${admitted%.}" | LC_ALL=C grep -c .)" -gt 0 ] && malformed="$(felix_obligation_malformed "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${malformed%.}" != "$malformed" ] && [ "$(printf '%s' "${malformed%.}" | LC_ALL=C grep -c .)" -eq 0 ] && orphans="$(felix_obligations_orphans "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${orphans%.}" != "$orphans" ] && [ "$(printf '%s' "${orphans%.}" | LC_ALL=C grep -c .)" -eq 0 ]	8
+discover	-	claude	-	felix:discover --adopt	felix_discover_cache_current "$FELIX_PROJECT" "$FELIX_HOME_DIR"; case $? in 0) ;; 1) exit 2 ;; *) false ;; esac && adopt="$(felix_discover_adopt "$FELIX_PROJECT" "$FELIX_HOME_DIR"; [ $? -lt 128 ] && printf .)" && [ "${adopt%.}" != "$adopt" ] && [ "$(printf '%s' "${adopt%.}" | LC_ALL=C grep -c '^declare')" -eq 0 ]	6
+stack	-	claude	-	felix:stack apply --yes	plan="$(felix_stack_plan "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${plan%.}" != "$plan" ] && [ "$(printf '%s' "${plan%.}" | LC_ALL=C grep -cE "^(install|unknown)$(printf '\t')")" -eq 0 ]	6
+preflight	-	claude	-	felix:ready --fix	readiness="$(felix_ready_report "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${readiness%.}" != "$readiness" ] && [ "$(printf '%s' "${readiness%.}" | LC_ALL=C grep -cE "^(absent|disabled|unknown)$(printf '\t')")" -eq 0 ]	5
+reach	-	-	-	felix:toolbox --route	unwired="$(felix_toolbox_unwired "$FELIX_PROJECT"; s=$?; [ "$s" -lt 128 ] && printf '/%s.' "$s")" && case "$unwired" in */2.) exit 2 ;; */[0123456789]*.) [ "$(printf '%s' "${unwired%/*}" | LC_ALL=C grep -c .)" -eq 0 ] ;; *) false ;; esac	5
+baseline	-	gh	-	-	bootstrap="$(cmd_bootstrap 2>/dev/null; [ $? -lt 128 ] && printf .)" && [ "${bootstrap%.}" != "$bootstrap" ] && [ "$(printf '%s' "${bootstrap%.}" | LC_ALL=C grep -c 'Baseline already in place')" -gt 0 ]	5
+human_steps	-	-	-	-	test -f "$FELIX_PROJECT/setup.tsv" && setup="$(felix_setup_status "$FELIX_PROJECT"; [ $? -lt 128 ] && printf .)" && [ "${setup%.}" != "$setup" ] && [ "$(printf '%s' "${setup%.}" | LC_ALL=C grep -cE "^(todo|unknown)$(printf '\t')")" -eq 0 ]	6
 constitution_audited	-	-	-	provider:claude-md-management:claude-md-improver	-	4
 automation_surveyed	-	-	-	provider:claude-code-setup:claude-automation-recommender	-	4

@@ -29,8 +29,11 @@ Felix is already working here. Report, briefly and in plain language:
   the memory root's `commission/requests/` a session has not yet answered.
   If any are awaiting, run the skill each names and write the answer file it
   names; that is the one thing here only a session can do
-- `felix monitor --open` — offer it, do not run it unasked; it is a page showing
-  every routing decision and gate verdict, which is otherwise unobservable
+- `felix monitor` — the lost-work page: what needs the founder first (hazards,
+  blocked sessions, open questions, work that never reached a PR, pull requests
+  by who has to act), read-only; it is safe to run. `felix monitor --log --open`
+  — offer it, do not run it unasked; it is a page showing every routing
+  decision and gate verdict, which is otherwise unobservable
 - `felix overnight` — whether a night is running. If one is, its standing
   direction is already in this session's context and needs no repeating: keep
   working rather than stopping to report, and write down anything that needs
@@ -49,7 +52,7 @@ anything yet — find out what is here first, then propose.
 1. Run `felix doctor` if it works, otherwise inspect the checkout directly:
    the language, whether there is a test suite, whether CI exists, whether
    anything is deployed.
-2. Work out what would prove this project correct — the command that fails when
+2. Work out what checks this project — the command that fails when
    the code is wrong. `npm test`, `cargo test`, `pytest`, `make check`, a script.
    Say what you think it is and ask, because a gate that cannot fail is worse
    than no gate at all, and guessing it silently is how that happens.
@@ -112,4 +115,4 @@ not a barrier; the barrier is CI.
 
 If a command fails, say what failed and what it printed. Do not paper over it —
 this is a tool whose entire value is that it refuses to report success it has
-not verified.
+not checked.

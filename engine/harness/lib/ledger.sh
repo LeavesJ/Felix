@@ -93,9 +93,20 @@ _felix_ledger_rows() {
 #
 # `named` is -1 when no row for this capability carried the column, which is how
 # data written before 2026-08-12 says "unknown" rather than "zero".
+#
+# Only known rows are read. A row whose CALLS is `-` is a session whose
+# PostToolUse record was incomplete (see felix_ledger_rollup): it says nothing
+# about use, so it adds to no session, call or naming count, and a capability
+# with only such rows has no line. With a second argument a fifth column gives
+# the namings those rows carried, which felix_ledger_unrouted needs: a play that
+# named a capability in a session that cannot say whether it was reached is
+# still a naming.
 felix_ledger_summary() {
   local proj="$1"
-  _felix_ledger_rows "$(felix_mem_dir "$proj")" | awk -F'\t' '
+  _felix_ledger_rows "$(felix_mem_dir "$proj")" | LC_ALL=C awk -F'\t' -v withunk="${2:+1}" '
+    # An answer was handed to the session, not reached for by it, and counted
+    # as a reach it would read as use nobody chose. felix_ledger_answers.
+    $3 == "answer" { next }
     $4 != "" {
       # A built-in skill is not the plugin that shares its name.
       #
@@ -142,14 +153,17 @@ felix_ledger_summary() {
       # colon or an @ would itself be reduced away, and one containing neither
       # cannot collide with a provider-prefixed name.
       if (builtin) owner = owner " (built-in)"
+      if ($5 == "-") { if (NF >= 6 && $6 != "") unk[owner] += $6; next }
       key = owner SUBSEP $1
       if (!(key in seen)) { seen[key] = 1; sessions[owner]++ }
       calls[owner] += $5
       if (NF >= 6 && $6 != "") { named[owner] += $6; known[owner] = 1 }
     }
-    END { for (o in sessions)
-            printf "%s\t%s\t%s\t%s\n", o, sessions[o], calls[o],
-                   (o in known ? named[o] : -1) }
+    END { for (o in sessions) {
+            printf "%s\t%s\t%s\t%s", o, sessions[o], calls[o],
+                   (o in known ? named[o] : -1)
+            if (withunk != "") printf "\t%d", unk[o] + 0
+            printf "\n" } }
   ' | LC_ALL=C sort
 }
 
@@ -163,6 +177,32 @@ felix_ledger_summary() {
 felix_ledger_sessions() {
   _felix_ledger_rows "$(felix_mem_dir "$1")" \
     | cut -f1 | LC_ALL=C sort -u | LC_ALL=C awk 'NF { n++ } END { print n + 0 }'
+}
+
+# How many sessions hold a row whose CALLS is `-`: a fold made from an
+# incomplete PostToolUse record. Those rows are left out of every reading, so
+# this is the number a report owes beside them.
+felix_ledger_unknown() {
+  _felix_ledger_rows "$(felix_mem_dir "$1")" \
+    | LC_ALL=C awk -F'\t' '$5 == "-" { s[$1] = 1 } END { for (k in s) n++; print n + 0 }'
+}
+
+# What felix ledger says under its table: the unknown line when sessions hold
+# unknown rows, and `nothing yet` only for an empty table with none. PROJ, then
+# how many rows the table had. A count that cannot be read is said, not zero.
+felix_ledger_unknown_note() {
+  local u
+  u="$(felix_ledger_unknown "$1")"
+  case "$u" in
+    0) [ "${2:-0}" -eq 0 ] && printf '  nothing yet\n'; return 0 ;;
+    ''|*[!0123456789]*)
+      printf '\nunknown, not zero: how many sessions hold rows whose calls are unknown could not be counted, so this ledger may be incomplete.\n'
+      return 0 ;;
+  esac
+  printf '\nunknown, not zero: %s session(s) hold rows whose calls were not recorded (a PostToolUse run was missing), so this ledger is incomplete.' "$u"
+  printf ' Those rows are left out of the table and of every list, counted as neither used nor ignored.'
+  [ "${2:-0}" -ne 0 ] || printf ' Nothing in it can be counted yet.'
+  printf '\n'
 }
 
 # What Felix pointed at and nobody reached for.
@@ -180,9 +220,12 @@ felix_ledger_sessions() {
 # simply not have come up; the threshold is what separates that from evidence.
 # resolve.sh holds felix_mem_dir and felix_registry_field, both used below.
 # Sourced by path with the house guard because the suite sources this library
-# alone, in a subshell.
+# alone, in a subshell. The directory by expansion, not dirname: this loads
+# after every tool call, and the answers' load at the end uses it too.
+_FELIX_LEDGER_LIB="${BASH_SOURCE[0]:-$0}"
+case "$_FELIX_LEDGER_LIB" in */*) _FELIX_LEDGER_LIB="${_FELIX_LEDGER_LIB%/*}" ;; *) _FELIX_LEDGER_LIB=. ;; esac
 if ! command -v felix_mem_dir >/dev/null 2>&1; then
-  . "$(dirname "${BASH_SOURCE[0]:-$0}")/resolve.sh"
+  . "$_FELIX_LEDGER_LIB/resolve.sh"
 fi
 
 FELIX_LEDGER_MIN="${FELIX_LEDGER_MIN:-5}"
@@ -276,7 +319,7 @@ felix_ledger_partly()     { _felix_ledger_zero_shaped "$1" mixed; }
 # ignored it. It is also weak while few sessions are recorded, since a route
 # that has not fired yet looks identical to one that never will.
 felix_ledger_unrouted() {
-  local proj="$1" name sessions calls named uninvokable=""
+  local proj="$1" name sessions calls named unamed uninvokable=""
   # A kind with no invocation form has no zero to measure.
   #
   # The rollup writes a zero row for every stack.tsv line whatever its kind,
@@ -292,10 +335,13 @@ felix_ledger_unrouted() {
     uninvokable="$(LC_ALL=C awk -F'\t' '$1 == "marketplace" && $2 != "" {
                      n = $2; sub(/@.*/, "", n); print n }' "$proj/stack.tsv")"
   fi
-  felix_ledger_summary "$proj" | while IFS=$'\t' read -r name sessions calls named; do
+  # The summary's fifth column: namings by sessions whose calls are unknown. A
+  # play that named it in one of those is a naming, so it is not unrouted.
+  felix_ledger_summary "$proj" unk | while IFS=$'\t' read -r name sessions calls named unamed; do
     [ -n "${name:-}" ] || continue
     [ "${named:--1}" -eq 0 ] 2>/dev/null || continue
     [ "${calls:-0}" -eq 0 ] 2>/dev/null || continue
+    [ "${unamed:-0}" -eq 0 ] 2>/dev/null || continue
     felix_has_line "$uninvokable" "$name" && continue
     printf '%s\t%s\n' "$name" "$sessions"
   done
@@ -314,7 +360,7 @@ felix_ledger_unrouted() {
 felix_ledger_mcp() {
   local proj="$1"
   _felix_ledger_rows "$(felix_mem_dir "$proj")" | LC_ALL=C awk -F'\t' '
-    $3 == "mcp" && $4 != "" {
+    $3 == "mcp" && $4 != "" && $5 != "-" {
       owner = $4; sub(/@.*/, "", owner)
       # The same plugin_<plugin>_<server> fold the summary applies, or the
       # reconciler proposes mounting a server the plugin already provides
@@ -402,6 +448,50 @@ felix_ledger_record() {
   printf '%s\n' "$signal" >> "$f" 2>/dev/null || true
 }
 
+# The session a PostToolUse payload belongs to, in FELIX_LEDGER_SID: the value
+# of its FIRST `"session_id": "..."`, which Claude Code writes at the top level.
+# The sed this replaces took the LAST, so a tool whose input or response carried
+# a session_id (the ccd_session_mgmt and ccd_sidebar tools do) sent its line to
+# another session's file. No fork: this runs after every tool call. Returns 1,
+# with the variable empty, when the payload names no session.
+felix_ledger_session_id() {
+  local LC_ALL=C
+  local re='"session_id"[[:space:]]*:[[:space:]]*"([^"]*)"'
+  FELIX_LEDGER_SID=""
+  [[ $1 =~ $re ]] || return 1
+  FELIX_LEDGER_SID="${BASH_REMATCH[1]}"
+  [ -n "$FELIX_LEDGER_SID" ]
+}
+
+# One line, `alive<TAB>post-tool`, written when a PostToolUse run starts and
+# before it looks for a signal. A run that finds nothing to record, or dies
+# after this, still leaves it, so a state file with more alive lines than call
+# lines says a run recorded nothing, and the rollup folds what it cannot know
+# as unknown, not as a zero. The directory is made only when the append finds
+# it missing, so the common path forks nothing.
+felix_ledger_alive() {
+  local d="$1/state/ledger"
+  [ -n "${2:-}" ] || return 0
+  { printf 'alive\tpost-tool\n' >> "$d/$2.tsv"; } 2>/dev/null && return 0
+  mkdir -p "$d" 2>/dev/null || return 0
+  { printf 'alive\tpost-tool\n' >> "$d/$2.tsv"; } 2>/dev/null || true
+}
+
+# 0 when a session's appends are whole, so that what they lack was not done.
+# PostToolUse leaves an `alive` line before it looks for a call, so more alive
+# lines than call lines, or neither, means a run recorded nothing. A record
+# with calls and no more alive lines than calls is whole, which includes every
+# state written before the alive line existed. When the count cannot be read
+# the record is not known to be whole. A `named` or an `answer` row is the
+# user-prompt hook's, not a call, so it is no sign that a PostToolUse run
+# recorded anything, and counted as one it would hide a run that did not. The
+# fold's zero rows and the answers' measure (lib/answer.sh) both ask this.
+_felix_ledger_whole() {   # state file
+  [ "$(LC_ALL=C awk -F'\t' '$1 == "alive" { a++; next }
+                            $1 != "named" && $1 != "answer" && $2 != "" { c++ }
+                            END { r = 0; if (a > c || (a + 0 == 0 && c + 0 == 0)) r = 1; print r }' "$1" 2>/dev/null)" = 0 ]
+}
+
 # Fold one session's appends into the committed ledger, once.
 #
 # Rewritten rather than appended to, so rolling the same session twice cannot
@@ -431,12 +521,29 @@ felix_ledger_rollup() {
   # and unsuffixed so the reader's *.tsv glob cannot see it in flight.
   local tmp; tmp="$(mktemp "$dir/.${session}.XXXXXX")" || return 0
 
+  # What a zero row says: a measured 0 only when the record is whole
+  # (_felix_ledger_whole). Otherwise a play named and "never reached" may have
+  # been reached, and the fold writes `-` (unknown) where it would write 0.
+  local zero=0
+  _felix_ledger_whole "$state" || zero="-"
+
   # `named` rows are the policy's decision, not a call. They are folded into the
   # sixth column of whatever they name rather than being rows of their own.
   seen=""
   while IFS=$'\t' read -r kind name; do
     [ -n "${name:-}" ] || continue
     [ "$kind" = "named" ] && continue
+    [ "$kind" = "alive" ] && continue
+    # An answer handed to the session: its own row, with the sixth field empty,
+    # because a route naming the same tool named the tool and not its answer.
+    # Kept out of seen and seen_owner, so that the session still gets a
+    # declared tool's zero row and a route's naming of it, both of which an
+    # answer would otherwise suppress as if the session had reached for it.
+    if [ "$kind" = "answer" ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t\n' "$session" "$date" "$kind" "$name" \
+        "$(felix_count -xF "$kind	$name" "$state")" >> "$tmp"
+      continue
+    fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$session" "$date" "$kind" "$name" \
       "$(felix_count -xF "$kind	$name" "$state")" \
       "$(felix_count -xF "named	$name" "$state")" >> "$tmp"
@@ -456,7 +563,7 @@ $name"
     [ -n "$_o" ] && seen_owner="$seen_owner
 $_o"
   done <<EOF
-$(sort -u "$state" 2>/dev/null)
+$(LC_ALL=C sort -u "$state" 2>/dev/null)
 EOF
 
   # Anything a route named that was never reached for. It has no call row to
@@ -470,7 +577,7 @@ EOF
     # printf still writing a long list dies of SIGPIPE, which pipefail reads as
     # a name not yet seen.
     case "$nl$seen$nl" in *"$nl$name$nl"*) continue ;; esac
-    printf '%s\t%s\tnamed\t%s\t0\t%s\n' "$session" "$date" "$name" \
+    printf '%s\t%s\tnamed\t%s\t%s\t%s\n' "$session" "$date" "$name" "$zero" \
       "$(felix_count -xF "named	$name" "$state")" >> "$tmp"
     seen="$seen
 $name"
@@ -480,14 +587,18 @@ $name"
     seen_owner="$seen_owner
 $_o"
   done <<EOF
-$(sort -u "$state" 2>/dev/null)
+$(LC_ALL=C sort -u "$state" 2>/dev/null)
 EOF
 
   # The zero rows. Every declared capability that this session never reached
   # for, written down because absence of use given presence is the only
   # unconfounded evidence in the design and it leaves no trace of its own.
   if [ -f "$proj/stack.tsv" ]; then
-    while IFS=$'\t' read -r kind name _src _risk _cap; do
+    # A last row with no newline is declared too. `read` returns 1 on it with
+    # the fields filled, and the loop dropped it, so the capability written
+    # last by hand never got its zero row: the one unconfounded signal said
+    # nothing about it (2026-10-01).
+    while IFS=$'\t' read -r kind name _src _risk _cap || [ -n "${kind:-}" ]; do
       case "${kind:-}" in ''|'#'*) continue ;; esac
       [ -n "${name:-}" ] || continue
       # stack.tsv names a package (`superpowers@marketplace`); a signal names
@@ -504,7 +615,7 @@ EOF
       # five times", the exact evidence retire and the reconciler act on. The
       # reduction is the summary's own: strip a marketplace suffix and a skill
       # suffix, then compare whole owners.
-      printf '%s\t%s\t%s\t%s\t0\t%s\n' "$session" "$date" "$kind" "$name" \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$session" "$date" "$kind" "$name" "$zero" \
         "$(LC_ALL=C awk -F'\t' -v b="$bare" \
              '$1 == "named" { o = $2; sub(/@.*/, "", o); sub(/:.*/, "", o)
                               if (o == b) n++ }
@@ -711,3 +822,12 @@ felix_ledger_catchup() {
   done
   printf '%s' "$n"
 }
+
+# Answers handed to a session, and what it did next, are the ledger's too:
+# their rows fold through felix_ledger_rollup above. Kept in their own file.
+# A failure to load it must not fail this file's own load: the hooks source
+# this with `|| exit 0`, and the ledger is worth more than the answers' half.
+# The directory is the one found by expansion at the top of this file.
+if ! command -v felix_answer_use >/dev/null 2>&1; then
+  . "$_FELIX_LEDGER_LIB/answer.sh" 2>/dev/null || true
+fi
